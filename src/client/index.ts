@@ -99,6 +99,20 @@ export function apply(ctx: any): void {
   const root = mk('div', 'position:fixed;right:20px;bottom:20px;z-index:2147483000;pointer-events:auto;user-select:none;')
   root.setAttribute('data-zzz-pet-root', '')
 
+  // 记住上次位置（跨重启保留，localStorage）
+  try {
+    const saved = localStorage.getItem('zzz-pet-pos')
+    if (saved) {
+      const p = JSON.parse(saved)
+      if (p && typeof p.x === 'number' && typeof p.y === 'number') {
+        root.style.right = 'auto'
+        root.style.bottom = 'auto'
+        root.style.left = p.x + 'px'
+        root.style.top = p.y + 'px'
+      }
+    }
+  } catch { /* storage unavailable */ }
+
   const dock = mk('div', 'position:relative;display:inline-block;cursor:grab;touch-action:none;')
   dock.title = '拖动我 · 点击互动 · 右键菜单'
 
@@ -201,6 +215,7 @@ export function apply(ctx: any): void {
     root.style.top = ''
     root.style.right = '20px'
     root.style.bottom = '20px'
+      try { localStorage.removeItem('zzz-pet-pos') } catch { /* storage unavailable */ }
   }
 
   function setHidden(v: boolean): void {
@@ -310,7 +325,15 @@ export function apply(ctx: any): void {
     const onUp = (): void => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
-    }
+          if (dragMoved) {
+            try {
+              localStorage.setItem(
+                'zzz-pet-pos',
+                JSON.stringify({ x: parseInt(root.style.left, 10) || 0, y: parseInt(root.style.top, 10) || 0 })
+              )
+            } catch { /* storage unavailable */ }
+          }
+        }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
   })
