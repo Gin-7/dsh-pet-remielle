@@ -99,16 +99,20 @@ export function apply(ctx: any): void {
   const root = mk('div', 'position:fixed;right:20px;bottom:20px;z-index:2147483000;pointer-events:auto;user-select:none;')
   root.setAttribute('data-zzz-pet-root', '')
 
-  // 记住上次位置（跨重启保留，localStorage）
+  // 记住上次位置（跨重启保留，localStorage）；超出当前窗口时钳制回可视区（双屏场景）
   try {
     const saved = localStorage.getItem('zzz-pet-pos')
     if (saved) {
       const p = JSON.parse(saved)
       if (p && typeof p.x === 'number' && typeof p.y === 'number') {
+        const vw = window.innerWidth || 1280
+        const vh = window.innerHeight || 800
+        const cx = Math.max(0, Math.min(p.x, vw - 60))
+        const cy = Math.max(0, Math.min(p.y, vh - 60))
         root.style.right = 'auto'
         root.style.bottom = 'auto'
-        root.style.left = p.x + 'px'
-        root.style.top = p.y + 'px'
+        root.style.left = cx + 'px'
+        root.style.top = cy + 'px'
       }
     }
   } catch { /* storage unavailable */ }
