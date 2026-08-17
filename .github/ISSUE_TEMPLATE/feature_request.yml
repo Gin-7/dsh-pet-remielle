@@ -1,0 +1,24 @@
+name: 功能建议
+description: 为桌宠提出新功能或改进想法
+title: "[建议] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: 功能描述
+      description: 你希望桌宠新增或改进什么？
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 什么情况下会用到？解决什么问题？
+      placeholder: |
+        例如：希望桌宠在某个状态下…
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充说明
+      description: 参考资料、截图、设计想法等

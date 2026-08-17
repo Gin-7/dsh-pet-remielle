@@ -1,0 +1,41 @@
+name: Bug 报告
+description: 报告桌宠的问题
+title: "[桌宠] "
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 桌宠版本
+      description: 设置面板 → 反馈 中显示的版本号
+      placeholder: 如 0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: 安装方式
+      options:
+        - dsh plugin add (GitHub)
+        - 本地链接安装
+        - 其他
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 发生了什么？期望是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开 dsh web
+        2. 点击桌宠…
+        3. 出现问题
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 控制台报错、截图等
