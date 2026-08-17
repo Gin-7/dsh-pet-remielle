@@ -25,7 +25,6 @@ const CHECK_COOLDOWN_MS = 60 * 60 * 1000 // 1h between automatic checks
 
 interface UpdatePrefs {
   auto: boolean
-  mode: 'copy' | 'auto'
 }
 interface UpdateInfo {
   latest: string
@@ -108,11 +107,6 @@ const CSS = [
   '.zzz-pet-upd-versions .arrow{color:var(--dsw-alias-label-tertiary,#6f7c99);}',
   '.zzz-pet-upd-versions .new{color:var(--dsw-alias-brand-primary,#526aa8);}',
   '.zzz-pet-upd-notes{background:rgba(103,126,183,.07);border:1px solid var(--dsw-alias-border-l1,rgba(71,91,145,.18));border-radius:8px;padding:10px 12px;max-height:220px;overflow:auto;white-space:pre-wrap;color:var(--dsw-alias-label-secondary,#4d5d7f);font-size:12px;line-height:1.55;}',
-  ".zzz-pet-upd-cmd-wrap{position:relative;display:flex;align-items:center;flex:1;min-width:0;}",
-  ".zzz-pet-upd-cmd-input{width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:11px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2,rgba(71,91,145,.3));border-radius:8px;background:rgba(103,126,183,.06);color:inherit;min-height:34px;white-space:nowrap;overflow-x:auto;cursor:text;}",
-  ".zzz-pet-upd-cmd-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#526aa8);}",
-  ".zzz-pet-upd-cmd-wrap .zzz-pet-upd-cmd-input{padding-right:52px;}",
-  ".zzz-pet-upd-copy-btn{position:absolute;right:4px;top:50%;transform:translateY(-50%);padding:3px 9px;font-size:11px;border-radius:6px;line-height:1.4;}",
   '.zzz-pet-upd-output{background:rgba(8,15,39,.82);color:#cfe3ff;font-family:ui-monospace,Consolas,monospace;font-size:11px;border-radius:8px;padding:10px 12px;max-height:160px;overflow:auto;white-space:pre-wrap;display:none;}',
   '.zzz-pet-upd-actions{display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--dsw-alias-border-l1,rgba(71,91,145,.18));}',
   '.zzz-pet-upd-hint{font-size:11px;color:var(--dsw-alias-label-tertiary,#6f7c99);line-height:1.5;}',
@@ -121,7 +115,6 @@ const CSS = [
   'body[data-ds-dark-theme] .zzz-pet-upd-card{background:rgba(13,25,59,.98);border-color:rgba(151,169,216,.34);color:#e7ecf7;}',
   'body[data-ds-dark-theme] .zzz-pet-upd-versions .old,body[data-ds-dark-theme] .zzz-pet-upd-hint{color:#96a6c9;}',
   'body[data-ds-dark-theme] .zzz-pet-upd-notes{color:#bdc9e3;background:rgba(164,183,229,.08);}',
-  'body[data-ds-dark-theme] .zzz-pet-upd-cmd-input{background:rgba(164,183,229,.08);}',
 ].join('\n')
 
 const MOODS: Record<string, string> = {
@@ -733,61 +726,31 @@ export function apply(ctx: any): void {
       }
       statusWrap.appendChild(updStatus)
       checkBtnRow.appendChild(statusWrap)
-      const checkBtn = mk('button', '', '检查更新')
-      checkBtn.className = 'zzz-pet-btn'
+      const checkBtn = mk('button', '', hasUpdate ? '更新' : '检查更新')
+      checkBtn.className = 'zzz-pet-btn' + (hasUpdate ? ' primary' : '')
       checkBtn.addEventListener('click', async () => {
-        checkBtn.disabled = true
-        checkBtn.textContent = '检查中…'
-        await checkForUpdate(true)
-        checkBtn.disabled = false
-        checkBtn.textContent = '检查更新'
-        buildSettings()
+        if (hasUpdate) {
+          // 有新版本: 直接执行更新 (同原一键更新逻辑)
+          checkBtn.disabled = true
+          checkBtn.textContent = '更新中…'
+          const ok = await runAutoUpdate((t) => { /* output shown in card */ })
+          checkBtn.disabled = false
+          if (ok) checkBtn.textContent = '更新成功'
+          else checkBtn.textContent = '更新失败'
+          if (ok) { showToast('更新成功，请重启 dsh web'); hideUpdBubble() }
+          else showToast('更新失败，查看详情')
+          buildSettings()
+        } else {
+          checkBtn.disabled = true
+          checkBtn.textContent = '检查中…'
+          await checkForUpdate(true)
+          checkBtn.disabled = false
+          checkBtn.textContent = '检查更新'
+          buildSettings()
+        }
       })
       checkBtnRow.appendChild(checkBtn)
       pane.appendChild(checkBtnRow)
-
-      const modeRow = mk('div', 'justify-content:space-between;')
-      modeRow.className = 'zzz-pet-settings-row'
-      const modeLab = mk('span', '', '更新方式')
-      modeLab.className = 'lab'
-      modeRow.appendChild(modeLab)
-      const modeCtl = mk('div', 'display:flex;align-items:center;gap:8px;justify-content:flex-end;flex:1;min-width:0;')
-      // read-only command input with an inline copy button
-      const modeWrap = mk('div', '')
-      modeWrap.className = 'zzz-pet-upd-cmd-wrap'
-      const modeCmd = document.createElement('input')
-      modeCmd.className = 'zzz-pet-upd-cmd-input'
-      modeCmd.readOnly = true
-      modeCmd.title = '更新命令（可选中复制）'
-      modeCmd.value = '…'
-      modeWrap.appendChild(modeCmd)
-      const modeCopy = mk('button', '', '复制')
-      modeCopy.className = 'zzz-pet-btn zzz-pet-upd-copy-btn'
-      modeCopy.title = '复制命令'
-      modeCopy.addEventListener('click', async () => {
-        try {
-          await navigator.clipboard.writeText(modeCmd.value)
-          showToast('命令已复制')
-        } catch {
-          modeCmd.focus()
-          modeCmd.select()
-          document.execCommand('copy')
-          showToast('命令已复制')
-        }
-      })
-      modeWrap.appendChild(modeCopy)
-      modeCtl.appendChild(modeWrap)
-      fetchUpdateCommand().then((u) => { modeCmd.value = u.cmd }).catch(() => { modeCmd.value = '获取命令失败' })
-      const autoBtn = mk('button', '', '一键更新')
-      autoBtn.className = 'zzz-pet-btn' + (updPrefs.mode === 'auto' ? ' primary' : '')
-      autoBtn.addEventListener('click', () => {
-        updPrefs.mode = (updPrefs.mode === 'auto' ? 'copy' : 'auto') as UpdatePrefs['mode']
-        writeUpdPrefs(updPrefs)
-        buildSettings()
-      })
-      modeCtl.appendChild(autoBtn)
-      modeRow.appendChild(modeCtl)
-      pane.appendChild(modeRow)
     } else if (settingsTab === 'feedback') {
       const secF = mk('div', '', '反馈')
       secF.className = 'zzz-pet-settings-section'
@@ -875,11 +838,11 @@ export function apply(ctx: any): void {
       if (raw) {
         const p = JSON.parse(raw)
         if (p && typeof p === 'object') {
-          return { auto: p.auto !== false, mode: p.mode === 'auto' ? 'auto' : 'copy' }
+          return { auto: p.auto !== false }
         }
       }
     } catch { /* ignore */ }
-    return { auto: true, mode: 'copy' }
+    return { auto: true }
   }
   function writeUpdPrefs(prefs: UpdatePrefs): void {
     try { localStorage.setItem(UPD_PREFS_KEY, JSON.stringify(prefs)) } catch { /* ignore */ }
@@ -953,11 +916,23 @@ export function apply(ctx: any): void {
     return { latest, notes, htmlUrl }
   }
 
-  async function fetchUpdateCommand(): Promise<{ cmd: string; mode: 'link' | 'github' }> {
-    // The update command is the dsh plugin + GitHub install form.
-    return {
-      cmd: `dsh plugin --profile web remove @dsh-external/dsh-client-ui-pet-remielle && dsh plugin --profile web add github:Gin-7/dsh-pet-remielle`,
-      mode: 'github',
+  /** Run the update via the host (POST /api/pet-remielle/update).
+   *  onOutput receives incremental output lines; resolves true on success. */
+  async function runAutoUpdate(onOutput: (text: string) => void): Promise<boolean> {
+    onOutput('正在执行更新…')
+    try {
+      const res = await fetch('/api/pet-remielle/update', { method: 'POST' })
+      const j = await res.json().catch(() => null)
+      onOutput((j && j.output) || 'HTTP ' + res.status)
+      if (res.ok && j && j.ok) {
+        showToast('更新成功，请重启 dsh web')
+        hideUpdBubble()
+        return true
+      }
+      return false
+    } catch (e) {
+      onOutput(String(e))
+      return false
     }
   }
 
@@ -1053,88 +1028,37 @@ export function apply(ctx: any): void {
     hint.textContent = '更新由你决定：桌宠只负责检测和提示。更新完成后重启 dsh web 生效。'
     body.appendChild(hint)
 
-    const mode = updPrefs.mode
-    if (mode === 'copy') {
-      // read-only command input with an inline copy button
-      const cmdWrap = mk('div', '')
-      cmdWrap.className = 'zzz-pet-upd-cmd-wrap'
-      const cmdBox = document.createElement('input')
-      cmdBox.className = 'zzz-pet-upd-cmd-input'
-      cmdBox.readOnly = true
-      cmdBox.value = '…'
-      cmdBox.title = '更新命令（可选中复制）'
-      cmdWrap.appendChild(cmdBox)
-      const copyBtn = mk('button', '', '复制')
-      copyBtn.className = 'zzz-pet-btn zzz-pet-upd-copy-btn'
-      copyBtn.title = '复制命令'
-      copyBtn.addEventListener('click', async () => {
-        try {
-          await navigator.clipboard.writeText(cmdBox.value)
-          showToast('命令已复制')
-        } catch {
-          cmdBox.focus()
-          cmdBox.select()
-          document.execCommand('copy')
-          showToast('命令已复制')
-        }
-      })
-      cmdWrap.appendChild(copyBtn)
-      body.appendChild(cmdWrap)
-      fetchUpdateCommand().then((u) => { cmdBox.value = u.cmd }).catch(() => { cmdBox.value = '获取更新命令失败' })
-
-      const actions = mk('div', '')
-      actions.className = 'zzz-pet-upd-actions'
-      const ghBtn = mk('button', '', '打开发布页')
-      ghBtn.className = 'zzz-pet-btn'
-      ghBtn.addEventListener('click', () => { window.open(updInfo?.htmlUrl || `https://github.com/${REPO}/releases`, '_blank') })
-      actions.appendChild(ghBtn)
-      updCard.appendChild(body)
-      updCard.appendChild(actions)
-    } else {
-      const output = mk('div', '')
-      output.className = 'zzz-pet-upd-output'
-      body.appendChild(output)
-      const actions = mk('div', '')
-      actions.className = 'zzz-pet-upd-actions'
-      const hint2 = mk('span', '')
-      hint2.className = 'zzz-pet-upd-hint'
-      hint2.style.flex = '1'
-      hint2.textContent = '一键更新会执行安装命令'
-      actions.appendChild(hint2)
-      const cancelBtn = mk('button', '', '稍后')
-      cancelBtn.className = 'zzz-pet-btn'
-      cancelBtn.addEventListener('click', closeUpdateCard)
-      const updBtn = mk('button', '', '一键更新')
-      updBtn.className = 'zzz-pet-btn primary'
-      updBtn.addEventListener('click', async () => {
-        if (updBtn.disabled) return
-        updBtn.disabled = true
-        updBtn.textContent = '更新中…'
-        output.style.display = 'block'
-        output.textContent = '正在执行更新…'
-        try {
-          const res = await fetch('/api/pet-remielle/update', { method: 'POST' })
-          const j = await res.json().catch(() => null)
-          output.textContent = (j && j.output) || 'HTTP ' + res.status
-          if (res.ok && j && j.ok) {
-            updBtn.textContent = '更新成功'
-            showToast('更新成功，请重启 dsh web')
-            hideUpdBubble()
-          } else {
-            updBtn.textContent = '更新失败'
-            updBtn.disabled = false
-          }
-        } catch (e) {
-          output.textContent = String(e)
-          updBtn.textContent = '更新失败'
-          updBtn.disabled = false
-        }
-      })
-      actions.appendChild(cancelBtn)
-      actions.appendChild(updBtn)
-      updCard.appendChild(body)
-      updCard.appendChild(actions)
-    }
+    const output = mk('div', '')
+    output.className = 'zzz-pet-upd-output'
+    body.appendChild(output)
+    const actions = mk('div', '')
+    actions.className = 'zzz-pet-upd-actions'
+    const hint2 = mk('span', '')
+    hint2.className = 'zzz-pet-upd-hint'
+    hint2.style.flex = '1'
+    hint2.textContent = '更新会执行增量拉取命令'
+    actions.appendChild(hint2)
+    const ghBtn = mk('button', '', '打开发布页')
+    ghBtn.className = 'zzz-pet-btn'
+    ghBtn.addEventListener('click', () => { window.open(updInfo?.htmlUrl || `https://github.com/${REPO}/releases`, '_blank') })
+    actions.appendChild(ghBtn)
+    const updBtn = mk('button', '', '更新')
+    updBtn.className = 'zzz-pet-btn primary'
+    updBtn.addEventListener('click', async () => {
+      if (updBtn.disabled) return
+      updBtn.disabled = true
+      updBtn.textContent = '更新中…'
+      output.style.display = 'block'
+      const ok = await runAutoUpdate((t) => { output.textContent = t })
+      if (ok) updBtn.textContent = '更新成功'
+      else {
+        updBtn.textContent = '更新失败'
+        updBtn.disabled = false
+      }
+    })
+    actions.appendChild(updBtn)
+    updCard.appendChild(body)
+    updCard.appendChild(actions)
 
     updCard.style.display = 'block'
   }

@@ -39,6 +39,7 @@
     "src",
     "scripts",
     "NOTICE",
-    "README.md"
+    "README.md",
+    "README.en.md"
   ]
 }
