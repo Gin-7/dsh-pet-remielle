@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.2 (2026-08-17)
+
+- 修复设置面板版本号未随包版本更新的问题（`version.generated.ts`）。
+
 ## v0.2.1 (2026-08-17)
 
 - 包名改为 `dsh-pet-remielle`（去除 `@dsh-external` 前缀），与仓库名保持一致。
