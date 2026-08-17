@@ -116,12 +116,12 @@ const CSS = [
 ].join('\n')
 
 const MOODS: Record<string, string> = {
-  '01': '正在疯狂工作',
-  '02': '疯狂工作·间歇休息',
-  '03': '心满意足',
-  '04': '思考中',
-  '05': '等待回应',
-  '06': '待机中',
+  '01': '工作ing',
+  '02': '摸鱼ing',
+  '03': '得意ing',
+  '04': '思考ing',
+  '05': '等待ing',
+  '06': '待机ing',
 }
 
 function mk(tag: string, style?: string, text?: string): HTMLElement {

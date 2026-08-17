@@ -10,12 +10,12 @@ DeepSeek Harness Web GUI 的《绝区零》角色蕾米埃尔（Remielle）桌�
 
 | 状态 | 贴纸 | 触发 |
 |---|---|---|
-| 工作中_01 | <img src="assets/01.gif" width="120" alt="01 工作中_01"> | 正在流式输出回答 |
-| 工作中_02 | <img src="assets/02.gif" width="120" alt="02 工作中_02"> | 正在调用工具 |
-| 心满意足 | <img src="assets/03.gif" width="120" alt="03 心满意足"> | 一轮收尾 6 秒内 |
-| 思考中 | <img src="assets/04.gif" width="120" alt="04 思考中"> | 本轮出现 think 块 / 尚未输出 |
-| 等待回应 | <img src="assets/05.gif" width="120" alt="05 等待回应"> | 提问/批准弹窗等待 · 空闲 2 分钟 |
-| 待机中 | <img src="assets/06.gif" width="120" alt="06 待机中"> | 常规空闲 |
+| 工作ing | <img src="assets/01.gif" width="120" alt="01 工作ing"> | 正在流式输出回答 |
+| 摸鱼ing | <img src="assets/02.gif" width="120" alt="02 摸鱼ing"> | 正在调用工具 |
+| 得意ing | <img src="assets/03.gif" width="120" alt="03 得意ing"> | 一轮收尾 6 秒内 |
+| 思考ing | <img src="assets/04.gif" width="120" alt="04 思考ing"> | 本轮出现 think 块 / 尚未输出 |
+| 等待ing | <img src="assets/05.gif" width="120" alt="05 等待ing"> | 提问/批准弹窗等待 · 空闲 2 分钟 |
+| 待机ing | <img src="assets/06.gif" width="120" alt="06 待机ing"> | 常规空闲 |
 
 桌宠悬浮于页面右下角（可拖动），透明背景无卡片；左键点击随机播放一个动作，右键菜单可调整缩放/透明度、锁定与重置位置、隐藏↔唤醒、暂停动画，并打开设置面板。
 
