@@ -10,6 +10,21 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('..', import.meta.url))
 const assetsDir = resolve(root, 'assets')
 const outFile = resolve(root, 'src/client/art.generated.ts')
+const versionOut = resolve(root, 'src/client/version.generated.ts')
+
+const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
+const version = typeof pkg.version === 'string' ? pkg.version : '0.0.1'
+writeFileSync(
+  versionOut,
+  [
+    '/**',
+    ' * Generated current version (from package.json). Do not edit by hand.',
+    ' */',
+    `export const PET_VERSION = ${JSON.stringify(version)}`,
+    '',
+  ].join('\n'),
+)
+console.log(`version.generated.ts written (${version})`)
 
 const names = ['01', '02', '03', '04', '05', '06']
 const lines = [
