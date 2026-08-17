@@ -1,5 +1,7 @@
 # dsh-pet-remielle · Remielle Desktop Pet
 
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 [中文](README.md) | **English**
 
 A desktop pet plugin for the DeepSeek Harness Web GUI featuring Remielle (蕾米埃尔), a character from *Zenless Zone Zero*. Sticker assets are from the official ZZZ activity sticker pack.

@@ -12,7 +12,7 @@
  */
 import type { UserConfig } from 'tsdown'
 
-const PKG = '@dsh-external/dsh-client-ui-pet-remielle'
+const PKG = 'dsh-pet-remielle'
 
 /** Host half: a plain ESM module that exports `apply`. */
 export function hostConfig(id: string = PKG): UserConfig {

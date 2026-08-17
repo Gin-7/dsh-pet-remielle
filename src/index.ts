@@ -26,7 +26,7 @@ import tls from 'node:tls'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 const REPO = 'Gin-7/dsh-pet-remielle'
-const PKG = '@dsh-external/dsh-client-ui-pet-remielle'
+const PKG = 'dsh-pet-remielle'
 const GITHUB = `https://github.com/${REPO}`
 const RELEASES_API = `https://api.github.com/repos/${REPO}/releases/latest`
 const TAGS_API = `https://api.github.com/repos/${REPO}/tags`

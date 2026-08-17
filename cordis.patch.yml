@@ -5,5 +5,5 @@
 # so the update/check routes can register once the HTTP carrier is up.
 - insert:
     - id: ui-pet-remielle
-      name: '@dsh-external/dsh-client-ui-pet-remielle'
+      name: 'dsh-pet-remielle'
       inject: [webServer]

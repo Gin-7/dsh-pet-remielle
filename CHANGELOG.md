@@ -1,4 +1,9 @@
-﻿# Changelog
+# Changelog
+
+## v0.2.1 (2026-08-17)
+
+- 包名改为 `dsh-pet-remielle`（去除 `@dsh-external` 前缀），与仓库名保持一致。
+- README 顶部添加 awesome-dsh-plugin 徽章。
 
 ## v0.2.0 (2026-08-17)
 

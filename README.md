@@ -1,5 +1,7 @@
 # dsh-pet-remielle · 蕾米埃尔桌宠
 
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 **中文** | [English](README.en.md)
 
 DeepSeek Harness Web GUI 的《绝区零》角色蕾米埃尔（Remielle）桌宠插件，素材来自《绝区零》官方发布的活动表情包。
