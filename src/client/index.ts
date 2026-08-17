@@ -47,7 +47,6 @@ const CSS = [
   ".zzz-pet-settings-head{display:flex;align-items:center;justify-content:space-between;padding:0 12px;}",
   ".zzz-pet-settings-title{font-size:16px;font-weight:500;line-height:24px;}",
   ".zzz-pet-settings-close{display:none;}",
-  ".zzz-pet-settings-body{display:flex;flex-direction:row;gap:0;flex:1;min-width:0;min-height:0;overflow:hidden;}",
   ".zzz-pet-settings-side{flex:none;width:188px;padding:22px 12px 22px;display:flex;flex-direction:column;gap:18px;box-sizing:border-box;border-right:1px solid var(--dsw-alias-border-l1,rgba(71,91,145,.16));}",
   ".zzz-pet-settings-navlist{display:flex;flex-direction:column;gap:4px;}",
   ".zzz-pet-settings-tab{box-sizing:border-box;cursor:pointer;height:40px;color:var(--dsw-alias-label-primary,#172347);text-align:left;background:transparent;border:none;border-radius:12px;align-items:center;gap:8px;padding:9px 16px 9px 12px;font-family:inherit;font-size:14px;font-weight:400;line-height:22px;display:flex;}",
@@ -72,7 +71,6 @@ const CSS = [
   '.zzz-pet-switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:left .15s;}',
   ".zzz-pet-switch.on{background:var(--dsw-alias-brand-primary,#526aa8);}",
   ".zzz-pet-switch.on::after{left:18px;}",
-  ".zzz-pet-settings-footer{display:none;}",
   ".zzz-pet-btn{padding:7px 14px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2,rgba(71,91,145,.3));background:var(--dsw-alias-button-elevated-fill,rgba(255,253,248,.88));cursor:pointer;color:inherit;font-size:13px;}",
   ".zzz-pet-btn:hover{background:var(--dsw-alias-button-floating-hover,#ece6d8);}",
   ".zzz-pet-btn.primary{background:var(--dsw-alias-button-info-fill,#536eae);border-color:transparent;color:#fff;}",
@@ -391,7 +389,7 @@ export function apply(ctx: any): void {
     if (!paused && displayedMood !== currentMood) showCurrentGif()
   }
 
-  // ---------- polling ----------
+  // ---------- polling (event-driven, with low-frequency fallback) ----------
   const tick = (): void => {
     const running = isRunning()
     if (running && !wasRunning) {
@@ -409,8 +407,31 @@ export function apply(ctx: any): void {
     sync()
   }
 
-  let intervalId = 0
-  if (typeof window !== 'undefined') intervalId = window.setInterval(tick, 400)
+  // State changes are DOM changes; observe the body subtree instead of
+  // hammering it with querySelector at 400ms. A low-frequency interval is kept
+  // as a safety net for changes the observer can't see (e.g. style-only).
+  let observer: MutationObserver | null = null
+  let observeTimer = 0
+  const scheduleObserve = (): void => {
+    if (observeTimer) return
+    observeTimer = window.setTimeout(() => {
+      observeTimer = 0
+      tick()
+    }, 300) // debounce bursts of mutations into one tick (≈ original 400ms cadence)
+  }
+
+  const intervalId = window.setInterval(tick, 2000) // fallback: catch anything the observer misses
+  try {
+    observer = new MutationObserver(scheduleObserve)
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-state', 'data-chat-flow-kind', 'data-cordis-approve', 'data-question-key', 'data-plan-review-key'],
+    })
+  } catch {
+    /* MutationObserver unavailable; rely on the interval */
+  }
   tick()
 
   // ---------- interactions ----------
@@ -1089,6 +1110,8 @@ export function apply(ctx: any): void {
 
   ctx.effect(() => () => {
     if (intervalId) window.clearInterval(intervalId)
+    if (observeTimer) window.clearTimeout(observeTimer)
+    if (observer) observer.disconnect()
     document.removeEventListener('pointerdown', outsideDown, true)
     styleEl.remove()
     root.remove()
