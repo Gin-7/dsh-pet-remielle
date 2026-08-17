@@ -1,7 +1,7 @@
 {
   "name": "dsh-pet-remielle",
   "description": "Hot-pluggable Remielle (蕾米埃尔) sticker pet for the dsh web GUI: a transparent floating companion from Zenless Zone Zero that switches animated GIF moods with the harness work state",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "main": "lib/index.js",

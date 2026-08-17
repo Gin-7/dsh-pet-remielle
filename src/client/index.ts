@@ -98,7 +98,9 @@ const CSS = [
   '@keyframes zzzPetPulse{0%,100%{opacity:1}50%{opacity:.35}}',
   '.zzz-pet-upd-card{position:fixed;z-index:2147483001;top:50%;left:50%;transform:translate(-50%,-50%);width:min(420px,92vw);max-height:min(600px,86vh);overflow:auto;background:var(--dsw-alias-bg-overlay,#f8faff);border:1px solid var(--dsw-alias-border-l2,rgba(71,91,145,.3));border-radius:14px;box-shadow:0 20px 56px rgba(15,30,72,.34);font-size:13px;color:var(--dsw-alias-label-primary,#172347);display:none;user-select:none;font-family:system-ui,sans-serif;}',
   '.zzz-pet-upd-card-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(71,91,145,.18));}',
-  '.zzz-pet-upd-card-title{font-weight:600;font-size:14px;}',
+  '.zzz-pet-upd-card-title{font-weight:600;font-size:14px;flex:1;}',
+  '.zzz-pet-upd-close{background:none;border:none;cursor:pointer;font-size:18px;color:var(--dsw-alias-label-tertiary,#6f7c99);padding:0 4px;line-height:1;border-radius:6px;}',
+  '.zzz-pet-upd-close:hover{background:var(--dsw-alias-bg-hover,rgba(103,126,183,.12));}',
   '.zzz-pet-upd-card-body{padding:14px 16px;display:flex;flex-direction:column;gap:12px;}',
   '.zzz-pet-upd-versions{display:flex;align-items:center;gap:10px;font-weight:600;}',
   '.zzz-pet-upd-versions .old{color:var(--dsw-alias-label-tertiary,#6f7c99);text-decoration:line-through;}',
@@ -592,6 +594,7 @@ export function apply(ctx: any): void {
 
   const outsideDown = (e: Event): void => {
     if (menuOpen && !menu.contains(e.target as Node)) closeMenu()
+    if (updCard.style.display === 'block' && !updCard.contains(e.target as Node)) closeUpdateCard()
   }
   document.addEventListener('pointerdown', outsideDown, true)
 
@@ -1018,7 +1021,7 @@ export function apply(ctx: any): void {
     const title = mk('span', '', '发现新版本')
     title.className = 'zzz-pet-upd-card-title'
     const closeX = mk('button', '', '✕')
-    closeX.className = 'zzz-pet-settings-close'
+    closeX.className = 'zzz-pet-upd-close'
     closeX.title = '关闭'
     closeX.addEventListener('click', closeUpdateCard)
     head.appendChild(title)
