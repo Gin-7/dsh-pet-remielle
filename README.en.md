@@ -42,4 +42,5 @@ pnpm build          # regenerate embedded assets + tsdown build to lib/
 
 ## Copyright & License
 
-Sticker assets are from the ZZZ "初代虚狩，回归" activity pack; copyright belongs to the rights holders (miHoYo/HoYoverse). This plugin is for personal learning and entertainment only — **commercial use and redistribution of the assets themselves are prohibited**. Attribution and source chain: see `NOTICE`.
+- **Plugin source code**: released under the [MIT License](LICENSE).
+- **Assets**: from the ZZZ "初代虚狩，回归" activity pack; copyright belongs to the rights holders (miHoYo/HoYoverse). This plugin is for personal learning and entertainment only — **commercial use and redistribution of the assets themselves are prohibited**. Attribution and source chain: see `NOTICE`.

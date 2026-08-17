@@ -23,7 +23,7 @@
     "generate": "node scripts/generate-art.mjs",
     "build": "pnpm generate && tsdown"
   },
-  "license": "SEE LICENSE IN NOTICE",
+  "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.1-rc.1 <4.1.0-0 || >=4.1.0-0"
   },
@@ -39,6 +39,8 @@
     "src",
     "scripts",
     "NOTICE",
+    "LICENSE",
+    "CHANGELOG.md",
     "README.md",
     "README.en.md"
   ]
