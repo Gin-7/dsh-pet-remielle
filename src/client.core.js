@@ -1,6 +1,3 @@
-window.__ModuleLoader__.load({ id: "dsh-pet-remielle", factory: (require) => {
-const module = { exports: {} }
-const exports = module.exports
 /**
  * dsh-pet-remielle client core.
  *
@@ -1001,6 +998,3 @@ module.exports = {
   inject: ['slots'],
   apply: apply,
 }
-
-return module.exports
-} })

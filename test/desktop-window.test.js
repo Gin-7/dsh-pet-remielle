@@ -1,0 +1,116 @@
+/**
+ * DesktopWindow tests: Electron backend candidate discovery (env override,
+ * bundled runtime, harness install), start/stop lifecycle with a stubbed
+ * spawn, and the no-backend fallback.
+ */
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import { backendCandidates, DesktopWindow } from '../src/desktop-window.js'
+
+test('backend candidates prefer the bundled Electron on win32', () => {
+  const saved = process.env.DSH_PET_ELECTRON
+  try {
+    delete process.env.DSH_PET_ELECTRON
+    const list = backendCandidates({ platform: 'win32', cwd: 'C:/fairy' })
+    assert.ok(list.length >= 1)
+    assert.equal(list[0].kind, 'electron')
+    assert.ok(list[0].command.includes('electron-win32-x64'))
+    assert.ok(list[0].args[0].includes('pet-window.cjs'))
+  } finally {
+    if (saved !== undefined) process.env.DSH_PET_ELECTRON = saved
+    else delete process.env.DSH_PET_ELECTRON
+  }
+})
+
+test('backend candidates honor DSH_PET_ELECTRON first', () => {
+  const saved = process.env.DSH_PET_ELECTRON
+  try {
+    process.env.DSH_PET_ELECTRON = 'D:/custom/electron/electron.exe'
+    const list = backendCandidates({ platform: 'win32', cwd: 'C:/fairy' })
+    assert.equal(list[0].command, 'D:/custom/electron/electron.exe')
+  } finally {
+    if (saved !== undefined) process.env.DSH_PET_ELECTRON = saved
+    else delete process.env.DSH_PET_ELECTRON
+  }
+})
+
+test('backend candidates on non-win32 fall back to harness electron', () => {
+  const saved = process.env.DSH_PET_ELECTRON
+  try {
+    delete process.env.DSH_PET_ELECTRON
+    const list = backendCandidates({ platform: 'darwin', cwd: 'C:/fairy' })
+    // The bundled runtime is win32-only and must never leak into other
+    // platforms; the harness electron probe may or may not exist on disk.
+    assert.equal(list.some((entry) => entry.command.includes('electron-win32-x64')), false)
+  } finally {
+    if (saved !== undefined) process.env.DSH_PET_ELECTRON = saved
+    else delete process.env.DSH_PET_ELECTRON
+  }
+})
+
+test('DesktopWindow start spawns electron with env config', () => {
+  let spawned = null
+  const window = new DesktopWindow({
+    url: 'http://127.0.0.1:50336/plugins/dsh-pet-remielle/pet-view',
+    backend: { kind: 'electron', command: 'D:/plugins/vendor/electron-win32-x64/electron.exe', args: ['D:/plugins/src/pet-window.cjs'] },
+    parentPid: 1234,
+    spawnImpl: (command, args, options) => {
+      spawned = { command, args, options }
+      const child = new EventEmitter()
+      child.exitCode = null
+      child.killed = false
+      child.kill = () => { child.killed = true }
+      return child
+    },
+  })
+  window.start()
+  assert.ok(spawned)
+  assert.equal(spawned.command, 'D:/plugins/vendor/electron-win32-x64/electron.exe')
+  assert.deepEqual(spawned.args, ['D:/plugins/src/pet-window.cjs'])
+  assert.equal(spawned.options.windowsHide, false)
+  assert.ok(spawned.options.env.DSH_PET_URL.startsWith('http://127.0.0.1:50336/plugins/dsh-pet-remielle/pet-view'))
+  assert.ok(spawned.options.env.DSH_PET_URL.includes('v='))
+  assert.equal(spawned.options.env.DSH_PET_PARENT_PID, '1234')
+  assert.equal(window.running, true)
+  window.stop()
+  assert.equal(window.running, false)
+})
+
+test('DesktopWindow without a backend stays inert', () => {
+  const window = new DesktopWindow({
+    url: 'http://127.0.0.1:1/x',
+    backend: null,
+    spawnImpl: () => { throw new Error('must not spawn') },
+  })
+  assert.equal(window.running, false)
+  assert.equal(window.start(), undefined)
+  window.stop() // no-op, must not throw
+})
+
+test('DesktopWindow start is idempotent while running and fires onExit', () => {
+  let calls = 0
+  let exited = 0
+  let childRef = null
+  const window = new DesktopWindow({
+    url: 'http://127.0.0.1:1/x',
+    backend: { kind: 'electron', command: 'E:/electron.exe', args: [] },
+    onExit: () => { exited += 1 },
+    spawnImpl: () => {
+      calls += 1
+      const child = new EventEmitter()
+      child.exitCode = null
+      child.killed = false
+      child.kill = () => { child.killed = true }
+      childRef = child
+      return child
+    },
+  })
+  window.start()
+  window.start()
+  assert.equal(calls, 1)
+  window.stop()
+  assert.equal(exited, 0) // exit event not fired yet by the stub
+  childRef.emit('exit')
+  assert.equal(exited, 1)
+})

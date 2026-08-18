@@ -1,47 +1,204 @@
-# dsh-pet-remielle · 蕾米埃尔桌宠
+# dsh-pet-remielle · 蕾米埃尔桌宠（事件驱动重写版）
 
-[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+用 **dsh-dafeiyu 的架构**重写 dsh-pet-remielle：桌宠不再是"抓页面 DOM 猜状态"，
+而是由 DSH **真实会话事件**驱动 —— 事件总线 → 纯状态机 → 类型化协议 → 可持久化配置。
 
-**中文** | [English](README.en.md)
+- 多宠物注册表 + 状态气泡（项目/阶段/进度实时汇报）
+- SSE 实时推送 + 桌面悬浮窗口（随包 Electron，纯 DSH 用户同样可用）
+- 在 DSH 0.1.0-rc.5 实测通过；仅 Windows x64 支持桌面悬浮（其他平台回落页面内）
 
-DeepSeek Harness Web GUI 的《绝区零》角色蕾米埃尔（Remielle）桌宠插件，素材来自《绝区零》官方发布的活动表情包。
+```
+┌───────────────────────────── DSH Host ─────────────────────────────┐
+│  session/event (global) ──► PetReducer ──► state/pulse/task 消息    │
+│                                     │                              │
+│   settings.register (schemastery)   │  最新状态 + 脉冲覆盖          │
+│        │                            ▼                              │
+│        │                 /plugins/dsh-pet-remielle/state  (GET) │
+│        │                 /plugins/dsh-pet-remielle/stream (SSE) │
+│        │                 /plugins/dsh-pet-remielle/config(GET/PATCH)│
+│        │                 /plugins/dsh-pet-remielle/pets   (GET/PATCH)│
+│        │                 /plugins/dsh-pet-remielle/assets/<petId>/<mood>.gif │
+│        │                 /plugins/dsh-pet-remielle/pet-view(HTML，桌面窗口用)│
+│                 /plugins/dsh-pet-remielle/desktop (POST start/stop) │
+└────────┼───────────────────────────────────────────────────────────┘
+         │ SSE 实时推送（断线自动重连，轮询降为 3s 兑底）
+         │ 桌面模式：随包 Electron 透明置顶窗口（零外部依赖）
+┌────────▼──────────────────────── Web 页面 ─────────────────────────┐
+│  Pet UI：6 张贴纸随状态切换、状态气泡、拖动、右键菜单、暂停动画    │
+│  设置 → 宠物管理：宠物注册表（启用/禁用、改名、设为当前、添加）     │
+│  设置卡片：settings.plugin.item 槽位（缩放/透明度/锁定/子Agent/气泡/桌面悬浮）│
+└────────────────────────────────────────────────────────────────────┘
+```
 
-## 效果
+## 与两个原版的差异
 
-透明悬浮、随 DSH 工作状态自动切换动画贴纸（下方为实际素材预览，GIF 即桌面宠使用的贴纸）：
+| | dsh-pet-remielle | dsh-dafeiyu | **dsh-pet-remielle** |
+|---|---|---|---|
+| 状态来源 | DOM 抓取 + 400ms 轮询 | session/event 事件 | ✅ session/event 事件 |
+| 状态机 | if 判断 | CompanionReducer | ✅ PetReducer（含 mood 映射） |
+| 消息协议 | 无 | JSONL 协议 | ✅ 类型化协议（protocol.js） |
+| 配置 | 内存变量，刷新即丢 | schemastery + live watch | ✅ 持久化 + 设置页卡片 |
+| 多 Session 优先级 | 无 | ✅ 有 | ✅ 有 |
+| 显示层 | Web 页面 | PySide6 桌面窗口 | ✅ Web 页面（无 Python 依赖） |
+| 实时推送 | 无 | 无端口管道 | ✅ SSE 流（断线自动重连 + 轮询兑底） |
+| 状态气泡 | 无 | ✅ 宠物上方状态卡 | ✅ 气泡显示 message + detail（项目 · 已完成 x/y 步 · 阶段） |
+| 桌面悬浮 | 无 | ✅ PySide6 原生窗口 | ✅ 随包 Electron 透明置顶窗口（桌面模式） |
+| 多宠物 | 无 | 无 | ✅ 设置 → 宠物管理（注册表 + 切换当前宠物） |
+| 测试 | 无 | node --test + unittest | ✅ node --test 63 项 |
 
-| 状态 | 贴纸 | 触发 |
+> 桌面悬浮模式（`desktopMode`，默认开启）：使用 Electron 运行时拉起**透明、置顶、
+> 无边框**的独立窗口显示宠物（pet-view 页面：浏览器引擎渲染 GIF 动画 + SSE 实时
+> 气泡）——Fairy 桌面版与纯 DSH 用户行为完全一致。窗口支持拖动（位置自动记忆）、
+> 点击穿透（透明区域不挡桌面操作）、双击画画、滚轮缩放；右键菜单固定在角色右上角
+> （窄窗自动回落上方），可调大小/锁定/气泡开关/画画/关闭。关闭后页面内宠物自动
+> 恢复；页面内宠物菜单也可反向拉起桌面窗（`/desktop/start`）。随 DSH host 退出
+> 自动关闭。
+>
+> **Electron 运行时来源（按顺序探测）**：`DSH_PET_ELECTRON` 环境变量 →
+> `vendor/electron-win32-x64/`（本目录不进 Git，见下方「桌面模式运行时」）→
+> 系统已安装的 Electron → 均无则仅页面内展示。
+
+## 状态 → 贴纸映射
+
+| 贴纸 | 状态 | 触发事件 |
 |---|---|---|
-| 工作ing | <img src="assets/01.gif" width="120" alt="01 工作ing"> | 正在流式输出回答 |
-| 摸鱼ing | <img src="assets/02.gif" width="120" alt="02 摸鱼ing"> | 正在调用工具 |
-| 得意ing | <img src="assets/03.gif" width="120" alt="03 得意ing"> | 一轮收尾 6 秒内 |
-| 思考ing | <img src="assets/04.gif" width="120" alt="04 思考ing"> | 本轮出现 think 块 / 尚未输出 |
-| 等待ing | <img src="assets/05.gif" width="120" alt="05 等待ing"> | 提问/批准弹窗等待 · 空闲 2 分钟 |
-| 待机ing | <img src="assets/06.gif" width="120" alt="06 待机ing"> | 常规空闲 |
+| 01 疯狂工作 | THINKING + phase=streaming | assistant/chunk、assistant/message |
+| 02 工作间歇 | WORKING | tool/call（按工具名分 searching/editing/testing/commanding） |
+| 03 心满意足 | PULSE SUCCESS（5s） | turn/end completed |
+| 04 思考中 | THINKING | turn/start、step/start、tool/result 整理 |
+| 05 等待回应 | WAITING | turn/end blocked（提问/审批等） |
+| 06 待机中 | IDLE / DISCONNECTED | 空闲、turn/end aborted/completed 之后 |
 
-桌宠悬浮于页面右下角（可拖动），透明背景无卡片；左键点击随机播放一个动作，右键菜单可调整缩放/透明度、锁定与重置位置、隐藏↔唤醒、暂停动画，并打开设置面板。
-
+多 Session 同时运行时按 `等待确认 > 错误 > 工作 > 思考 > 空闲` 优先级展示最需要关注的顶层任务；
+子 Agent 默认忽略（可在设置里开启）。
 
 ## 安装
 
-```sh
-dsh plugin --profile web add github:Gin-7/dsh-pet-remielle
+适用于 **DSH / DeepSeek Harness**（含 Fairy 等基于 DSH 的分支）的 web profile：
+
+```powershell
+# 方式一：本地目录（开发调试，link 安装）
+dsh plugin --profile web add D:\path\to\dsh-pet-remielle
+
+# 方式二：npm 包（发布后）
+dsh plugin --profile web add dsh-pet-remielle
+
+# 方式三：GitHub Release tgz（发布后）
+dsh plugin --profile web add "C:\Users\you\Downloads\dsh-pet-remielle-<version>.tgz"
 ```
 
-加载即生效、卸载即复原（插件行 id 为 `ui-pet-remielle`）。
+插件行 id：`dsh-pet-remielle`。卸载即复原，无残留。
 
-## 开发与构建
+### 平台能力
 
-```sh
-pnpm install
-pnpm build          # 重新生成素材嵌入 + tsdown 构建 lib/
+| 平台 | 桌面悬浮窗口 | 页面内宠物 | 说明 |
+| --- | --- | --- | --- |
+| Windows x64（Fairy 桌面版 / 纯 DSH 均可） | ✅ Electron 透明置顶窗口 | 自动隐藏 | GIF 由浏览器引擎渲染，所有用户一致体验 |
+| macOS / Linux | ❌ | ✅ | 未打包该平台 Electron，自动回落页面内 |
+
+`desktopMode` 设置（默认开启）控制桌面悬浮；关闭后始终使用页面内展示。
+
+### 桌面模式运行时（vendor/Electron）
+
+桌面悬浮窗口需要 Electron 运行时，但完整运行时（约 221MB，含 184MB 的
+electron.exe）超出 GitHub 100MB 单文件限制，因此**不进 Git 仓库**。获取方式：
+
+1. 从本项目 Release 附件下载 `electron-win32-x64.zip`（若有），解压到
+   `vendor/electron-win32-x64/`；或
+2. 自行用任意 Electron 33 win32-x64 发行包解压到该目录（或设置
+   `DSH_PET_ELECTRON` 指向现有 electron.exe）；或
+3. 不提供运行时：桌面模式自动不可用，宠物在页面内展示（功能完整，仅无悬浮窗）。
+
+### 依赖与兼容性
+
+- 依赖 `@deepseek-ai/schemastery`（DSH 内置）与 `@deepseek-ai/cordis`（peer）
+- 使用 DSH 官方扩展点：`session/event` 总线、`settings.register`（live 应用）、
+  `webServer.register`（exact/prefix 路由）、client `settings.section` /
+  `settings.plugin.item` 槽位、`window.__ModuleLoader__` 加载
+- 已在 DSH 0.1.0-rc.5 源码环境实测通过（见 README 兼容性说明）
+- 无 webServer 的 CLI/headless 模式不会挂载（web 插件预期行为）
+
+## 开发
+
+```powershell
+npm install
+npm test          # node --test（协议/文案/状态机/宿主快照/注册表/流/桌面窗口）
+npm run check     # 语法检查
+npm run build:client   # 重新生成 lib/client.js（贴纸由 host 端点提供，不再内联）
 ```
 
-- `scripts/generate-art.mjs`：把 `assets/*.gif` 内联为 `src/client/art.generated.ts`（data URI）。
-- `build/` 为 tsdown 客户端构建预设。
-- 构建产物 `lib/` 已提交，安装无需构建。
+### 目录结构
 
-## 版权与许可
+```
+src/
+├── index.js          # 宿主：配置注册、事件接线、config/state/pets/assets 端点、清理
+├── pet-reducer.js    # 纯状态机：session 事件 → state/pulse/task 消息（可单测）
+├── protocol.js       # 类型化协议：PetState / PetMood / PetMessageKind
+├── pets.js           # 宠物注册表：目录发现/合并/校验纯函数（可单测）
+├── status-copy.js    # 蕾米埃尔风格状态文案（与 dafeiyu 同键名，可整体替换）
+├── desktop-window.js # 桌面模式：Electron 发现 + 宠物窗口进程管理（可单测）
+├── pet-window.js     # 桌面模式：Electron main 入口（透明置顶窗口）
+├── pet-view.html     # 桌面模式：宠物窗口页面（GIF + 气泡 + SSE 订阅）
+└── client.core.js    # 浏览器端：宠物管理页 + 宠物 UI + 设置卡片（构建时包装）
+lib/client.js         # 构建产物（已提交，安装无需构建；不含 GIF）
+assets/pets/remielle/  # 6 张 GIF（01–06，素材版权见 NOTICE）
+assets/pets/xiaoleimi/ # 小蕾米：7 张高清 GIF + 15 张虚狩绘本（pet-manifest.json 含偏移）
+scripts/build-client.mjs
+test/                 # node --test 测试
+```
 
-- **插件源码**：基于 [MIT License](LICENSE) 发布。
-- **素材**：来自《绝区零》「初代虚狩，回归」活动表情包，版权归原权利方（米哈游/HoYoverse）所有。本插件仅供个人学习与娱乐，**禁止商业使用与再分发素材本身**。署名与来源链见 `NOTICE`。
+## 宠物管理（设置 → 宠物管理）
+
+插件自带一个独立的设置标签页（`settings.section`，id `pets`），用来管理你的桌宠收藏：
+
+- **启用/禁用**：未启用的宠物不会展示；
+- **设为当前**：一次只展示一只宠物，切换即时生效；
+- **改名**：显示名独立于目录名；
+- **添加新宠物**：把 6 张状态贴纸放进 `assets/pets/<id>/`（01.gif–06.gif），然后点"添加并启用"即可。
+  也可以先登记名字、后补贴纸。
+
+宠物定义约定：
+
+```
+assets/pets/<id>/01.gif  疯狂工作（输出）
+assets/pets/<id>/02.gif  工作间歇（工具）
+assets/pets/<id>/03.gif  心满意足
+assets/pets/<id>/04.gif  思考中
+assets/pets/<id>/05.gif  等待回应
+assets/pets/<id>/06.gif  待机
+```
+
+可选扩展（不影响完整性校验）：
+
+```
+assets/pets/<id>/07.gif          额外贴纸槽位（小蕾米用：拿笔待机）
+assets/pets/<id>/pet-manifest.json  每贴纸对齐偏移 offsets + 作品图数量 pics
+assets/pets/<id>/pics/<n>.png    作品图（双击宠物随机弹出，n 从 1 开始）
+```
+
+`id` 只能包含字母、数字、下划线、连字符。贴纸由 host 端点
+`/plugins/dsh-pet-remielle/assets/<petId>/<mood>.gif` 提供，client bundle 不再内联 GIF。
+
+已内置宠物：**蕾米埃尔**（remielle，当前素材为 ZanyZebra 高清版：7 张 GIF
++ 15 张虚狩绘本，带每贴纸对齐偏移；双击触发画画动画并随机弹出作品图；
+素材来源见 NOTICE）。
+
+## 配置
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 启用桌宠（关闭后立即隐藏） |
+| scale | 1 | 角色大小 50%–200% |
+| opacity | 1 | 透明度 30%–100% |
+| locked | false | 锁定位置 |
+| includeSubagents | false | 允许子 Agent 抢占宠物状态 |
+| activePetId | remielle | 当前展示的宠物 |
+| pets | [remielle] | 宠物注册表（id/name/enabled） |
+
+设置入口：DSH 设置 → **宠物管理**（宠物级操作）；DSH 设置 → 插件 → 插件配置 →
+**蕾米埃尔桌宠**（全局外观）；右键宠物菜单也可即时调锁定/隐藏/暂停。
+
+## 许可与素材版权
+
+代码按个人学习用途分发；蕾米埃尔形象与 GIF 素材版权归米哈游（HoYoverse）所有，
+**禁止商业使用与再分发素材**。详见 `NOTICE`。

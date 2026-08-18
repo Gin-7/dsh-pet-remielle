@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Gin-7
+Copyright (c) 2026 dsh-pet-remielle-v2 contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -22,6 +22,6 @@ SOFTWARE.
 
 ---
 
-Note: This license covers the plugin source code only. The character artwork
-and sticker assets (assets/*.gif) are the property of miHoYo / HoYoverse and
-are NOT covered by this license — see NOTICE for attribution and restrictions.
+NOTE: This license covers the plugin source code only. Character art and GIF
+assets are NOT covered by this license — see NOTICE for asset attribution and
+usage restrictions.

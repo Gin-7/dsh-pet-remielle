@@ -1,9 +1,11 @@
-# remielle pet bundle patch: inserts its public dsh.client entry into the web plugin roster.
-# The bundle is the official dsh plugin shape — install it with
-# `dsh plugin --profile <name> add <path-or-git-url>`.
-# `inject: [webServer]` defers this host row until the webserver service exists,
-# so the update/check routes can register once the HTTP carrier is up.
+# remielle v2 bundle patch: inserts the plugin row into the web plugin roster.
+# Install with `dsh plugin --profile <name> add <path-or-git-url>`.
 - insert:
-    - id: ui-pet-remielle
-      name: 'dsh-pet-remielle'
-      inject: [webServer]
+    - id: dsh-pet-remielle
+      name: dsh-pet-remielle
+      config:
+        enabled: true
+        scale: 1
+        opacity: 1
+        locked: false
+        includeSubagents: false

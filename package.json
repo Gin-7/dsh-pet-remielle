@@ -1,47 +1,75 @@
 {
   "name": "dsh-pet-remielle",
-  "description": "Hot-pluggable Remielle (蕾米埃尔) sticker pet for the dsh web GUI: a transparent floating companion from Zenless Zone Zero that switches animated GIF moods with the harness work state",
-  "version": "0.2.3",
-  "private": true,
+  "version": "0.3.0",
+  "description": "蕾米埃尔（Remielle）桌宠 for DeepSeek Harness (DSH): session-event-driven sticker pet with status bubbles, SSE live updates, and a desktop floating window (Electron or bundled Qt helper).",
+  "private": false,
   "type": "module",
-  "main": "lib/index.js",
+  "main": "src/index.js",
   "exports": {
-    ".": "./lib/index.js",
+    ".": "./src/index.js",
     "./client": "./lib/client.js",
+    "./protocol": "./src/protocol.js",
+    "./reducer": "./src/pet-reducer.js",
     "./package.json": "./package.json"
+  },
+  "files": [
+    "src/",
+    "lib/client.js",
+    "assets/",
+    "scripts/",
+    "test/",
+    "cordis.patch.yml",
+    "NOTICE",
+    "README.md",
+    "vendor/electron-win32-x64/",
+    "vendor/electron-win32-x64/resources/",
+    "vendor/electron-win32-x64/locales/"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "build:client": "node scripts/build-client.mjs",
+    "generate": "node scripts/build-client.mjs",
+    "test": "node --test --test-timeout=10000 test/protocol.test.js test/status-copy.test.js test/pet-reducer.test.js test/host-snapshot.test.js test/pets.test.js test/stream-hub.test.js test/desktop-window.test.js",
+    "check": "node --check lib/client.js && node --check src/index.js && node --check src/pet-reducer.js && node --check src/protocol.js && node --check src/status-copy.js && node --check src/pets.js && node --check scripts/build-client.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [],
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ],
       "platform": "web"
     }
   },
-  "scripts": {
-    "generate": "node scripts/generate-art.mjs",
-    "build": "pnpm generate && tsdown"
-  },
   "license": "MIT",
-  "peerDependencies": {
-    "@deepseek-ai/cordis": ">=4.0.1-rc.1 <4.1.0-0 || >=4.1.0-0"
-  },
-  "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "tsdown": "0.22.14"
-  },
-  "files": [
-    "lib/index.js",
-    "lib/client.js",
-    "cordis.patch.yml",
-    "assets",
-    "src",
-    "scripts",
-    "NOTICE",
-    "LICENSE",
-    "CHANGELOG.md",
-    "README.md",
-    "README.en.md"
-  ]
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "author": "dsh-pet-remielle contributors",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "deepseek",
+    "plugin",
+    "pet",
+    "desktop-pet",
+    "remielle"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/<your-name>/dsh-pet-remielle.git"
+  }
 }
