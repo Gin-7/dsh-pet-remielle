@@ -89,6 +89,12 @@ dsh plugin --profile web add "C:\Users\you\Downloads\dsh-pet-remielle-<version>.
 
 插件行 id：`dsh-pet-remielle`。卸载即复原，无残留。
 
+> **从旧版（v2，行 id `dsh-pet-remielle-v2`）升级**：必须**先卸载旧版再安装新版**
+> （`dsh plugin --profile web remove dsh-pet-remielle-v2` 后重新 `add`），
+> 否则安装记录里的行 id 仍是旧名，而 client bundle 按新名注册，DSH 前端会报
+> `loaded without registering "dsh-pet-remielle-v2" via __ModuleLoader__.load`。
+> 重新安装后旧配置需重设一次。
+
 ### 平台能力
 
 | 平台 | 桌面悬浮窗口 | 页面内宠物 | 说明 |
