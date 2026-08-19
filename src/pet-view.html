@@ -305,6 +305,7 @@
       imgEl.dataset.mood = mood
     }
     applyTransform(mood, snapshot)
+    imgEl.style.opacity = String(snapshot.opacity ?? 1)
     var show = snapshot.bubble !== false && Boolean(snapshot.detail)
     if (show) {
       titleEl.textContent = snapshot.message || ''

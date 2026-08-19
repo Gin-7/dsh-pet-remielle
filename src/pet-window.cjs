@@ -76,6 +76,12 @@ app.whenReady().then(() => {
     win.setPosition(Math.round(x + dx), Math.round(y + dy))
   })
 
+  // Return current window position for persistence.
+  ipcMain.handle('get-position', () => {
+    const [x, y] = win.getPosition()
+    return { x: Math.round(x), y: Math.round(y) }
+  })
+
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true })
 

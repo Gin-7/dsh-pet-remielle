@@ -15,4 +15,5 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('petBridge', {
   setClickThrough: (on) => ipcRenderer.send('set-click-through', Boolean(on)),
   moveWindow: (dx, dy) => ipcRenderer.send('move-window', Number(dx) || 0, Number(dy) || 0),
+  getPosition: () => ipcRenderer.invoke('get-position'),
 })

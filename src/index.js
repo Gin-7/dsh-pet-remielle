@@ -59,9 +59,13 @@ export const Config = Schema.object({
   scale: Schema.number().min(0.5).max(2).step(0.05).default(1).role('slider').description('角色大小'),
   opacity: Schema.number().min(0.3).max(1).step(0.05).default(1).role('slider').description('透明度'),
   locked: Schema.boolean().default(false).description('锁定位置（禁止拖动）'),
+  paused: Schema.boolean().default(false).description('暂停动画'),
+  hidden: Schema.boolean().default(false).description('隐藏桌宠'),
   includeSubagents: Schema.boolean().default(false).description('允许子 Agent 抢占宠物状态'),
   showBubble: Schema.boolean().default(true).description('在宠物上方显示状态气泡（阶段/待办/进度）'),
   desktopMode: Schema.boolean().default(false).description('桌面悬浮模式：用独立置顶窗口显示宠物（打开时如无 Electron 会自动下载运行时，下载失败则回落页面内）'),
+  posX: Schema.number().default(null).description('宠物 X 位置（null = 使用默认位置）'),
+  posY: Schema.number().default(null).description('宠物 Y 位置（null = 使用默认位置）'),
   activePetId: Schema.string().default(DEFAULT_PET_ID).description('当前展示的宠物'),
   pets: Schema.array(petEntry).default([{ id: DEFAULT_PET_ID, name: '蕾米埃尔', enabled: true }]).description('宠物注册表'),
 }).description('由 DeepSeek Harness 会话事件驱动的多宠物 Web 桌宠')
@@ -71,9 +75,13 @@ const defaults = Object.freeze({
   scale: 1,
   opacity: 1,
   locked: false,
+  paused: false,
+  hidden: false,
   includeSubagents: false,
   showBubble: true,
   desktopMode: false,
+  posX: null,
+  posY: null,
   activePetId: DEFAULT_PET_ID,
   pets: DEFAULT_PETS,
 })
@@ -84,9 +92,13 @@ function publicConfig(config = {}) {
     scale: config.scale ?? defaults.scale,
     opacity: config.opacity ?? defaults.opacity,
     locked: config.locked ?? defaults.locked,
+    paused: config.paused ?? defaults.paused,
+    hidden: config.hidden ?? defaults.hidden,
     includeSubagents: config.includeSubagents ?? defaults.includeSubagents,
     showBubble: config.showBubble ?? defaults.showBubble,
     desktopMode: config.desktopMode ?? defaults.desktopMode,
+    posX: config.posX ?? defaults.posX,
+    posY: config.posY ?? defaults.posY,
   }
 }
 
@@ -143,7 +155,7 @@ async function readJsonBody(req) {
 }
 
 export function createConfigHandler(settings) {
-  const allowed = new Set(['enabled', 'scale', 'opacity', 'locked', 'includeSubagents', 'showBubble', 'desktopMode'])
+  const allowed = new Set(['enabled', 'scale', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'desktopMode', 'posX', 'posY'])
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method === 'GET') {
@@ -307,6 +319,8 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       bubble: config.showBubble !== false,
       desktopActive: desktopActiveOf(),
       petId: petIdOf() ?? DEFAULT_PET_ID,
+      posX: config.posX ?? null,
+      posY: config.posY ?? null,
       offsets: activePetOf()?.offsets ?? {},
       charH: activePetOf()?.charH ?? {},
       charScale: activePetOf()?.charScale ?? {},
