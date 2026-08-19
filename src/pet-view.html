@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>蕾米埃尔桌宠</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  body {
+    width: 100vw; height: 100vh;
+    display: flex; align-items: flex-end; justify-content: center;
+    user-select: none; -webkit-user-select: none;
+    font-family: system-ui, sans-serif;
+  }
+  .pet { position: relative; display: flex; flex-direction: column; align-items: center; }
+  .bubble {
+    display: none;
+    margin-bottom: 10px; padding: 8px 12px;
+    min-width: 170px; max-width: 340px;
+    border-radius: 10px;
+    background: #fff0f5;
+    border: 1px solid rgba(240, 120, 160, .45);
+    box-shadow: 0 6px 20px rgba(190, 70, 110, .20);
+    font-size: 12px; line-height: 1.45; text-align: center;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bubble::after {
+    content: ""; position: absolute; top: 100%; left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent; border-top-color: rgba(240, 120, 160, .45);
+  }
+  .bubble-title { font-weight: 600; color: #b03a60; }
+  .bubble-detail { color: #c2607f; margin-top: 2px; font-size: 11px; }
+  img { width: 150px; height: auto; display: block; }
+  @media (prefers-color-scheme: dark) {
+    .bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
+    .bubble::after { border-top-color: rgba(255, 150, 185, .42); }
+    .bubble-title { color: #ffd6e4; }
+    .bubble-detail { color: #f0a8c0; }
+    .menu { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
+    .menu-item:hover { background: rgba(255, 150, 185, .16); }
+    .menu-item .tick { color: #ffb3c9; }
+    .menu-item .mute { color: #f0a8c0; }
+    .menu-sep { background: rgba(255, 150, 185, .25); }
+  }
+  /* Right-click menu — pink palette, matching the status bubble and the
+     in-page pet menu (both sides use the same hardcoded pink values). */
+  .menu {
+    display: none; position: fixed; z-index: 999;
+    min-width: 200px;
+    background: #fff0f5;
+    border: 1px solid rgba(240, 120, 160, .45);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(190, 70, 110, .22);
+    padding: 6px;
+    font-family: system-ui, sans-serif;
+    font-size: 13px; color: #8a2f52;
+    user-select: none; -webkit-user-select: none;
+  }
+  .menu-item { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 7px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+  .menu-item:hover { background: rgba(240, 120, 160, .14); }
+  .menu-item .tick { color: #b03a60; font-weight: 600; }
+  .menu-item .mute { color: #c2607f; font-size: 12px; }
+  .menu-sep { height: 1px; background: rgba(240, 120, 160, .25); margin: 5px 6px; }
+  .menu-status { opacity: .85; cursor: default; }
+</style>
+</head>
+<body>
+  <div class="menu" id="menu"></div>
+  <div class="pet">
+    <div class="bubble" id="bubble">
+      <div class="bubble-title" id="title"></div>
+      <div class="bubble-detail" id="detail"></div>
+    </div>
+    <img id="pet" alt="蕾米埃尔" draggable="false">
+  </div>
+<script>
+  var bubbleEl = document.getElementById('bubble')
+  var titleEl = document.getElementById('title')
+  var detailEl = document.getElementById('detail')
+  var imgEl = document.getElementById('pet')
+  var picEl = document.createElement('img')
+  picEl.style.cssText = 'position:fixed;right:24px;top:24px;width:220px;height:auto;border-radius:10px;box-shadow:0 8px 24px rgba(15,30,72,.3);display:none;cursor:pointer;'
+  picEl.title = '点击关闭'
+  picEl.addEventListener('click', function () { picEl.style.display = 'none' })
+  document.body.appendChild(picEl)
+  var lastSnapshot = null
+  var clickThrough = false
+  var dragState = null
+  var menuOpen = false
+  var lockedNow = false
+  var moodOverride = null
+  var menuEl = document.getElementById('menu')
+  // natural width cache per mood: offsets are authored in original-image
+  // pixels, so the display offset must be scaled by (display width / source
+  // width), not by the user zoom alone.
+  var naturalW = {}
+  imgEl.addEventListener('load', function () {
+    var m = (imgEl.src.split('/').pop() || '').replace('.gif', '')
+    if (m) naturalW[m] = imgEl.naturalWidth || 257
+    // Re-apply the offset with the precise source width now cached. Never
+    // re-assign imgEl.src here: that restarts (and freezes) the GIF loop.
+    if (lastSnapshot && m && imgEl.dataset.mood === m) applyTransform(m, lastSnapshot)
+  })
+
+  // --- click-through: transparent window margins must not block the desktop ---
+  // The pet image (and a popped artwork) is interactive; everything else lets
+  // the cursor pass through to whatever is behind the window. The main process
+  // forwards mouse moves while pass-through is on, so hovering back onto the
+  // pet flips it off again.
+  function hitInteractive(e) {
+    var el = document.elementFromPoint(e.clientX, e.clientY)
+    if (!el || !el.closest) return false
+    // pet image, artwork popup, or the right-click menu — anything else passes through
+    return Boolean(el.closest('img') || el.closest('#menu'))
+  }
+  function syncClickThrough(e) {
+    if (dragState) return // keep the window interactive while dragging
+    if (menuOpen) {
+      if (!clickThrough) { clickThrough = true; if (window.petBridge) window.petBridge.setClickThrough(false) }
+      return
+    }
+    var on = !hitInteractive(e)
+    if (on === clickThrough) return
+    clickThrough = on
+    if (window.petBridge) window.petBridge.setClickThrough(on)
+  }
+  window.addEventListener('mousemove', syncClickThrough, { passive: true })
+
+  // --- right-click menu (same shape as the in-page pet) ---
+  function menuRow(label, value, onClick, interactive) {
+    var row = document.createElement('div')
+    row.className = 'menu-item' + (interactive ? '' : ' menu-status')
+    var text = document.createElement('span')
+    text.textContent = label
+    row.appendChild(text)
+    if (value !== null && value !== undefined) {
+      var mark = document.createElement('span')
+      mark.className = 'tick'
+      mark.textContent = value ? '✓' : ''
+      row.appendChild(mark)
+    }
+    if (onClick) row.addEventListener('click', onClick)
+    return row
+  }
+  function menuSep() {
+    var sep = document.createElement('div')
+    sep.className = 'menu-sep'
+    return sep
+  }
+  // Size slider row: live-preview via apply() and persist via /config.
+  function menuSliderRow() {
+    var row = document.createElement('div')
+    row.className = 'menu-item'
+    var label = document.createElement('span')
+    label.textContent = '角色大小'
+    var slider = document.createElement('input')
+    slider.type = 'range'
+    slider.min = 0.5
+    slider.max = 2
+    slider.step = 0.05
+    slider.style.cssText = 'width:110px;margin:0 4px;'
+    var pct = document.createElement('span')
+    pct.className = 'tick'
+    pct.style.cssText = 'min-width:42px;text-align:right;font-size:12px;'
+    var cur = (lastSnapshot && lastSnapshot.scale) || 1
+    slider.value = String(cur)
+    pct.textContent = Math.round(cur * 100) + '%'
+    slider.addEventListener('input', function () {
+      var next = Number(slider.value)
+      pct.textContent = Math.round(next * 100) + '%'
+      fetch('/plugins/dsh-pet-remielle/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scale: next }),
+      }).catch(function () {})
+      if (lastSnapshot) {
+        lastSnapshot.scale = next
+        apply(lastSnapshot) // live preview: width + offset transform
+      }
+    })
+    row.appendChild(label)
+    row.appendChild(slider)
+    row.appendChild(pct)
+    return row
+  }
+  function buildMenu() {
+    menuEl.textContent = ''
+    var snap = lastSnapshot
+    var running = snap && (snap.state === 'THINKING' || snap.state === 'WORKING' || snap.state === 'WAITING' || snap.state === 'ERROR')
+    menuEl.appendChild(menuRow((snap ? snap.message : '连接中') + (running ? ' · 运行中' : ''), null, null))
+    menuEl.appendChild(menuSep())
+    menuEl.appendChild(menuSliderRow())
+    menuEl.appendChild(menuRow('锁定位置', lockedNow, function () {
+      lockedNow = !lockedNow
+      fetch('/plugins/dsh-pet-remielle/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ locked: lockedNow }),
+      }).catch(function () {})
+      buildMenu()
+    }, true))
+    menuEl.appendChild(menuRow('显示气泡', snap ? snap.bubble !== false : true, function () {
+      var next = !(snap ? snap.bubble !== false : true)
+      fetch('/plugins/dsh-pet-remielle/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ showBubble: next }),
+      }).catch(function () {})
+      if (snap) { snap.bubble = next; apply(snap) }
+      buildMenu()
+    }, true))
+    menuEl.appendChild(menuRow('画画', null, function () { playDraw(); closeMenu() }, true))
+    menuEl.appendChild(menuSep())
+    menuEl.appendChild(menuRow('关闭桌宠（回到页面内）', null, function () { window.close() }, true))
+  }
+  // Menu anchors to the character's top-right corner (outside the pet, never
+  // covering it). Falls back: top-left when the right side is too narrow,
+  // then above the pet when neither side fits (small desktop window).
+  function openMenuAt() {
+    buildMenu()
+    menuEl.style.display = 'block'
+    var mw = menuEl.offsetWidth
+    var mh = menuEl.offsetHeight
+    var W = window.innerWidth || 380
+    var H = window.innerHeight || 430
+    var r = imgEl.getBoundingClientRect()
+    var left, top
+    if (r.right + 8 + mw <= W - 4) {
+      left = r.right + 8
+      top = Math.max(4, Math.min(r.top, H - mh - 4))
+    } else if (r.left - 8 - mw >= 4) {
+      left = r.left - mw - 8
+      top = Math.max(4, Math.min(r.top, H - mh - 4))
+    } else {
+      left = Math.max(4, Math.min(r.right - mw, W - mw - 4))
+      top = Math.max(4, r.top - mh - 8)
+    }
+    menuEl.style.left = left + 'px'
+    menuEl.style.top = top + 'px'
+    menuOpen = true
+  }
+  function closeMenu() {
+    menuOpen = false
+    menuEl.style.display = 'none'
+  }
+  document.addEventListener('pointerdown', function (e) {
+    if (menuOpen && !menuEl.contains(e.target)) closeMenu()
+  }, true)
+  window.addEventListener('contextmenu', function (e) {
+    e.preventDefault()
+    openMenuAt()
+  })
+
+  // --- drag: only from the pet image, JS-driven window move ---
+  imgEl.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || lockedNow) return
+    dragState = { x: e.screenX, y: e.screenY, moved: false }
+  })
+  window.addEventListener('mousemove', function (e) {
+    if (!dragState) return
+    if (!(e.buttons & 1)) { dragState = null; return } // mouse released outside
+    var dx = e.screenX - dragState.x
+    var dy = e.screenY - dragState.y
+    if (Math.abs(dx) + Math.abs(dy) > 6) dragState.moved = true
+    if (window.petBridge) {
+      window.petBridge.moveWindow(dx, dy)
+    }
+    dragState = { x: e.screenX, y: e.screenY, moved: dragState.moved }
+  })
+  window.addEventListener('mouseup', function () {
+    if (dragState && !dragState.moved) {
+      // plain click: switch mood, same as the in-page pet
+      var moods = ['01', '02', '03', '04', '05', '06', '07']
+      var current = lastSnapshot ? (lastSnapshot.mood || '06') : '06'
+      var pick = moods.filter(function (m) { return m !== current })
+      moodOverride = { mood: pick[Math.floor(Math.random() * pick.length)], until: Date.now() + 1800 }
+      apply(lastSnapshot)
+    }
+    dragState = null
+  })
+
+  function applyTransform(mood, snapshot) {
+    var off = snapshot.offsets ? snapshot.offsets[mood] : null
+    var scale = snapshot.scale || 1
+    // Normalize per-mood character size via charScale (canvas width /
+    // character height), so switching moods keeps the character the same
+    // visual size even though the artwork canvases differ.
+    var charScaleMap = snapshot.charScale || {}
+    var baseScale = charScaleMap['06'] || 0.9449
+    var moodScale = charScaleMap[mood] || baseScale
+    var dispW = Math.round(150 * scale * (moodScale / baseScale))
+    imgEl.style.width = dispW + 'px'
+    var ratio = dispW / (naturalW[mood] || 257)
+    imgEl.style.transform = off ? ('translate(' + (off.x * ratio) + 'px,' + (off.y * ratio) + 'px)') : ''
+  }
+
+  function apply(snapshot) {
+    if (!snapshot) return
+    lastSnapshot = snapshot
+    lockedNow = snapshot.locked === true
+    var mood = moodOverride && moodOverride.until > Date.now() ? moodOverride.mood : (snapshot.mood || '06')
+    var src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(snapshot.petId || 'remielle') + '/' + mood + '.gif'
+    if (imgEl.dataset.mood !== mood) {
+      imgEl.src = src
+      imgEl.dataset.mood = mood
+    }
+    applyTransform(mood, snapshot)
+    var show = snapshot.bubble !== false && Boolean(snapshot.detail)
+    if (show) {
+      titleEl.textContent = snapshot.message || ''
+      detailEl.textContent = snapshot.detail || ''
+    }
+    bubbleEl.style.display = show ? 'block' : 'none'
+  }
+
+  var source
+  try { source = new EventSource('/plugins/dsh-pet-remielle/stream') } catch (e) { /* fallback to polling */ }
+  if (source) {
+    source.onmessage = function (e) {
+      try { apply(JSON.parse(e.data)) } catch (err) { /* ignore malformed frame */ }
+    }
+  }
+  function poll() {
+    fetch('/plugins/dsh-pet-remielle/state', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null })
+      .then(apply)
+      .catch(function () {})
+  }
+  setInterval(poll, 5000)
+  poll()
+
+  // Double-click (or menu 画画): drawing sticker loop + random artwork popup.
+  function playDraw() {
+    if (!lastSnapshot || !lastSnapshot.pics) return
+    moodOverride = { mood: '01', until: Date.now() + 6000 }
+    apply(lastSnapshot)
+    var pic = document.createElement('img')
+    var n = Math.floor(Math.random() * lastSnapshot.pics) + 1
+    pic.src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(lastSnapshot.petId || 'remielle') + '/pics/' + n + '.png'
+    pic.style.cssText = picEl.style.cssText
+    pic.title = '点击关闭'
+    pic.addEventListener('click', function () { document.body.removeChild(pic) })
+    document.body.appendChild(pic)
+    setTimeout(function () { if (pic.parentNode) document.body.removeChild(pic) }, 12000)
+  }
+  window.addEventListener('dblclick', playDraw)
+
+  // Mouse wheel: resize the pet (persisted through host config).
+  window.addEventListener('wheel', function (e) {
+    e.preventDefault()
+    if (!lastSnapshot) return
+    var delta = e.deltaY < 0 ? 0.05 : -0.05
+    var next = Math.min(2, Math.max(0.5, (lastSnapshot.scale || 1) + delta))
+    next = Math.round(next * 20) / 20
+    fetch('/plugins/dsh-pet-remielle/config', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scale: next }),
+    }).catch(function () {})
+  }, { passive: false })
+
+  // Remember the window position across restarts.
+  try {
+    var saved = JSON.parse(localStorage.getItem('dsh-pet-window-pos') || 'null')
+    if (saved && typeof saved.x === 'number' && typeof saved.y === 'number') {
+      window.moveTo(saved.x, saved.y)
+    }
+  } catch (e) { /* storage unavailable */ }
+  setInterval(function () {
+    try {
+      localStorage.setItem('dsh-pet-window-pos', JSON.stringify({ x: window.screenX, y: window.screenY }))
+    } catch (e) { /* storage unavailable */ }
+  }, 2000)
+</script>
+</body>
+</html>

@@ -1,30 +1,56 @@
 # Changelog
 
-## v0.2.3 (2026-08-17)
+## [0.3.0] — 2026-08-19
 
-- 修复更新卡片关闭按钮不可见的问题。
+交互与显示打磨（用户实测迭代版）：
 
-## v0.2.2 (2026-08-17)
+### Features
+- 右键菜单统一（桌面窗 + 页面内）：粉色气泡同款配色、深浅色自适应；
+  菜单固定在角色右上角（窄窗自动回落左/上方，绝不遮挡角色）。
+- 右键菜单新增「角色大小」滑块（50%–200%，实时预览），与滚轮缩放、
+  设置页滑块三处联动；设置 → 宠物管理 新增同款滑块。
+- 页面内宠物菜单新增「桌面悬浮模式」开关，窗外 ⇄ 窗内双向切换
+  （host `POST /desktop/{start,stop}`）。
 
-- 修复设置面板版本号未随包版本更新的问题（`version.generated.ts`）。
+### Fixes
+- 表情切换人物大小归一化（charScale 像素分析）：位置 X 0.8px / Y 0px /
+  人物高度 0.7px 离散，不再忽大忽小。
+- GIF 动画冻结修复：load 重算不再重置 img.src（相同 mood 跳过赋值）。
+- 桌面窗 userData 与主壳隔离 + spawn URL cache-busting，杜绝旧页面缓存。
+- 窗口模式调整大小不再被强制拉起桌面窗（settings.watch 只在 desktopMode
+  翻转时响应）。
+- 移除残留右键关闭 handler；ELECTRON_RUN_AS_NODE 环境污染消毒。
 
-## v0.2.1 (2026-08-17)
+### Compatibility
+- 63 项测试全绿；已在 fairy（DSH 0.1.0-rc.5）桌面版实测。
 
-- 包名改为 `dsh-pet-remielle`（去除 `@dsh-external` 前缀），与仓库名保持一致。
-- README 顶部添加 awesome-dsh-plugin 徽章。
+# Changelog
 
-## v0.2.0 (2026-08-17)
+## [0.2.0] — 2026-08-19
 
-- 更新检查：支持自动检查新版本，发现新版本时一键增量更新（`git pull` / `pnpm update`）。
-- 设置面板：重构为与 dsh 一致的左右分栏布局，包含外观 / 行为 / 更新 / 反馈四类。
-- 设置持久化：缩放、透明度、锁定、暂停、隐藏等设置跨重启保留。
-- 反馈入口：提交反馈时打开 GitHub Issues 预填模板。
-- 性能优化：以 MutationObserver 驱动状态检测，替代高频轮询，降低空闲时开销。
-- 新增英文版说明文档，中英文互相切换。
-- 放宽 cordis 版本范围，兼容预发布（rc）版本 harness。
+多宠物化 + 气泡实时汇报 + 桌面悬浮窗口（开源首版）：
 
-## v0.1.0 (2026-08-15)
+### Features
+- 多宠物注册表：设置 → 宠物管理（启用/禁用、改名、设为当前、添加宠物）；
+  宠物 = `assets/pets/<id>/` 下的 6 张贴纸（GIF），热插拔无需改代码。
+- 每贴纸对齐偏移与作品图：`pet-manifest.json`（offsets + pics），
+  `assets/pets/<id>/pics/<n>.png` 由双击画画随机弹出。
+- 状态气泡：宠物上方粉色气泡显示 message + detail（项目 · 已完成 x/y 步 · 阶段）。
+- SSE 实时推送：`/stream` 事件流 + 3s 轮询兜底；脉冲（SUCCESS/ERROR）本地回落。
+- 桌面悬浮模式（`desktopMode`，默认开启）：**随包自带 Electron 运行时**
+  （vendor/electron-win32-x64，约 221MB）透明置顶窗口，Fairy 桌面版与纯 DSH
+  用户行为一致，零外部依赖；窗口支持拖动（位置记忆）、滚轮缩放、双击画画、
+  右键关闭；随 host 退出自动关闭。
+- 真实 DSH 事件驱动状态机（`session/event` → PetReducer → 消息流）。
 
-- 首个发布版本：蕾米埃尔桌宠，随 DSH 工作状态切换动画表情。
-- 支持拖拽、右键菜单（缩放 / 透明度 / 锁定 / 重置 / 隐藏 / 暂停）。
-- 记住拖动位置，跨重启保留（PR #1）。
+### Architecture
+- 状态机/协议/配置体系重写自 dsh-dafeiyu；素材管线源自 dsh-pet-remielle (Gin-7)。
+- client bundle 不再内联 GIF（host 端点按需服务），lib/client.js 约 34KiB。
+
+### Tests
+- node --test 63 项：协议、状态机、文案、宿主快照、宠物注册表、SSE hub、
+  桌面窗口后端探测与生命周期。
+
+### Compatibility
+- 已在 DSH 0.1.0-rc.5 源码环境实测：插件加载、宠物管理标签、SSE、
+  Qt helper 桌面悬浮全部正常。
