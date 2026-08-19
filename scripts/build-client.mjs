@@ -13,12 +13,15 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('..', import.meta.url))
 const coreFile = resolve(root, 'src', 'client.core.js')
 const outFile = resolve(root, 'lib', 'client.js')
+const pkgFile = resolve(root, 'package.json')
 const pluginId = 'dsh-pet-remielle'
 
 const core = readFileSync(coreFile, 'utf8')
+const { version } = JSON.parse(readFileSync(pkgFile, 'utf8'))
 const banner = `window.__ModuleLoader__.load({ id: ${JSON.stringify(pluginId)}, factory: (require) => {
 const module = { exports: {} }
 const exports = module.exports
+const RM_PLUGIN_VERSION = ${JSON.stringify(String(version || '0.0.0'))}
 `
 const footer = 'return module.exports\n} })'
 

@@ -44,7 +44,7 @@
 - 真实 DSH 事件驱动状态机（`session/event` → PetReducer → 消息流）。
 
 ### Architecture
-- 状态机/协议/配置体系重写自 dsh-dafeiyu；素材管线源自 dsh-pet-remielle (Gin-7)。
+- 事件驱动状态机（`session/event` → PetReducer → 类型化协议 → 持久化配置）。
 - client bundle 不再内联 GIF（host 端点按需服务），lib/client.js 约 34KiB。
 
 ### Tests

@@ -7,7 +7,7 @@ body:
     id: version
     attributes:
       label: 桌宠版本
-      description: 设置面板 → 反馈 中显示的版本号
+      description: 设置面板 → 宠物管理 → 反馈 中显示的版本号
       placeholder: 如 0.2.0
     validations:
       required: true

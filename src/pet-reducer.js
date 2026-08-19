@@ -1,7 +1,6 @@
 /**
  * Pure, testable state machine that turns DSH session events into pet
- * messages (state / pulse / task). Ported from dsh-dafeiyu's
- * CompanionReducer; the differences are:
+ * messages (state / pulse / task). The shape is:
  *
  *  - every rendered message carries a `mood` (remielle sticker id), derived
  *    from state + phase (THINKING -> '04', tools -> '02', ...);

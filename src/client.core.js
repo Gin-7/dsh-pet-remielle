@@ -11,12 +11,12 @@
  *     add new ones (drop six GIFs into assets/pets/<id>/ and flip it on).
  *  2. Settings card injected into the DSH settings page
  *     (`settings.plugin.item` slot, React) talking to the host config
- *     endpoint — ported from dsh-dafeiyu's client (global appearance).
- *  3. The floating sticker pet itself (plain DOM, ported from
- *     dsh-pet-remielle) — instead of scraping the page DOM for work
- *     state, it polls the host state endpoint, which is driven by real
- *     session events through the PetReducer. Sticker GIFs are served by the
- *     host at /plugins/dsh-pet-remielle/assets/<petId>/<mood>.gif;
+ *     endpoint (global enable toggle).
+ *  3. The floating sticker pet itself (plain DOM) — instead of scraping the
+ *     page DOM for work state, it polls the host state endpoint, which is
+ *     driven by real session events through the PetReducer. Sticker GIFs are
+ *     served by the host at
+ *     /plugins/dsh-pet-remielle/assets/<petId>/<mood>.gif;
  *     scale/opacity/locked/enabled/petId ride along on the snapshot.
  */
 
@@ -54,8 +54,6 @@ var CSS = [
   '.rm2-pet-menu-item .mute{color:#c2607f;font-size:12px;}',
   '.rm2-pet-menu-item .tick{color:#b03a60;font-weight:600;}',
   '.rm2-pet-menu-sep{height:1px;background:rgba(240,120,160,.25);margin:5px 6px;}',
-  '.rm2-pet-pill{position:fixed;right:20px;bottom:20px;display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:999px;background:var(--dsw-alias-bg-overlay,#f8faff);border:1px solid var(--dsw-alias-border-l2,rgba(71,91,145,.3));color:var(--dsw-alias-label-primary,#172347);cursor:pointer;font-size:13px;font-family:system-ui,sans-serif;user-select:none;transition:background .15s,border-color .15s;}',
-  '.rm2-pet-pill:hover{background:var(--dsw-alias-button-floating-hover,#ece6d8);border-color:var(--dsw-alias-border-l3,rgba(197,164,104,.64));}',
   '.rm2-pet-bubble{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;min-width:170px;max-width:340px;padding:8px 12px;border-radius:10px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 6px 20px rgba(190,70,110,.20);font-size:12px;line-height:1.45;text-align:center;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
   '.rm2-pet-bubble-title{font-weight:600;color:#b03a60;}',
   '.rm2-pet-bubble-detail{color:#c2607f;margin-top:2px;font-size:11px;}',
@@ -103,9 +101,8 @@ var CSS = [
   // Settings section spacing
   '.rm2-pet-settings-field{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:10px 0;border-bottom:1px solid var(--border-color, rgba(0,0,0,.06));}',
   '.rm2-pet-settings-field:last-child{border-bottom:none;}',
+  '[data-testid="dsh-pet-remielle-settings"]:hover{border-color:var(--dsw-alias-label-dimmed);}',
   'body[data-ds-dark-theme] .rm2-pet-menu-sep{background:rgba(255,150,185,.25);}',
-  'body[data-ds-dark-theme] .rm2-pet-pill{background:rgba(13,25,59,.98);border-color:rgba(151,169,216,.34);color:#e7ecf7;}',
-  'body[data-ds-dark-theme] .rm2-pet-pill:hover{background:#354d88;border-color:rgba(211,180,119,.66);}',
 ].join('\n')
 
 function mk(tag, style, text) {
@@ -188,7 +185,6 @@ function RemielleCard() {
   var busy = busyState[0]
   var setBusy = busyState[1]
   var patchSeq = React.useRef(0)
-  var sliderTimers = React.useRef(new Map())
   var writable = status === 'ready' && !busy
   React.useEffect(function () {
     var active = true
@@ -199,11 +195,7 @@ function RemielleCard() {
       })
       .then(function (next) { if (active) { setValue(next); setStatus('ready') } })
       .catch(function () { if (active) setStatus('unavailable') })
-    return function () {
-      active = false
-      for (var _timer of sliderTimers.current.values()) clearTimeout(_timer)
-      sliderTimers.current.clear()
-    }
+    return function () { active = false }
   }, [])
   var write = function (field, next) {
     var seq = ++patchSeq.current
@@ -223,56 +215,29 @@ function RemielleCard() {
       .catch(function () { if (seq === patchSeq.current) setStatus('unavailable') })
       .finally(function () { if (seq === patchSeq.current) setBusy(false) })
   }
-  var writeSlider = function (field, next) {
-    setValue(function (prev) { return Object.assign({}, prev, { [field]: next }) })
-    patchSeq.current += 1
-    var pending = sliderTimers.current.get(field)
-    if (pending) clearTimeout(pending)
-    var timer = setTimeout(function () {
-      sliderTimers.current.delete(field)
-      void write(field, next)
-    }, 250)
-    sliderTimers.current.set(field, timer)
-  }
   var cardStyle = {
-    listStyle: 'none', border: '1px solid var(--border-color, #d8d8d8)', borderRadius: 12,
-    padding: 16, background: 'var(--surface-color, transparent)', display: 'grid', gap: 14,
+    listStyle: 'none',
+    border: '1px solid var(--dsw-alias-border-l2)',
+    background: 'var(--dsw-alias-bg-layer-3)',
+    borderRadius: 12,
+    transition: 'border-color .16s, background .16s',
+    padding: '14px 16px',
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+    font: 'inherit', color: 'inherit',
   }
   return React.createElement('li', { style: cardStyle, 'data-testid': 'dsh-pet-remielle-settings' },
-    React.createElement('div', null,
-      React.createElement('strong', { style: { fontSize: 16 } }, '蕾米埃尔桌宠'),
-      React.createElement('p', { style: { margin: '5px 0 0', opacity: 0.72 } }, '由 DSH 真实会话事件驱动的网页桌宠（重写自 dsh-dafeiyu 架构）。'),
+    React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+      React.createElement('div', { style: { color: 'var(--dsw-alias-label-primary)', fontSize: 15, fontWeight: 600, lineHeight: 1.4 } }, '蕾米埃尔桌宠'),
+      React.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 13, lineHeight: 1.5, marginTop: 2 } }, '跟随 DSH 会话实时状态变化而变动的网页桌宠。'),
     ),
     status === 'unavailable'
-      ? React.createElement('span', { role: 'status' }, '桌宠设置尚未连接到 DSH Host。')
+      ? React.createElement('span', { role: 'status', style: { whiteSpace: 'nowrap', fontSize: 12, opacity: 0.6 } }, '未连接到 Host')
       : status === 'loading'
-      ? React.createElement('span', null, '正在读取设置…')
-      : React.createElement(React.Fragment, null,
-          React.createElement(Field, { label: '启用桌宠', hint: '关闭后宠物立即隐藏。' },
-            React.createElement(Switch, { checked: value.enabled !== false, disabled: !writable, onChange: function (val) { void write('enabled', val) } }),
-          ),
-          React.createElement(Field, { label: '角色大小', hint: Math.round((value.scale ?? 1) * 100) + '%' },
-            React.createElement('input', {
-              type: 'range', min: 0.5, max: 2, step: 0.05, value: value.scale ?? 1,
-              disabled: status !== 'ready',
-              onChange: function (event) { void writeSlider('scale', Number(event.target.value)) },
-            }),
-          ),
-          React.createElement(Field, { label: '透明度', hint: Math.round((value.opacity ?? 1) * 100) + '%' },
-            React.createElement('input', {
-              type: 'range', min: 0.3, max: 1, step: 0.05, value: value.opacity ?? 1,
-              disabled: status !== 'ready',
-              onChange: function (event) { void writeSlider('opacity', Number(event.target.value)) },
-            }),
-          ),
-          React.createElement(Field, { label: '锁定位置', hint: '开启后宠物不可拖动。' },
-            React.createElement(Switch, { checked: value.locked === true, disabled: !writable, onChange: function (val) { void write('locked', val) } }),
-          ),
-          React.createElement(Field, { label: '响应子 Agent', hint: '默认只跟随顶层任务，避免状态过度跳动。' },
-            React.createElement(Switch, { checked: value.includeSubagents === true, disabled: !writable, onChange: function (val) { void write('includeSubagents', val) } }),
-          ),
-          busy ? React.createElement('small', { role: 'status' }, '正在保存…') : null,
-        ),
+      ? React.createElement('span', { style: { whiteSpace: 'nowrap', fontSize: 12, opacity: 0.6 } }, '读取中…')
+      : React.createElement(Switch, { checked: value.enabled !== false, disabled: !writable, onChange: function (val) {
+        setValue(function (prev) { return Object.assign({}, prev, { enabled: val }) }) // 乐观更新，即时反馈
+        void write('enabled', val)
+      } }),
   )
 }
 
@@ -609,6 +574,7 @@ function PetsSection() {
   )
   var feedbackTab = React.createElement('div', null,
     React.createElement('p', { style: { margin: '0 0 12px', opacity: 0.7 } }, '遇到问题或有建议？欢迎反馈，帮助改善桌宠。'),
+    React.createElement('p', { style: { margin: '0 0 12px', opacity: 0.6, fontSize: 12 } }, '桌宠版本：' + (typeof RM_PLUGIN_VERSION !== 'undefined' ? RM_PLUGIN_VERSION : 'unknown')),
     React.createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
       React.createElement('button', {
         type: 'button',
@@ -698,10 +664,6 @@ function mountPet(ctx) {
       confirmProgress.style.display = 'none'
     })
   })
-  var pill = mk('div', 'display:none;', '🐋 桌宠')
-  pill.className = 'rm2-pet-pill'
-  pill.setAttribute('role', 'button')
-  pill.tabIndex = 0
   var menu = mk('div', '')
   menu.className = 'rm2-pet-menu'
   var picEl = mk('canvas', 'position:fixed;right:24px;top:24px;z-index:2147483200;width:220px;height:auto;border-radius:10px;display:none;cursor:pointer;')
@@ -718,7 +680,6 @@ function mountPet(ctx) {
   document.body.appendChild(picEl)
   document.head.appendChild(styleEl)
   document.body.appendChild(root)
-  document.body.appendChild(pill)
   document.body.appendChild(menu)
 
   // ---- pet-local state ----
@@ -729,7 +690,6 @@ function mountPet(ctx) {
   var manualOverride = null
   var paused = false
   var hidden = false
-  var userHidden = false
   var lockedNow = false
   var positionRestored = false
   var lastTurnEndShown = false
@@ -746,15 +706,35 @@ function mountPet(ctx) {
     dock.style.cursor = lockedNow ? 'default' : 'grab'
   }
 
-  /** Status bubble above the pet: message + detail (project · progress · stage). */
+  /** Status bubble above the pet: message + detail (project · progress · stage).
+   *  The title changes at most once per BUBBLE_TITLE_MS while the mood stays put
+   *  (so think 04 / streaming 01 doesn't flip on every chunk, but still refreshes
+   *  occasionally), and updates immediately when the mood/phase changes. */
+  var BUBBLE_TITLE_MS = 2000
+  var lastBubbleMood = ''
+  var lastBubbleText = ''
+  var lastBubbleTitleAt = 0
+  var lastBubbleDetail = ''
   function updateBubble(snapshot) {
     if (!snapshot) return
     var show = snapshot.bubble !== false && Boolean(snapshot.detail)
     if (show) {
-      bubbleTitle.textContent = snapshot.message || ''
-      bubbleDetail.textContent = snapshot.detail || ''
+      var text = snapshot.message || ''
+      var detail = snapshot.detail || ''
+      var now = Date.now()
+      var moodChanged = snapshot.mood !== lastBubbleMood
+      if (moodChanged || (text !== lastBubbleText && now - lastBubbleTitleAt >= BUBBLE_TITLE_MS)) {
+        lastBubbleTitleAt = now
+        lastBubbleMood = snapshot.mood
+        lastBubbleText = text
+        bubbleTitle.textContent = text
+      }
+      if (detail !== lastBubbleDetail) {
+        lastBubbleDetail = detail
+        bubbleDetail.textContent = detail
+      }
     }
-    bubble.style.display = (show && !hidden) ? 'block' : 'none'
+    bubble.style.display = show ? 'block' : 'none'
   }
 
   /** After a pulse overlay expires the host falls back to the durable state; schedule one refresh. */
@@ -808,12 +788,11 @@ function mountPet(ctx) {
     if (snapshot.desktopActive === true) {
       if (root.style.display !== 'none') {
         root.style.display = 'none'
-        pill.style.display = 'none'
         closeMenu()
       }
       return
     }
-    if (root.style.display === 'none' && !hidden && !userHidden) {
+    if (root.style.display === 'none' && !hidden) {
       setHidden(false)
     }
     applyVisuals(snapshot)
@@ -840,7 +819,6 @@ function mountPet(ctx) {
       setHidden(true)
       return
     }
-    if (userHidden) return // user hid it via menu; wait for them to wake it
     if (hidden) setHidden(false)
     sync()
     schedulePulseFallback(snapshot)
@@ -889,10 +867,7 @@ function mountPet(ctx) {
     hidden = v
     if (v) {
       root.style.display = 'none'
-      pill.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:2147483100;display:inline-flex;'
-      document.body.appendChild(pill)
     } else {
-      pill.style.display = 'none'
       root.style.display = ''
     }
     closeMenu()
@@ -1231,11 +1206,6 @@ function mountPet(ctx) {
       buildMenuContent()
     }))
     menu.appendChild(makeActionRow('重置位置', function () { resetPos(); closeMenu() }))
-    menu.appendChild(makeActionRow(hidden ? '唤醒桌宠' : '隐藏桌宠', function () {
-      if (!hidden) userHidden = true
-      else userHidden = false
-      setHidden(!hidden)
-    }))
     menu.appendChild(makeToggleRow('暂停动画', paused, function () { setPaused(!paused); buildMenuContent() }))
   }
 
@@ -1280,15 +1250,6 @@ function mountPet(ctx) {
     e.stopPropagation()
     openMenuAt()
   })
-  pill.addEventListener('contextmenu', function (e) {
-    e.preventDefault()
-    e.stopPropagation()
-    openMenuAt()
-  })
-  pill.addEventListener('click', function () { userHidden = false; setHidden(false) })
-  pill.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); userHidden = false; setHidden(false) }
-  })
 
   sync()
 
@@ -1297,7 +1258,6 @@ function mountPet(ctx) {
     document.removeEventListener('pointerdown', outsideDown, true)
     styleEl.remove()
     root.remove()
-    pill.remove()
     menu.remove()
   } })
 }

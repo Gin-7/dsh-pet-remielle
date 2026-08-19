@@ -1,11 +1,10 @@
 /**
  * Typed companion protocol for the Remielle web pet (dsh-pet-remielle).
  *
- * Ported from dsh-dafeiyu's protocol.js. The host keeps the reducer's latest
- * message plus any active PULSE overlay and serves them to the browser client
- * through the HTTP state endpoint. The message vocabulary stays
- * transport-agnostic so a native desktop helper (like dafeiyu's PySide6
- * window) could later be attached to the same reducer output.
+ * The host keeps the reducer's latest message plus any active PULSE overlay
+ * and serves them to the browser client through the HTTP state endpoint. The
+ * message vocabulary stays transport-agnostic so a native desktop helper
+ * could later be attached to the same reducer output.
  */
 
 export const PROTOCOL_VERSION = 1

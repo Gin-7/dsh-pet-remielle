@@ -84,6 +84,11 @@
   picEl.addEventListener('click', function () { picEl.style.display = 'none' })
   document.body.appendChild(picEl)
   var lastSnapshot = null
+  var BUBBLE_TITLE_MS = 2000
+  var lastBubbleMood = ''
+  var lastBubbleText = ''
+  var lastBubbleTitleAt = 0
+  var lastBubbleDetail = ''
   var clickThrough = false
   var dragState = null
   var menuOpen = false
@@ -292,6 +297,13 @@
     lastSnapshot = snapshot
     lockedNow = snapshot.locked === true
     syncCursor()
+    // 禁用桌宠：隐藏宠物与气泡（页面内宠物已在宿主侧随之隐藏）
+    if (snapshot.enabled === false) {
+      imgEl.style.display = 'none'
+      bubbleEl.style.display = 'none'
+      return
+    }
+    imgEl.style.display = 'block'
     var mood = moodOverride && moodOverride.until > Date.now() ? moodOverride.mood : (snapshot.mood || '06')
     var src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(snapshot.petId || 'remielle') + '/' + mood + '.gif'
     if (imgEl.dataset.mood !== mood) {
@@ -302,8 +314,20 @@
     imgEl.style.opacity = String(snapshot.opacity ?? 1)
     var show = snapshot.bubble !== false && Boolean(snapshot.detail)
     if (show) {
-      titleEl.textContent = snapshot.message || ''
-      detailEl.textContent = snapshot.detail || ''
+      // 标题：mood 未变时最多每 BUBBLE_TITLE_MS 换一次（think/输出不逐 chunk 翻），
+      // mood/阶段切换则立即更新；详情（进度/任务）随变化即时更新。
+      var now = Date.now()
+      var moodChanged = snapshot.mood !== lastBubbleMood
+      if (moodChanged || (snapshot.message !== lastBubbleText && now - lastBubbleTitleAt >= BUBBLE_TITLE_MS)) {
+        lastBubbleTitleAt = now
+        lastBubbleMood = snapshot.mood
+        lastBubbleText = snapshot.message || ''
+        titleEl.textContent = snapshot.message || ''
+      }
+      if (snapshot.detail !== lastBubbleDetail) {
+        lastBubbleDetail = snapshot.detail || ''
+        detailEl.textContent = snapshot.detail || ''
+      }
     }
     bubbleEl.style.display = show ? 'block' : 'none'
   }

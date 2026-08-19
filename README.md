@@ -1,7 +1,6 @@
-# dsh-pet-remielle · 蕾米埃尔桌宠（事件驱动重写版）
+# dsh-pet-remielle · 蕾米埃尔桌宠（事件驱动版）
 
-用 **dsh-dafeiyu 的架构**重写 dsh-pet-remielle：桌宠不再是"抓页面 DOM 猜状态"，
-而是由 DSH **真实会话事件**驱动 —— 事件总线 → 纯状态机 → 类型化协议 → 可持久化配置。
+桌宠不是"抓页面 DOM 猜状态"，而是由 DSH **真实会话事件**驱动 —— 事件总线 → 纯状态机 → 类型化协议 → 可持久化配置。
 
 - 多宠物注册表 + 状态气泡（项目/阶段/进度实时汇报）
 - SSE 实时推送 + 桌面悬浮窗口（随包 Electron，纯 DSH 用户同样可用）
@@ -30,21 +29,21 @@
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-## 与两个原版的差异
+## 特性一览
 
-| | dsh-pet-remielle | dsh-dafeiyu | **dsh-pet-remielle** |
-|---|---|---|---|
-| 状态来源 | DOM 抓取 + 400ms 轮询 | session/event 事件 | ✅ session/event 事件 |
-| 状态机 | if 判断 | CompanionReducer | ✅ PetReducer（含 mood 映射） |
-| 消息协议 | 无 | JSONL 协议 | ✅ 类型化协议（protocol.js） |
-| 配置 | 内存变量，刷新即丢 | schemastery + live watch | ✅ 持久化 + 设置页卡片 |
-| 多 Session 优先级 | 无 | ✅ 有 | ✅ 有 |
-| 显示层 | Web 页面 | PySide6 桌面窗口 | ✅ Web 页面（无 Python 依赖） |
-| 实时推送 | 无 | 无端口管道 | ✅ SSE 流（断线自动重连 + 轮询兑底） |
-| 状态气泡 | 无 | ✅ 宠物上方状态卡 | ✅ 气泡显示 message + detail（项目 · 已完成 x/y 步 · 阶段） |
-| 桌面悬浮 | 无 | ✅ PySide6 原生窗口 | ✅ 随包 Electron 透明置顶窗口（桌面模式） |
-| 多宠物 | 无 | 无 | ✅ 设置 → 宠物管理（注册表 + 切换当前宠物） |
-| 测试 | 无 | node --test + unittest | ✅ node --test 63 项 |
+| 能力 | 说明 |
+|---|---|
+| 状态来源 | ✅ DSH `session/event` 真实事件，非 DOM 抓取 |
+| 状态机 | ✅ PetReducer 纯函数（含 mood 映射，可单测） |
+| 消息协议 | ✅ 类型化协议（protocol.js） |
+| 配置 | ✅ schemastery 持久化 + 设置页卡片 |
+| 多 Session 优先级 | ✅（等待确认 > 错误 > 工作 > 思考 > 空闲） |
+| 显示层 | ✅ Web 页面（无 Python 依赖） |
+| 实时推送 | ✅ SSE 流（断线自动重连 + 轮询兑底） |
+| 状态气泡 | ✅ message + detail（项目 · 已完成 x/y 步 · 阶段） |
+| 桌面悬浮 | ✅ 随包 Electron 透明置顶窗口（桌面模式） |
+| 多宠物 | ✅ 设置 → 宠物管理（注册表 + 切换当前宠物） |
+| 测试 | ✅ node --test |
 
 > 桌面悬浮模式（`desktopMode`，默认开启）：使用 Electron 运行时拉起**透明、置顶、
 > 无边框**的独立窗口显示宠物（pet-view 页面：浏览器引擎渲染 GIF 动画 + SSE 实时
@@ -141,7 +140,7 @@ src/
 ├── pet-reducer.js    # 纯状态机：session 事件 → state/pulse/task 消息（可单测）
 ├── protocol.js       # 类型化协议：PetState / PetMood / PetMessageKind
 ├── pets.js           # 宠物注册表：目录发现/合并/校验纯函数（可单测）
-├── status-copy.js    # 蕾米埃尔风格状态文案（与 dafeiyu 同键名，可整体替换）
+├── status-copy.js    # 蕾米埃尔风格状态文案（可整体替换）
 ├── desktop-window.js # 桌面模式：Electron 发现 + 宠物窗口进程管理（可单测）
 ├── pet-window.js     # 桌面模式：Electron main 入口（透明置顶窗口）
 ├── pet-view.html     # 桌面模式：宠物窗口页面（GIF + 气泡 + SSE 订阅）

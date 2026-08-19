@@ -1,7 +1,7 @@
 /**
  * dsh-pet-remielle host half.
  *
- * Architecture ported from dsh-dafeiyu:
+ * Design:
  *  - listens to the real `session/event` / `session/disposed` bus (global
  *    scope, so it sees every session, not only scoped ones);
  *  - feeds events into the pure PetReducer, which emits typed messages;
@@ -12,8 +12,7 @@
  *    Settings section UI: enable/disable pets, rename, pick the active pet.
  *
  * No child process is spawned: the pet renders in the DSH web page, which
- * polls the state endpoint (dafeiyu's HelperProcess would plug in here if
- * the pet ever moved to a native desktop window).
+ * polls the state endpoint, or in an optional desktop floating window.
  */
 
 import { readdir, readFile } from 'node:fs/promises'

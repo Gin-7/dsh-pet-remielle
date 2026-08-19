@@ -1,7 +1,5 @@
 /**
- * Remielle-flavored status copy. Same group keys as dsh-dafeiyu's
- * status-copy.js so the reducer ports unchanged, but the phrasing is the
- * 蕾米埃尔 persona (a brisk, slightly smug hunter-goddess tone).
+ * Remielle-flavored status copy — a brisk, slightly smug hunter-goddess tone.
  */
 
 const COPY = Object.freeze({
