@@ -15,7 +15,7 @@ export const PET_MOODS = ['01', '02', '03', '04', '05', '06']
 export const PET_MOOD_EXT = '.gif'
 /** Optional extra sticker slots beyond the six required moods (e.g. '07'). */
 export const PET_MOOD_EXTRA = ['07']
-/** Manifest filename inside a pet directory (per-sticker offsets, pics count). */
+/** Manifest filename inside a pet directory (pics count). */
 export const PET_MANIFEST = 'pet-manifest.json'
 /** Safe directory-name characters for a pet id (path component on disk). */
 export const PET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
@@ -84,14 +84,13 @@ export function upsertPet(pets, patch) {
 }
 
 /**
- * Parse a pet manifest: optional per-sticker alignment offsets (px) and the
- * pic artwork count. Unknown fields are ignored; a malformed manifest is
- * treated as empty rather than failing the pet.
+ * Parse a pet manifest: pic artwork count. Unknown fields are ignored;
+ * a malformed manifest is treated as empty rather than failing the pet.
  * @param text - raw manifest file contents.
- * @returns `{ offsets: { mood: {x,y} }, charH: { mood: number }, pics: number }`.
+ * @returns `{ pics: number }`.
  */
 export function parsePetManifest(text) {
-  const result = { offsets: {}, charH: {}, charScale: {}, pics: 0 }
+  const result = { pics: 0 }
   if (typeof text !== 'string') return result
   let raw
   try {
@@ -100,32 +99,8 @@ export function parsePetManifest(text) {
     return result
   }
   if (raw && typeof raw === 'object') {
-    if (raw.offsets && typeof raw.offsets === 'object') {
-      for (const [mood, value] of Object.entries(raw.offsets)) {
-        if (!/^\d{2}$/.test(mood)) continue
-        const x = Number(value?.x)
-        const y = Number(value?.y)
-        if (Number.isFinite(x) && Number.isFinite(y)) result.offsets[mood] = { x, y }
-      }
-    }
     const pics = Number(raw.pics)
     if (Number.isInteger(pics) && pics >= 0 && pics <= 999) result.pics = pics
-    // Character body height (source pixels) per mood, used by clients to keep
-    // the character the same visual size when the artwork canvases differ.
-    if (raw.charH && typeof raw.charH === 'object') {
-      for (const [mood, value] of Object.entries(raw.charH)) {
-        if (!/^\d{2}$/.test(mood)) continue
-        const h = Number(value)
-        if (Number.isFinite(h) && h > 0) result.charH[mood] = h
-      }
-    }
-    if (raw.charScale && typeof raw.charScale === 'object') {
-      for (const [mood, value] of Object.entries(raw.charScale)) {
-        if (!/^\d{2}$/.test(mood)) continue
-        const v = Number(value)
-        if (Number.isFinite(v) && v > 0) result.charScale[mood] = v
-      }
-    }
   }
   return result
 }
@@ -148,7 +123,7 @@ export function buildRegistry(discovered, configured, activePetId) {
     if (!isValidPetId(dir.id)) continue
     seen.add(dir.id)
     const gifs = Array.isArray(dir.gifs) ? dir.gifs : []
-    const manifest = dir.manifest ?? { offsets: {}, pics: 0 }
+    const manifest = dir.manifest ?? { pics: 0 }
     const configuredEntry = configs.get(dir.id)
     const complete = PET_MOODS.every((mood) => gifs.includes(`${mood}${PET_MOOD_EXT}`))
     const previewMood = PET_MOODS.find((mood) => gifs.includes(`${mood}${PET_MOOD_EXT}`)) ?? PET_MOODS[0]
@@ -160,9 +135,6 @@ export function buildRegistry(discovered, configured, activePetId) {
       complete,
       gifCount: gifs.length,
       previewMood,
-      offsets: manifest.offsets ?? {},
-      charH: manifest.charH ?? {},
-      charScale: manifest.charScale ?? {},
       pics: manifest.pics ?? 0,
     })
   }
@@ -179,7 +151,6 @@ export function buildRegistry(discovered, configured, activePetId) {
         complete: false,
         gifCount: 0,
         previewMood: PET_MOODS[0],
-        offsets: {},
         pics: 0,
       })
     }

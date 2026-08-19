@@ -30,7 +30,7 @@
   }
   .bubble-title { font-weight: 600; color: #b03a60; }
   .bubble-detail { color: #c2607f; margin-top: 2px; font-size: 11px; }
-  img { width: 150px; height: auto; display: block; }
+  img { width: 180px; height: auto; display: block; }
   @media (prefers-color-scheme: dark) {
     .bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
     .bubble::after { border-top-color: rgba(255, 150, 185, .42); }
@@ -90,17 +90,6 @@
   var lockedNow = false
   var moodOverride = null
   var menuEl = document.getElementById('menu')
-  // natural width cache per mood: offsets are authored in original-image
-  // pixels, so the display offset must be scaled by (display width / source
-  // width), not by the user zoom alone.
-  var naturalW = {}
-  imgEl.addEventListener('load', function () {
-    var m = (imgEl.src.split('/').pop() || '').replace('.gif', '')
-    if (m) naturalW[m] = imgEl.naturalWidth || 257
-    // Re-apply the offset with the precise source width now cached. Never
-    // re-assign imgEl.src here: that restarts (and freezes) the GIF loop.
-    if (lastSnapshot && m && imgEl.dataset.mood === m) applyTransform(m, lastSnapshot)
-  })
 
   // --- click-through: transparent window margins must not block the desktop ---
   // The pet image (and a popped artwork) is interactive; everything else lets
@@ -280,18 +269,9 @@
   })
 
   function applyTransform(mood, snapshot) {
-    var off = snapshot.offsets ? snapshot.offsets[mood] : null
     var scale = snapshot.scale || 1
-    // Normalize per-mood character size via charScale (canvas width /
-    // character height), so switching moods keeps the character the same
-    // visual size even though the artwork canvases differ.
-    var charScaleMap = snapshot.charScale || {}
-    var baseScale = charScaleMap['06'] || 0.9449
-    var moodScale = charScaleMap[mood] || baseScale
-    var dispW = Math.round(150 * scale * (moodScale / baseScale))
-    imgEl.style.width = dispW + 'px'
-    var ratio = dispW / (naturalW[mood] || 257)
-    imgEl.style.transform = off ? ('translate(' + (off.x * ratio) + 'px,' + (off.y * ratio) + 'px)') : ''
+    imgEl.style.width = Math.round(180 * scale) + 'px'
+    imgEl.style.transform = ''
   }
 
   function apply(snapshot) {

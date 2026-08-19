@@ -637,7 +637,7 @@ function mountPet(ctx) {
   root.setAttribute('data-rm2-pet-root', '')
   var dock = mk('div', 'position:relative;display:inline-block;cursor:grab;touch-action:none;')
   dock.title = '拖动我 · 点击互动 · 右键菜单'
-  var img = mk('img', 'width:150px;height:auto;pointer-events:none;display:none;')
+  var img = mk('img', 'width:180px;height:auto;pointer-events:none;display:none;')
   img.alt = '桌宠'
   img.draggable = false
   var bubble = mk('div', 'display:none;')
@@ -735,21 +735,11 @@ function mountPet(ctx) {
   var intervalId = 0
   var pulseFallbackTimer = 0
   var stream = null
-  // natural width cache per mood: offsets are authored in source-image pixels
-  var petNaturalW = {}
-  img.addEventListener('load', function () {
-    var m = (img.src.split('/').pop() || '').replace('.gif', '')
-    if (m) petNaturalW[m] = img.naturalWidth || 257
-    // Re-apply the offset with the precise source width now cached (first
-    // paint may have fallen back to 257). Never re-assign img.src here: that
-    // restarts (and effectively freezes) the GIF animation.
-    if (m && displayedMood === m) applyOffset(m)
-  })
 
   function applyVisuals(snapshot) {
     var scale = snapshot.scale ?? 1
     var opacity = snapshot.opacity ?? 1
-    img.style.width = Math.round(150 * scale) + 'px'
+    img.style.width = Math.round(180 * scale) + 'px'
     img.style.opacity = String(opacity)
     lockedNow = snapshot.locked === true
     dock.style.cursor = lockedNow ? 'default' : 'grab'
@@ -906,8 +896,8 @@ function mountPet(ctx) {
     if (paused) {
       try {
         var canvas = document.createElement('canvas')
-        canvas.width = img.naturalWidth || 150
-        canvas.height = img.naturalHeight || 150
+        canvas.width = img.naturalWidth || 180
+        canvas.height = img.naturalHeight || 180
         var g = canvas.getContext('2d')
         if (g && img.src) {
           g.drawImage(img, 0, 0, canvas.width, canvas.height)
@@ -925,22 +915,12 @@ function mountPet(ctx) {
     }
   }
 
-  // Per-sticker alignment offset (source-image pixels -> display px). Float
-  // values keep quantization below a pixel; the offset is pure transform, so
-  // it never touches img.src and cannot disturb the GIF animation. The
-  // display width normalizes per-mood character size via charScale (canvas
-  // width / character height), so switching moods keeps the character the
-  // same visual size even though the artwork canvases differ.
+  // Per-mood alignment offset (legacy, kept for API compat). Since all GIFs
+  // are now the same size, this just sets a consistent width.
   function applyOffset(mood) {
-    var off = lastSnapshot && lastSnapshot.offsets ? lastSnapshot.offsets[mood] : null
     var scale = (lastSnapshot && lastSnapshot.scale) || 1
-    var charScaleMap = (lastSnapshot && lastSnapshot.charScale) || {}
-    var baseScale = charScaleMap['06'] || 0.9449
-    var moodScale = charScaleMap[mood] || baseScale
-    var dispW = Math.round(150 * scale * (moodScale / baseScale))
-    img.style.width = dispW + 'px'
-    var ratio = dispW / (petNaturalW[mood] || 257)
-    img.style.transform = off ? ('translate(' + (off.x * ratio) + 'px,' + (off.y * ratio) + 'px)') : ''
+    img.style.width = Math.round(180 * scale) + 'px'
+    img.style.transform = ''
   }
 
   // Sticker URLs resolve per active pet; a missing artwork falls back to the
@@ -1024,8 +1004,8 @@ function mountPet(ctx) {
       if (Math.abs(ev.clientX - ox) + Math.abs(ev.clientY - oy) > 6) dragMoved = true
       root.style.right = 'auto'
       root.style.bottom = 'auto'
-      var w = root.offsetWidth || 150
-      var h = root.offsetHeight || 150
+      var w = root.offsetWidth || 180
+      var h = root.offsetHeight || 180
       var x = Math.max(0, Math.min(window.innerWidth - w, ev.clientX - startX))
       var y = Math.max(0, Math.min(window.innerHeight - h, ev.clientY - startY))
       root.style.left = x + 'px'

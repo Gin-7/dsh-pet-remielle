@@ -194,7 +194,7 @@ export async function scanPetDirs(root) {
     if (!entry.isDirectory() || !isValidPetId(entry.name)) continue
     const dir = join(root, entry.name)
     let gifs = []
-    let manifest = { offsets: {}, charH: {}, charScale: {}, pics: 0 }
+    let manifest = { pics: 0 }
     try {
       const files = await readdir(dir)
       gifs = files.filter((f) => f.endsWith(PET_MOOD_EXT))
@@ -321,9 +321,6 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       petId: petIdOf() ?? DEFAULT_PET_ID,
       posX: config.posX ?? null,
       posY: config.posY ?? null,
-      offsets: activePetOf()?.offsets ?? {},
-      charH: activePetOf()?.charH ?? {},
-      charScale: activePetOf()?.charScale ?? {},
       pics: activePetOf()?.pics ?? 0,
       state: source?.state ?? PetState.IDLE,
       mood: activePulse?.mood ?? source?.mood ?? '06',

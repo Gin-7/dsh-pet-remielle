@@ -17,7 +17,7 @@ const ASSET_PREFIX = '/plugins/dsh-pet-remielle/assets'
 const fullGifs = PET_MOODS.map((mood) => `${mood}.gif`)
 
 function discovered(entries) {
-  return entries.map(([id, gifs]) => ({ id, gifs, manifest: { offsets: {}, pics: 0 } }))
+  return entries.map(([id, gifs]) => ({ id, gifs, manifest: { pics: 0 } }))
 }
 
 test('isValidPetId accepts safe directory names', () => {
@@ -188,32 +188,21 @@ test('parseAssetPath rejects traversal, foreign files, and stray prefixes', () =
   assert.equal(parseAssetPath(null, ASSET_PREFIX), null)
 })
 
-test('parsePetManifest extracts offsets and pics count, tolerates garbage', () => {
+test('parsePetManifest extracts pics count, tolerates garbage', () => {
   const parsed = parsePetManifest(JSON.stringify({
-    offsets: { '01': { x: -39, y: 4 }, '06': { x: 0, y: 0 } },
-    charH: { '01': 274, '06': 272 },
-    charScale: { '01': 1.0803, '06': 0.9449 },
     pics: 15,
     extra: 'ignored',
   }))
-  assert.deepEqual(parsed.offsets['01'], { x: -39, y: 4 })
-  assert.deepEqual(parsed.offsets['06'], { x: 0, y: 0 })
-  assert.equal(parsed.charH['01'], 274)
-  assert.equal(parsed.charH['06'], 272)
-  assert.equal(parsed.charScale['01'], 1.0803)
-  assert.equal(parsed.charScale['06'], 0.9449)
   assert.equal(parsed.pics, 15)
   assert.equal(parsePetManifest('not json').pics, 0)
   assert.equal(parsePetManifest(undefined).pics, 0)
-  assert.deepEqual(parsePetManifest('{"offsets":{"01":{"x":"a","y":1}}}').offsets, {})
 })
 
-test('buildRegistry carries per-pet offsets and pics from the manifest', () => {
+test('buildRegistry carries pics from the manifest', () => {
   const registry = buildRegistry([
-    { id: 'xiaoleimi', gifs: [...fullGifs, '07.gif'], manifest: { offsets: { '01': { x: -39, y: 4 } }, pics: 15 } },
+    { id: 'xiaoleimi', gifs: [...fullGifs, '07.gif'], manifest: { pics: 15 } },
   ], [{ id: 'xiaoleimi', name: '小蕾米', enabled: true }], 'xiaoleimi')
   assert.equal(registry.activePetId, 'xiaoleimi')
   const pet = registry.pets[0]
-  assert.deepEqual(pet.offsets['01'], { x: -39, y: 4 })
   assert.equal(pet.pics, 15)
 })
