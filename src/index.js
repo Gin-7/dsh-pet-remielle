@@ -23,6 +23,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { PetReducer } from './pet-reducer.js'
 import { PetMessageKind, PetState, createMessage } from './protocol.js'
 import { DesktopWindow } from './desktop-window.js'
+import { ensureElectronRuntime } from './electron-fetch.mjs'
 import {
   DEFAULT_PET_ID,
   DEFAULT_PETS,
@@ -60,7 +61,7 @@ export const Config = Schema.object({
   locked: Schema.boolean().default(false).description('锁定位置（禁止拖动）'),
   includeSubagents: Schema.boolean().default(false).description('允许子 Agent 抢占宠物状态'),
   showBubble: Schema.boolean().default(true).description('在宠物上方显示状态气泡（阶段/待办/进度）'),
-  desktopMode: Schema.boolean().default(true).description('桌面悬浮模式：用独立置顶窗口显示宠物（找不到 Electron 时自动回落页面内）'),
+  desktopMode: Schema.boolean().default(false).description('桌面悬浮模式：用独立置顶窗口显示宠物（打开时如无 Electron 会自动下载运行时，下载失败则回落页面内）'),
   activePetId: Schema.string().default(DEFAULT_PET_ID).description('当前展示的宠物'),
   pets: Schema.array(petEntry).default([{ id: DEFAULT_PET_ID, name: '蕾米埃尔', enabled: true }]).description('宠物注册表'),
 }).description('由 DeepSeek Harness 会话事件驱动的多宠物 Web 桌宠')
@@ -72,7 +73,7 @@ const defaults = Object.freeze({
   locked: false,
   includeSubagents: false,
   showBubble: true,
-  desktopMode: true,
+  desktopMode: false,
   activePetId: DEFAULT_PET_ID,
   pets: DEFAULT_PETS,
 })
@@ -367,6 +368,10 @@ export function createStreamHub({ serve }) {
       const payload = serve()
       for (const res of [...clients]) send(res, payload)
     },
+    /** Push an arbitrary message (e.g. download progress) to every client. */
+    notify(payload) {
+      for (const res of [...clients]) send(res, payload)
+    },
     get size() {
       return clients.size
     },
@@ -522,32 +527,40 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           hub.broadcast()
         }
       }
-      const startDesktop = () => {
-        if (desktop || settings.get().desktopMode === false) return
-        const window = new DesktopWindow({
-          url: `http://127.0.0.1:${port}${PET_VIEW_ENDPOINT}`,
-          logger,
-          onExit: () => {
-            // The window died (closed by the user or crashed): fall back to
-            // the in-page pet unless desktop mode was turned off on purpose.
-            // Clear the reference so a later /desktop/start can respawn it.
-            desktop = undefined
-            if (desktopActive) {
-              desktopActive = false
-              hub.broadcast()
-            }
-          },
-        })
-        if (!window.backend) {
+      const desktopUrl = `http://127.0.0.1:${port}${PET_VIEW_ENDPOINT}`
+      const onDesktopExit = () => {
+        desktop = undefined
+        if (desktopActive) { desktopActive = false; hub.broadcast() }
+      }
+      let confirmSent = false // prevent duplicate confirm dialogs
+      const startDesktop = (allowFetch = false) => {
+        if (desktop) return
+        // Boot-time call: respect the setting (desktopMode may be false).
+        // User-action calls (watch / /desktop/start): the caller already
+        // verified desktopMode flipped to true, so skip this guard —
+        // settings.get() may still reflect the OLD value at this point.
+        if (!allowFetch && settings.get().desktopMode === false) return
+        /** Create a DesktopWindow, attach it, and broadcast state. */
+        const spawnWindow = () => {
+          const w = new DesktopWindow({ url: desktopUrl, logger, onExit: onDesktopExit })
+          if (!w.backend) return false
+          desktop = w
+          w.start()
+          if (!desktopActive) { desktopActive = true; hub.broadcast() }
+          return true
+        }
+        if (spawnWindow()) return
+        // No Electron runtime yet.  Only fetch on demand when the user
+        // *actively* turns desktop mode on (settings toggle or in-page
+        // "open desktop window"); boot-time call stays on the in-page pet.
+        if (!allowFetch) {
           logger.info?.('dsh-pet-remielle: desktop pet window unavailable (no backend), browser pet stays')
           return
         }
-        desktop = window
-        window.start()
-        if (!desktopActive) {
-          desktopActive = true
-          hub.broadcast()
-        }
+        if (confirmSent) return // already waiting for user confirmation
+        confirmSent = true
+        logger.info?.('dsh-pet-remielle: no Electron backend — requesting user confirmation to fetch')
+        hub.notify({ protocolVersion: 1, kind: 'download', phase: 'confirm' })
       }
       // Only react when desktopMode itself flips: the watch fires on every
       // config change (scale/opacity/locked/bubble from wheel zoom, sliders
@@ -559,9 +572,46 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         if (mode === desktopModeNow) return
         desktopModeNow = mode
         if (mode === false) stopDesktop('settings-change')
-        else startDesktop()
+        else startDesktop(true)
       })
       startDesktop()
+
+      /** Actually perform the Electron download with SSE progress pushes. */
+      let downloading = false
+      const runDownload = () => {
+        if (downloading) return
+        downloading = true
+        hub.notify({ protocolVersion: 1, kind: 'download', phase: 'start', percent: 0 })
+        ensureElectronRuntime({
+          onProgress: (m) => {
+            logger.info?.(`dsh-pet-remielle: ${m}`)
+            const pct = /(\d+)%/.exec(m)
+            hub.notify({ protocolVersion: 1, kind: 'download', phase: 'progress', percent: pct ? Number(pct[1]) : -1, text: m })
+          },
+        })
+          .then((exe) => {
+            hub.notify({ protocolVersion: 1, kind: 'download', phase: 'done', percent: 100 })
+            logger.info?.(`dsh-pet-remielle: Electron ready at ${exe}, starting desktop window`)
+            downloading = false
+            confirmSent = false
+            if (desktop) return // already running
+            // Open the window directly using the known path instead of
+            // relying on resolveBackend() which re-scans and may not
+            // find the freshly installed runtime in time.
+            const petWindowCjs = new URL('../src/pet-window.cjs', import.meta.url)
+            const backend = { kind: 'electron', command: exe, args: [petWindowCjs.href.startsWith('file://') ? fileURLToPath(petWindowCjs) : String(petWindowCjs)] }
+            const w = new DesktopWindow({ url: desktopUrl, logger, onExit: onDesktopExit, backend })
+            desktop = w
+            w.start()
+            if (!desktopActive) { desktopActive = true; hub.broadcast() }
+          })
+          .catch((error) => {
+            hub.notify({ protocolVersion: 1, kind: 'download', phase: 'error', text: error.message })
+            downloading = false
+            confirmSent = false
+            logger.info?.(`dsh-pet-remielle: desktop window unavailable — ${error.message} (browser pet stays)`)
+          })
+      }
 
       // ---- endpoints ----
       let petViewHtml = null
@@ -618,16 +668,17 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             } catch {
               /* keep unknown */
             }
-            if (action === 'start') startDesktop()
+            if (action === 'start') startDesktop(true)
             else if (action === 'stop') stopDesktop('in-page menu')
+            else if (action === 'confirm-download') runDownload()
             else {
-              jsonResponse(res, 400, { ok: false, error: 'expected /desktop/start or /desktop/stop' })
+              jsonResponse(res, 400, { ok: false, error: 'expected /desktop/start, /desktop/stop, or /desktop/confirm-download' })
               return
             }
             jsonResponse(res, 200, { ok: true, desktopActive })
           },
         }),
-        'dsh-pet-remielle: desktop window start/stop',
+        'dsh-pet-remielle: desktop window start/stop/confirm-download',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({

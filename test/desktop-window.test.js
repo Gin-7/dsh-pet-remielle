@@ -1,12 +1,15 @@
 /**
  * DesktopWindow tests: Electron backend candidate discovery (env override,
- * bundled runtime, harness install), start/stop lifecycle with a stubbed
- * spawn, and the no-backend fallback.
+ * bundled runtime, npm global, dsh root, cwd fallback), start/stop lifecycle
+ * with a stubbed spawn, and the no-backend fallback.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { backendCandidates, DesktopWindow } from '../src/desktop-window.js'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { backendCandidates, DesktopWindow, findRoot, findDshRoot } from '../src/desktop-window.js'
 
 test('backend candidates prefer the bundled Electron on win32', () => {
   const saved = process.env.DSH_PET_ELECTRON
@@ -40,8 +43,6 @@ test('backend candidates on non-win32 fall back to harness electron', () => {
   try {
     delete process.env.DSH_PET_ELECTRON
     const list = backendCandidates({ platform: 'darwin', cwd: 'C:/fairy' })
-    // The bundled runtime is win32-only and must never leak into other
-    // platforms; the harness electron probe may or may not exist on disk.
     assert.equal(list.some((entry) => entry.command.includes('electron-win32-x64')), false)
   } finally {
     if (saved !== undefined) process.env.DSH_PET_ELECTRON = saved
@@ -85,7 +86,7 @@ test('DesktopWindow without a backend stays inert', () => {
   })
   assert.equal(window.running, false)
   assert.equal(window.start(), undefined)
-  window.stop() // no-op, must not throw
+  window.stop()
 })
 
 test('DesktopWindow start is idempotent while running and fires onExit', () => {
@@ -110,7 +111,60 @@ test('DesktopWindow start is idempotent while running and fires onExit', () => {
   window.start()
   assert.equal(calls, 1)
   window.stop()
-  assert.equal(exited, 0) // exit event not fired yet by the stub
+  assert.equal(exited, 0)
   childRef.emit('exit')
   assert.equal(exited, 1)
+})
+
+// ---------- findRoot ----------
+
+test('findRoot walks up and finds the marker', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fr-'))
+  try {
+    const root = join(dir, 'a', 'b', 'c')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(dir, 'a', 'b', 'marker.txt'), '')
+    assert.equal(findRoot(root, 'marker.txt'), join(dir, 'a', 'b'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('findRoot returns null when marker not found', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fr-'))
+  try {
+    mkdirSync(join(dir, 'x'), { recursive: true })
+    assert.equal(findRoot(join(dir, 'x'), 'nope.txt', 3), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------- findDshRoot ----------
+
+test('findDshRoot finds a dsh-like root from argv[1]', () => {
+  const saved = process.argv[1]
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'dr-'))
+    writeFileSync(join(dir, 'package.json'), '{}')
+    mkdirSync(join(dir, 'lib'), { recursive: true })
+    writeFileSync(join(dir, 'lib', 'bin.js'), '')
+    process.argv[1] = join(dir, 'lib', 'bin.js')
+    const root = findDshRoot('C:/fallback')
+    assert.equal(root, dir)
+    rmSync(dir, { recursive: true, force: true })
+  } finally {
+    process.argv[1] = saved
+  }
+})
+
+test('findDshRoot returns fallbackCwd when no dsh root', () => {
+  const saved = process.argv[1]
+  try {
+    process.argv[1] = '/unrelated/script.js'
+    const result = findDshRoot('C:/fallback')
+    assert.equal(result, 'C:/fallback')
+  } finally {
+    process.argv[1] = saved
+  }
 })
