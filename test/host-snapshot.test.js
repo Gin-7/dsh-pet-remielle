@@ -25,7 +25,7 @@ const idle = createMessage(PetMessageKind.STATE, {
 test('snapshot carries config fields for the client', () => {
   const snapshot = snapshotWith({
     latest: idle,
-    config: { enabled: true, scale: 1.25, opacity: 0.8, locked: true },
+    config: { enabled: true, scale: 1.25, opacity: 0.8, locked: true, desktopMode: true },
   })
   assert.equal(snapshot.enabled, true)
   assert.equal(snapshot.scale, 1.25)
@@ -33,6 +33,7 @@ test('snapshot carries config fields for the client', () => {
   assert.equal(snapshot.locked, true)
   assert.equal(snapshot.bubble, true)
   assert.equal(snapshot.desktopActive, false)
+  assert.equal(snapshot.desktopMode, true)
 })
 
 test('snapshot reports the desktop window state', () => {

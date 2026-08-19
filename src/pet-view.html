@@ -200,7 +200,15 @@
     }, true))
     menuEl.appendChild(menuRow('画画', null, function () { playDraw(); closeMenu() }, true))
     menuEl.appendChild(menuSep())
-    menuEl.appendChild(menuRow('关闭桌宠（回到页面内）', null, function () { window.close() }, true))
+    menuEl.appendChild(menuRow('切换到网页模式', null, function () {
+      // 与设置同步：先确保 desktopMode=false 写入成功，宿主 watch 会关停
+      // 桌面窗并恢复页面内宠物；窗口本身随后关闭。
+      fetch('/plugins/dsh-pet-remielle/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ desktopMode: false }),
+      }).catch(function () {}).then(function () { window.close() })
+    }, true))
   }
   // Menu anchors to the character's top-right corner (outside the pet, never
   // covering it). Falls back: top-left when the right side is too narrow,
@@ -241,13 +249,17 @@
   })
 
   // --- drag: only from the pet image, JS-driven window move ---
+  function syncCursor() {
+    imgEl.style.cursor = lockedNow ? 'default' : 'grab'
+  }
   imgEl.addEventListener('mousedown', function (e) {
     if (e.button !== 0 || lockedNow) return
     dragState = { x: e.screenX, y: e.screenY, moved: false }
+    imgEl.style.cursor = 'grabbing'
   })
   window.addEventListener('mousemove', function (e) {
     if (!dragState) return
-    if (!(e.buttons & 1)) { dragState = null; return } // mouse released outside
+    if (!(e.buttons & 1)) { dragState = null; syncCursor(); return } // mouse released outside
     var dx = e.screenX - dragState.x
     var dy = e.screenY - dragState.y
     if (Math.abs(dx) + Math.abs(dy) > 6) dragState.moved = true
@@ -266,6 +278,7 @@
       apply(lastSnapshot)
     }
     dragState = null
+    syncCursor()
   })
 
   function applyTransform(mood, snapshot) {
@@ -278,6 +291,7 @@
     if (!snapshot) return
     lastSnapshot = snapshot
     lockedNow = snapshot.locked === true
+    syncCursor()
     var mood = moodOverride && moodOverride.until > Date.now() ? moodOverride.mood : (snapshot.mood || '06')
     var src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(snapshot.petId || 'remielle') + '/' + mood + '.gif'
     if (imgEl.dataset.mood !== mood) {
