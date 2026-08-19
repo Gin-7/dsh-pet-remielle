@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.1] — 2026-08-19
+
+基于 0.3.0（PR 作者版本）之上的增量迭代，涵盖最近几轮的完整功能与修复：
+
+### Features
+- 贴纸 / 状态映射完善：思考 04、输出 01、调工具 02；assistant/chunk 按 reasoning-delta / text-delta / tool-call-delta 区分贴纸。
+- 「等待中 05」接入：ask_user_question（提问回答）、approval/asked（审批等待）、turn/end blocked（回合挂起）。
+- 双击画画：粗笔刷沿对角来回揭示作品图（路径带随机、清晰无阴影），完成后「绘制中 → 得意中 → 淡出」；桌面版作品显示在屏幕右上角独立小窗。
+- 桌面 / 网页模式切换与设置项同步，desktopMode 持久化（重启后保持上次选择）。
+- 内置「版本检查 + 一键更新」：/check 、/update 、/info（GitHub 直连 + HTTP 代理回退）；≥ 0.3.0 的 link 一键 git pull、registry 一键 pnpm update，< 0.3.0 提示彻底卸载重装。
+- 设置 → 宠物管理 → 更新：当前版本 / 检查更新 / 一键更新 / 升级说明；右下角更新气泡 + 更新卡片。
+- 宠物管理 → 外观 → 添加新宠物：加「开发中」提示（上传功能未完善）。
+- 设置卡片精简为仅「是否启用」并对齐标准插件卡片样式。
+- 气泡标题在 think/输出阶段按间隔刷新，不再逐 chunk 跳动。
+- 移除网页版右键「隐藏桌宠」与右下角 pill 图标。
+- 构建时注入版本号（RM_PLUGIN_VERSION）；反馈页显示版本；右键/设置同步。
+- 桌面窗桌宠悬停 / 拖动指针（grab / grabbing）。
+- README 彻底重写（特性 / 贴纸映射含 GIF 展示 / 安装 / 更新策略 / 桌面模式 / 发布到 npm）。
+
+### Fixes
+- 桌面窗 / 页面内关闭后重新开启时气泡与桌宠同步出现。
+- 移除虚构的旧行 id dsh-pet-remielle-v2，改为真实历史（0.2.0 前 @dsh-external/dsh-client-ui-pet-remielle、0.2.0–0.3.0 dsh-pet-remielle）。
+
 ## [0.3.0] — 2026-08-19
 
 交互与显示打磨（用户实测迭代版）：
