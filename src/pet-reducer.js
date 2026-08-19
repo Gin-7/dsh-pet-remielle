@@ -4,9 +4,9 @@
  * CompanionReducer; the differences are:
  *
  *  - every rendered message carries a `mood` (remielle sticker id), derived
- *    from state + phase (streaming output -> '01', tools -> '02', ...);
+ *    from state + phase (THINKING -> '04', tools -> '02', ...);
  *  - assistant output streaming is tracked as a THINKING phase 'streaming'
- *    so the "疯狂工作" sticker shows while text is being written;
+ *    so the "绘制中" sticker shows while text is being written;
  *  - SUCCESS / ERROR are transient PULSE overlays with a TTL (the browser
  *    client shows them until the deadline, then falls back to durable state).
  */
@@ -95,12 +95,13 @@ function detailFor(record, stage = record.payload.stage) {
 
 /** Remielle sticker for the current durable state + phase. */
 export function moodFor(state, phase) {
+  // 流式输出（正在写回复）→ 绘制中；其它思考 → 思考中
   if (state === PetState.THINKING && phase === 'streaming') return '01'
   if (state === PetState.THINKING) return '04'
   if (state === PetState.WAITING) return '05'
   if (state === PetState.IDLE) return '06'
   if (state === PetState.DISCONNECTED) return '06'
-  // WORKING (tool busy) and ERROR (no dedicated sticker) both read as "干活/有事".
+  // WORKING (tool busy) and ERROR both show as "摸鱼中".
   return '02'
 }
 
@@ -158,7 +159,34 @@ export class PetReducer {
         })
         return this.#render()
 
-      case 'assistant/chunk':
+      case 'assistant/chunk': {
+        if (!record.turnActive || record.openTools.size > 0) return []
+        const chunkType = String(event.data?.chunk?.type ?? 'text-delta')
+        if (chunkType === 'reasoning-delta') {
+          // 思考块（推理中）→ 思考中 04
+          this.#update(record, PetState.THINKING, {
+            phase: 'think',
+            stage: '推理阶段',
+            message: statusCopy('thinking', event.seq),
+          })
+        } else if (chunkType === 'tool-call-delta') {
+          // 工具调用流式帧 → 摸鱼中 02（随后的 tool/call 事件继续/确认）
+          this.#update(record, PetState.WORKING, {
+            phase: 'tool-call',
+            stage: '调用工具',
+            message: statusCopy('working', event.seq),
+          })
+        } else {
+          // text-delta（默认）：真正输出 → 绘制中 01
+          this.#update(record, PetState.THINKING, {
+            phase: 'streaming',
+            stage: '输出阶段',
+            message: statusCopy('streaming', event.seq),
+          })
+        }
+        return this.#render()
+      }
+
       case 'assistant/message':
         if (!record.turnActive || record.openTools.size > 0) return []
         this.#update(record, PetState.THINKING, {
@@ -171,8 +199,19 @@ export class PetReducer {
       case 'tool/call': {
         const callId = String(event.data?.callId ?? `seq-${String(event.seq ?? 'unknown')}`)
         const name = String(event.data?.name ?? 'tool')
-        const activity = toolActivity(name)
         record.openTools.set(callId, name)
+        // Asking the human a question is a "waiting" state, not "摸鱼中".
+        if (name === 'ask_user_question') {
+          record.askTools.add(callId)
+          this.#enterWait(record, {
+            phase: 'ask',
+            stage: '等待回答',
+            toolName: name,
+            message: statusCopy('waiting', event.seq),
+          })
+          return this.#render()
+        }
+        const activity = toolActivity(name)
         this.#update(record, PetState.WORKING, {
           phase: 'tool-call',
           activity,
@@ -188,6 +227,23 @@ export class PetReducer {
 
       case 'todo/write':
         return this.#todo(record, event)
+
+      case 'approval/asked': {
+        // Waiting for the human to confirm/deny a tool approval.
+        const toolName = String(event.data?.toolName ?? 'tool')
+        this.#enterWait(record, {
+          phase: 'approval',
+          stage: '等待确认',
+          toolName,
+          message: statusCopy('waiting', event.seq),
+        })
+        return this.#render()
+      }
+
+      case 'approval/decided':
+        // Approval resolved: restore whatever the pet was doing underneath.
+        this.#exitWait(record)
+        return this.#render()
 
       case 'turn/end':
         return this.#turnEnd(record, event)
@@ -205,11 +261,20 @@ export class PetReducer {
   }
 
   #toolResult(record, event) {
-    const callId = String(event.data?.message?.toolCallId
+    const callId = String(event.data?.message?.source?.callId
+      ?? event.data?.message?.toolCallId
       ?? event.data?.message?.callId
       ?? event.data?.callId
       ?? '')
+    const wasAsk = callId ? record.askTools.has(callId) : false
+    if (wasAsk) record.askTools.delete(callId)
     if (callId) record.openTools.delete(callId)
+    // An answered question ends the waiting state; restore what the pet was
+    // doing underneath (e.g. THINKING while streaming the next answer).
+    if (wasAsk) {
+      this.#exitWait(record)
+      return this.#render()
+    }
     const next = record.openTools.size > 0 ? PetState.WORKING : PetState.THINKING
     const nextPayload = {
       phase: 'tool-result',
@@ -344,6 +409,10 @@ export class PetReducer {
       payload: { phase: 'session-created', message: '蕾米埃尔待命中' },
       turnActive: false,
       openTools: new Map(),
+      askTools: new Set(),
+      waits: 0,
+      savedState: undefined,
+      savedPayload: undefined,
       task: undefined,
       progress: undefined,
       project: undefined,
@@ -359,6 +428,29 @@ export class PetReducer {
     record.state = state
     record.payload = payload
     record.updatedAt = ++this.clock
+  }
+
+  /** Enter a "waiting on the human" state, remembering what to restore later. */
+  #enterWait(record, payload) {
+    if (record.waits === 0) {
+      record.savedState = record.state
+      record.savedPayload = record.payload
+    }
+    record.waits += 1
+    record.state = PetState.WAITING
+    record.payload = payload
+    record.updatedAt = ++this.clock
+  }
+
+  /** Leave one waiting state; restore the saved state when none remain. */
+  #exitWait(record) {
+    record.waits = Math.max(0, record.waits - 1)
+    record.updatedAt = ++this.clock
+    if (record.waits !== 0) return
+    record.state = record.savedState ?? PetState.THINKING
+    record.payload = record.savedPayload ?? { phase: 'wait-end', message: '蕾米埃尔待命中' }
+    record.savedState = undefined
+    record.savedPayload = undefined
   }
 
   #select() {

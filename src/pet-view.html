@@ -310,19 +310,113 @@
   setInterval(poll, 5000)
   poll()
 
-  // Double-click (or menu 画画): drawing sticker loop + random artwork popup.
+  // Double-click (or menu 画画): drawing sticker loop + brush-reveal artwork.
+  // Renders off-screen and streams frames to a desktop-top-right window (via
+  // petBridge) so it never covers the pet bubble; falls back to an in-window
+  // canvas if no bridge is available.
   function playDraw() {
     if (!lastSnapshot || !lastSnapshot.pics) return
-    moodOverride = { mood: '01', until: Date.now() + 6000 }
+    var PIC_DRAW_MS = 6000 // 绘制时长 == 显示“绘制中(01)”的时长
+    moodOverride = { mood: '01', until: Date.now() + PIC_DRAW_MS }
     apply(lastSnapshot)
-    var pic = document.createElement('img')
     var n = Math.floor(Math.random() * lastSnapshot.pics) + 1
-    pic.src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(lastSnapshot.petId || 'remielle') + '/pics/' + n + '.png'
-    pic.style.cssText = picEl.style.cssText
-    pic.title = '点击关闭'
-    pic.addEventListener('click', function () { document.body.removeChild(pic) })
-    document.body.appendChild(pic)
-    setTimeout(function () { if (pic.parentNode) document.body.removeChild(pic) }, 12000)
+    var src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(lastSnapshot.petId || 'remielle') + '/pics/' + n + '.png'
+    var img = new Image()
+    img.onload = function () {
+      runBrushReveal(img, img.naturalWidth || 220, img.naturalHeight || 220)
+    }
+    img.src = src
+  }
+
+  function runBrushReveal(img, W, H) {
+    var useElectron = !!(window.petBridge && window.petBridge.artworkOpen && window.petBridge.artworkSet)
+    // 显示尺寸（约 240px 宽，控制高度上限，保证 PNG 帧不至于过大）
+    var dispW = 240
+    var dispH = Math.max(60, Math.min(420, Math.round(240 * H / W)))
+    var cv = document.createElement('canvas')
+    cv.width = dispW; cv.height = dispH
+    var g = cv.getContext('2d')
+    g.clearRect(0, 0, dispW, dispH)
+    var D = dispW + dispH
+    var r = Math.max(dispW, dispH) * 0.15
+    var T = 6000
+    var t0 = null
+    var shown = false
+    var lastPush = -1
+
+    function openTarget() {
+      if (useElectron) {
+        window.petBridge.artworkOpen(dispW, dispH)
+      } else {
+        cv.style.cssText = 'position:fixed;right:24px;top:24px;width:' + dispW + 'px;height:auto;border-radius:10px;display:block;cursor:pointer;z-index:9999;'
+        cv.title = '点击关闭'
+        cv.addEventListener('click', function () { if (cv.parentNode) document.body.removeChild(cv) })
+        document.body.appendChild(cv)
+      }
+      shown = true
+    }
+    function pushFrame(now) {
+      if (!shown) openTarget()
+      if (!useElectron) return // 窗口内画布本身就是实时显示的
+      if (now - lastPush < 33) return // ~30fps，避免 IPC 过载
+      lastPush = now
+      window.petBridge.artworkSet(cv.toDataURL('image/png'))
+    }
+    function lineAt(dd) {
+      var ax = Math.max(0, dd - dispH), ay = dd - ax
+      var by = Math.max(0, dd - dispW), bx = dd - by
+      return { ax: ax, ay: ay, bx: bx, by: by }
+    }
+    function frame(ts) {
+      if (t0 === null) t0 = ts
+      var p = Math.min(1, (ts - t0) / T)
+      if (p >= 1) {
+        g.globalAlpha = 1
+        g.globalCompositeOperation = 'source-over'
+        g.drawImage(img, 0, 0, W, H, 0, 0, dispW, dispH)
+        pushFrame(ts)
+        // 绘制完成：切“得意中(03)”，保持片刻后 0.8s 淡出再关闭
+        moodOverride = { mood: '03', until: Date.now() + 2200 }
+        apply(lastSnapshot)
+        setTimeout(function () {
+          if (useElectron) window.petBridge.artworkFade()
+          else if (cv.parentNode) {
+            cv.style.transition = 'opacity 0.8s ease-out'
+            cv.style.opacity = '0'
+          }
+          setTimeout(function () {
+            if (useElectron) window.petBridge.artworkClose()
+            else if (cv.parentNode) document.body.removeChild(cv)
+          }, 800)
+        }, 2200)
+        return
+      }
+      var d = D * p
+      var L = lineAt(d)
+      var half = 440
+      var ph = (ts - t0) % (half * 2)
+      var s = ph < half ? ph / half : 1 - (ph - half) / half
+      for (var k = 0; k < 2; k++) {
+        var sk = Math.min(1, Math.max(0, s + k * 0.04))
+        var cx = L.bx + (L.ax - L.bx) * sk
+        var cy = L.by + (L.ay - L.by) * sk
+        // 笔刷路径加一点小小的随机
+        cx += (Math.random() - 0.5) * r * 0.6
+        cy += (Math.random() - 0.5) * r * 0.6
+        var rr = r * (0.85 + 0.3 * Math.random())
+        g.save()
+        g.beginPath()
+        g.arc(cx, cy, rr, 0, Math.PI * 2)
+        g.clip()
+        g.globalAlpha = 1
+        g.globalCompositeOperation = 'source-over'
+        g.drawImage(img, 0, 0, W, H, 0, 0, dispW, dispH)
+        g.restore()
+      }
+      pushFrame(ts)
+      window.requestAnimationFrame(frame)
+    }
+    window.requestAnimationFrame(frame)
   }
   window.addEventListener('dblclick', playDraw)
 

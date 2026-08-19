@@ -31,11 +31,11 @@ var DEFAULT_PET_ID = 'remielle'
 var React = require('react')
 
 var MOODS = {
-  '01': '正在疯狂工作',
-  '02': '疯狂工作·间歇休息',
-  '03': '心满意足',
+  '01': '绘制中',
+  '02': '摸鱼中',
+  '03': '得意中',
   '04': '思考中',
-  '05': '等待回应',
+  '05': '等待中',
   '06': '待机中',
 }
 
@@ -704,10 +704,10 @@ function mountPet(ctx) {
   pill.tabIndex = 0
   var menu = mk('div', '')
   menu.className = 'rm2-pet-menu'
-  var picEl = mk('img', 'position:fixed;right:24px;top:24px;z-index:2147483200;width:220px;height:auto;border-radius:10px;box-shadow:0 8px 24px rgba(15,30,72,.3);display:none;cursor:pointer;')
+  var picEl = mk('canvas', 'position:fixed;right:24px;top:24px;z-index:2147483200;width:220px;height:auto;border-radius:10px;display:none;cursor:pointer;')
   picEl.className = 'rm2-pet-pic'
   picEl.title = '点击关闭'
-  picEl.addEventListener('click', function () { picEl.style.display = 'none' })
+  picEl.addEventListener('click', function () { picStop(); picEl.style.display = 'none' })
   var styleEl = document.createElement('style')
   styleEl.textContent = CSS
   styleEl.setAttribute('data-rm2-pet-css', '')
@@ -732,6 +732,7 @@ function mountPet(ctx) {
   var userHidden = false
   var lockedNow = false
   var positionRestored = false
+  var lastTurnEndShown = false
   var intervalId = 0
   var pulseFallbackTimer = 0
   var stream = null
@@ -828,6 +829,12 @@ function mountPet(ctx) {
       displayedMood = null
     }
     updateBubble(snapshot)
+    // Agent 回复完成时短暂"得意中"（仅触发一次，避免重复）
+    if (snapshot.state === 'IDLE' && snapshot.phase === 'turn-end' && !manualOverride && !lastTurnEndShown) {
+      lastTurnEndShown = true
+      manualOverride = { mood: '03', until: Date.now() + 2000 }
+    }
+    if (snapshot.state !== 'IDLE') lastTurnEndShown = false
     var enabled = snapshot.enabled !== false
     if (!enabled) {
       setHidden(true)
@@ -953,17 +960,107 @@ function mountPet(ctx) {
     displayedMood = mood
   }
 
-  /** Pop a random pic artwork (双击画画). */
+  /** Pop a random pic artwork (双击画画): thick brush sweeps from the
+   *  top-left corner down to the bottom-right, moving back and forth along the
+   *  current diagonal edge and painting the picture only where it passes. */
+  var PIC_DRAW_MS = 6000 // 笔刷绘制时长 == 显示“绘制中(01)”的时长
   var picTimer = 0
+  var picFadeTimer = 0
+  var picRevealRaf = 0
+  var picLoads = []
+  function picStop() {
+    if (picTimer) { window.clearTimeout(picTimer); picTimer = 0 }
+    if (picFadeTimer) { window.clearTimeout(picFadeTimer); picFadeTimer = 0 }
+    if (picRevealRaf) { window.cancelAnimationFrame(picRevealRaf); picRevealRaf = 0 }
+  }
   function showPic() {
     var snap = lastSnapshot
     var count = snap && snap.pics ? snap.pics : 0
     if (!count) return
     var n = Math.floor(Math.random() * count) + 1
-    picEl.src = ASSETS_PREFIX + '/' + encodeURIComponent(currentPetId) + '/pics/' + n + '.png'
+    var src = ASSETS_PREFIX + '/' + encodeURIComponent(currentPetId) + '/pics/' + n + '.png'
+    picStop()
     picEl.style.display = 'block'
-    if (picTimer) window.clearTimeout(picTimer)
-    picTimer = window.setTimeout(function () { picEl.style.display = 'none' }, 12000)
+    picEl.style.opacity = '1'
+    picEl.style.transition = 'none'
+    var img = new Image()
+    img.src = src
+    picLoads.push(img)
+    if (picLoads.length > 3) picLoads.shift()
+    img.onload = function () { brushReveal(img) }
+  }
+
+  function brushReveal(img) {
+    var W = img.naturalWidth || 220
+    var H = img.naturalHeight || 220
+    picEl.width = W
+    picEl.height = H
+    var g = picEl.getContext('2d')
+    g.clearRect(0, 0, W, H)
+    var D = W + H                // diagonal travel distance
+    var r = Math.max(W, H) * 0.15 // brush thickness (粗一点)
+    var T = PIC_DRAW_MS           // reveal duration == 绘制中(01) 时长
+    var t0 = null
+
+    function lineAt(dd) {
+      var ax = Math.max(0, dd - H), ay = dd - ax
+      var by = Math.max(0, dd - W), bx = dd - by
+      return { ax: ax, ay: ay, bx: bx, by: by }
+    }
+
+    function frame(ts) {
+      if (t0 === null) t0 = ts
+      var p = Math.min(1, (ts - t0) / T)
+      if (p >= 1) {
+        g.globalAlpha = 1
+        g.globalCompositeOperation = 'source-over'
+        g.drawImage(img, 0, 0, W, H)
+        afterReveal()
+        return
+      }
+      var d = D * p
+      var L = lineAt(d)
+      // brush travels back and forth along the edge line (ping-pong loop):
+      // 右上 (top end) → 左下 (left end) → 右上 → 左下 ... The picture
+      // appears along the path the brush has already passed.
+      var half = 440                                   // ms per one-way trip
+      var ph = (ts - t0) % (half * 2)
+      var s = ph < half ? ph / half : 1 - (ph - half) / half
+      for (var k = 0; k < 2; k++) {
+        var sk = Math.min(1, Math.max(0, s + k * 0.04))
+        // s=0 at the top (右上) end, s=1 at the left (左下) end
+        var cx = L.bx + (L.ax - L.bx) * sk
+        var cy = L.by + (L.ay - L.by) * sk
+        // 笔刷路径加一点小小的随机，让刷痕不那么规律
+        cx += (Math.random() - 0.5) * r * 0.6
+        cy += (Math.random() - 0.5) * r * 0.6
+        var rr = r * (0.85 + 0.3 * Math.random())
+        // crisp opaque brush stamp: punch the sharp image through a hard clip
+        g.save()
+        g.beginPath()
+        g.arc(cx, cy, rr, 0, Math.PI * 2)
+        g.clip()
+        g.globalAlpha = 1
+        g.globalCompositeOperation = 'source-over'
+        g.drawImage(img, 0, 0, W, H)
+        g.restore()
+      }
+      picRevealRaf = window.requestAnimationFrame(frame)
+    }
+    picRevealRaf = window.requestAnimationFrame(frame)
+  }
+
+  function afterReveal() {
+    // 绘制一完成立即切“得意中(03)”，避免中间闪现“待机中(06)”。
+    manualOverride = { mood: '03', until: Date.now() + 2200 }
+    sync()
+    picTimer = window.setTimeout(function () {
+      picFadeTimer = window.setTimeout(function () {
+        picEl.style.transition = 'opacity 0.8s ease-out'
+        picEl.style.opacity = '0'
+        setTimeout(function () { picEl.style.display = 'none'; picEl.style.transition = '' }, 800)
+      }, 2200)
+    }, 0)
   }
 
   function sync() {
@@ -1035,7 +1132,7 @@ function mountPet(ctx) {
   // Double-click: play a drawing sticker loop and pop a random artwork.
   dock.addEventListener('dblclick', function () {
     if (!lastSnapshot || lastSnapshot.pics === 0) return
-    manualOverride = { mood: '01', until: Date.now() + 6000 }
+    manualOverride = { mood: '01', until: Date.now() + PIC_DRAW_MS }
     sync()
     showPic()
   })

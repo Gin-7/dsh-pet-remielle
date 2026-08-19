@@ -62,11 +62,11 @@
 
 | 贴纸 | 状态 | 触发事件 |
 |---|---|---|
-| 01 疯狂工作 | THINKING + phase=streaming | assistant/chunk、assistant/message |
-| 02 工作间歇 | WORKING | tool/call（按工具名分 searching/editing/testing/commanding） |
-| 03 心满意足 | PULSE SUCCESS（5s） | turn/end completed |
+| 01 绘制中 | THINKING | assistant/chunk、assistant/message、双击画画 |
+| 02 摸鱼中 | WORKING / ERROR | tool/call（按工具名分 searching/editing/testing/commanding） |
+| 03 得意中 | PULSE SUCCESS（5s） | turn/end completed、绘制完成、点击互动 |
 | 04 思考中 | THINKING | turn/start、step/start、tool/result 整理 |
-| 05 等待回应 | WAITING | turn/end blocked（提问/审批等） |
+| 05 等待中 | WAITING | approval/asked（审批等待）、ask_user_question（提问回答）、turn/end blocked |
 | 06 待机中 | IDLE / DISCONNECTED | 空闲、turn/end aborted/completed 之后 |
 
 多 Session 同时运行时按 `等待确认 > 错误 > 工作 > 思考 > 空闲` 优先级展示最需要关注的顶层任务；
@@ -166,12 +166,12 @@ test/                 # node --test 测试
 宠物定义约定：
 
 ```
-assets/pets/<id>/01.gif  疯狂工作（输出）
-assets/pets/<id>/02.gif  工作间歇（工具）
-assets/pets/<id>/03.gif  心满意足
+assets/pets/<id>/01.gif  绘制中（输出/画画）
+assets/pets/<id>/02.gif  摸鱼中（工具/错误）
+assets/pets/<id>/03.gif  得意中（完成/互动）
 assets/pets/<id>/04.gif  思考中
-assets/pets/<id>/05.gif  等待回应
-assets/pets/<id>/06.gif  待机
+assets/pets/<id>/05.gif  等待中
+assets/pets/<id>/06.gif  待机中
 ```
 
 可选扩展（不影响完整性校验）：

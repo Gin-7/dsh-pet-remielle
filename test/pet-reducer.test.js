@@ -31,7 +31,7 @@ test('turn/start -> THINKING with sticker 04', () => {
   assert.equal(state.mood, '04')
 })
 
-test('assistant streaming -> sticker 01 (疯狂工作)', () => {
+test('assistant streaming -> sticker 01 (绘制中)', () => {
   const reducer = new PetReducer()
   const state = latestState(reducer, session(), [
     event('turn/start'),
@@ -40,6 +40,26 @@ test('assistant streaming -> sticker 01 (疯狂工作)', () => {
   assert.equal(state.state, PetState.THINKING)
   assert.equal(state.phase, 'streaming')
   assert.equal(state.mood, '01')
+})
+
+test('assistant/chunk text-delta -> 绘制中 01, reasoning-delta -> 思考中 04', () => {
+  const reducer = new PetReducer()
+  const messages = collect(reducer, session(), [
+    event('turn/start'),
+    event('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '让me想…' } }, 2),
+    event('assistant/chunk', { chunk: { type: 'text-delta', text: '好的' } }, 3),
+    event('assistant/chunk', { chunk: { type: 'tool-call-delta', name: 'read' } }, 4),
+  ])
+  const states = messages.filter((m) => m.kind === PetMessageKind.STATE)
+  const reasoning = states[1]
+  const output = states[2]
+  const tool = states[3]
+  assert.equal(reasoning.phase, 'think')
+  assert.equal(reasoning.mood, '04')          // 思考块 → 04
+  assert.equal(output.phase, 'streaming')
+  assert.equal(output.mood, '01')             // 输出 → 01
+  assert.equal(tool.state, PetState.WORKING)
+  assert.equal(tool.mood, '02')               // 工具 → 02
 })
 
 test('tool/call -> WORKING with sticker 02 and activity', () => {
@@ -53,7 +73,7 @@ test('tool/call -> WORKING with sticker 02 and activity', () => {
   assert.equal(state.activity, 'searching')
 })
 
-test('tool/result returns to THINKING, then streaming sticker returns', () => {
+test('tool/result returns to THINKING, then streaming sticker (01) returns', () => {
   const reducer = new PetReducer()
   const messages = collect(reducer, session(), [
     event('turn/start'),
@@ -77,6 +97,23 @@ test('tool/result with error emits an ERROR pulse with TTL', () => {
   assert.ok(pulse)
   assert.equal(pulse.state, PetState.ERROR)
   assert.equal(pulse.ttlMs, 3000)
+})
+
+test('tool/result with real DSH shape (message.source.callId) clears the open tool', () => {
+  const reducer = new PetReducer()
+  // DSH emits tool/result with the callId at message.source.callId, not at the
+  // top level. If the reducer fails to clear the open tool, later streaming
+  // output would stay stuck on 摸鱼中 (02) instead of 绘制中 (01).
+  const messages = collect(reducer, session(), [
+    event('turn/start'),
+    event('tool/call', { callId: 'c1', name: 'grep' }, 2),
+    event('tool/result', { message: { source: { callId: 'c1' } } }, 3),
+    event('assistant/message', {}, 4),
+  ])
+  const states = messages.filter((m) => m.kind === PetMessageKind.STATE)
+  assert.equal(states.at(-1).state, PetState.THINKING)
+  assert.equal(states.at(-1).mood, '01')
+  assert.equal(states.at(-1).phase, 'streaming')
 })
 
 test('todo/write emits a TASK message with progress', () => {
@@ -258,3 +295,39 @@ test('agent completes, then the review wake returns the pet to the chat session'
   assert.equal(state.state, PetState.THINKING)
   assert.equal(state.mood, '01')
 })
+
+test('ask_user_question tool/call -> WAITING sticker 05, result restores', () => {
+  const reducer = new PetReducer()
+  const messages = collect(reducer, session(), [
+    event('turn/start'),
+    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 2),
+    event('tool/result', { callId: 'q1' }, 3),
+  ])
+  const states = messages.filter((m) => m.kind === PetMessageKind.STATE)
+  const waiting = states[1]
+  assert.equal(waiting.state, PetState.WAITING)
+  assert.equal(waiting.mood, '05')
+  assert.equal(waiting.phase, 'ask')
+  // After the answer returns, the pet goes back to THINKING.
+  assert.equal(states.at(-1).state, PetState.THINKING)
+})
+
+test('approval/asked -> WAITING, approval/decided restores WORKING', () => {
+  const reducer = new PetReducer()
+  const messages = collect(reducer, session(), [
+    event('turn/start'),
+    event('tool/call', { callId: 'c', name: 'bash' }, 2),
+    event('approval/asked', { id: 'a1', toolName: 'bash' }, 3),
+    event('approval/decided', { id: 'a1', outcome: 'allow' }, 4),
+    event('tool/result', { callId: 'c' }, 5),
+  ])
+  const states = messages.filter((m) => m.kind === PetMessageKind.STATE)
+  const waiting = states.find((m) => m.phase === 'approval')
+  assert.equal(waiting.state, PetState.WAITING)
+  assert.equal(waiting.mood, '05')
+  // approval/decided restores WORKING (the tool is still running)…
+  assert.equal(states[3].state, PetState.WORKING)
+  // …then tool/result returns to THINKING.
+  assert.equal(states.at(-1).state, PetState.THINKING)
+})
+

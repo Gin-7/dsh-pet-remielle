@@ -16,4 +16,9 @@ contextBridge.exposeInMainWorld('petBridge', {
   setClickThrough: (on) => ipcRenderer.send('set-click-through', Boolean(on)),
   moveWindow: (dx, dy) => ipcRenderer.send('move-window', Number(dx) || 0, Number(dy) || 0),
   getPosition: () => ipcRenderer.invoke('get-position'),
+  // 绘画作品：独立窗口显示在桌面右上角（不遮气泡）
+  artworkOpen: (w, h) => ipcRenderer.send('artwork-open', Number(w) || 240, Number(h) || 240),
+  artworkSet: (dataUrl) => ipcRenderer.send('artwork-set', String(dataUrl)),
+  artworkFade: () => ipcRenderer.send('artwork-fade'),
+  artworkClose: () => ipcRenderer.send('artwork-close'),
 })
