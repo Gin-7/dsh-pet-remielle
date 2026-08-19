@@ -24,6 +24,10 @@ import { PetMessageKind, PetState, createMessage } from './protocol.js'
 import { DesktopWindow } from './desktop-window.js'
 import { ensureElectronRuntime } from './electron-fetch.mjs'
 import {
+  CHECK_ENDPOINT, UPDATE_ENDPOINT, INFO_ENDPOINT,
+  checkHandler, updateHandler, infoHandler,
+} from './self-update.js'
+import {
   DEFAULT_PET_ID,
   DEFAULT_PETS,
   PET_MOODS,
@@ -706,6 +710,19 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           handler: createAssetsHandler(petsRoot),
         }),
         'dsh-pet-remielle: pet sticker assets',
+      )
+      // ---- self-update routes (version check + one-click update) ----
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: CHECK_ENDPOINT, handler: checkHandler }),
+        'dsh-pet-remielle: version check endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: UPDATE_ENDPOINT, handler: updateHandler }),
+        'dsh-pet-remielle: one-click update endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: INFO_ENDPOINT, handler: infoHandler }),
+        'dsh-pet-remielle: install info endpoint',
       )
       httpCtx.effect(() => () => {
         unwatchDesktop()
