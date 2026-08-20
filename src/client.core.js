@@ -1451,7 +1451,7 @@ function apply(ctx) {
     })
     ctx.slots.inject('settings.plugin.item', function () {
       return ctx.slots.register({
-        name: 'settings.plugin.item', id: 'dsh-pet-remielle', order: 30,
+        name: 'settings.plugin.item', id: 'dsh-pet-remielle', key: 'dsh-pet-remielle', order: 30,
         inject: function () { return {} },
       }, RemielleCard)
     })
