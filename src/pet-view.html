@@ -231,6 +231,27 @@
       buildMenu()
     }, true))
     menuEl.appendChild(menuRow('画画', null, function () { playDraw(); closeMenu() }, true))
+    // 用量模式：小鲸鱼记账（免令牌） / 实时·令牌（精确）
+    var umRow = document.createElement('div')
+    umRow.className = 'menu-item'
+    var umLabel = document.createElement('span')
+    umLabel.textContent = '用量模式'
+    var umSelect = document.createElement('select')
+    umSelect.style.cssText = 'flex:1;border:1px solid rgba(240,120,160,.4);border-radius:6px;background:rgba(240,120,160,.08);color:#8a2f52;font-size:12px;padding:3px 0;cursor:pointer;'
+    function umOpt(value, text) { var o = document.createElement('option'); o.value = value; o.textContent = text; return o }
+    umSelect.appendChild(umOpt('ledger', '小鲸鱼记账'))
+    umSelect.appendChild(umOpt('token', '实时·令牌'))
+    umSelect.value = snap && snap.usageMode === 'token' ? 'token' : 'ledger'
+    umSelect.addEventListener('change', function () {
+      fetch('/plugins/dsh-pet-remielle/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ usageMode: umSelect.value }),
+      }).catch(function () {})
+    })
+    umRow.appendChild(umLabel)
+    umRow.appendChild(umSelect)
+    menuEl.appendChild(umRow)
     menuEl.appendChild(menuSep())
     menuEl.appendChild(menuRow('切换到网页模式', null, function () {
       // 与设置同步：先确保 desktopMode=false 写入成功，宿主 watch 会关停
