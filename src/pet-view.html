@@ -30,6 +30,9 @@
   }
   .bubble-title { font-weight: 600; color: #b03a60; }
   .bubble-detail { color: #c2607f; margin-top: 2px; font-size: 11px; }
+  .bubble.balance-mode { min-width: 210px; padding: 10px 14px; }
+  .bubble.balance-mode .bubble-title { font-size: 18px; font-weight: 800; letter-spacing: .02em; color: #8a2f52; }
+  .bubble.balance-mode .bubble-detail { font-size: 12px; margin-top: 3px; }
   img { width: 180px; height: auto; display: block; }
   @media (prefers-color-scheme: dark) {
     .bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
@@ -65,6 +68,7 @@
 </style>
 </head>
 <body>
+  <script src="/plugins/dsh-pet-remielle/balance-widget.js"></script>
   <div class="menu" id="menu"></div>
   <div class="pet">
     <div class="bubble" id="bubble">
@@ -84,6 +88,28 @@
   picEl.addEventListener('click', function () { picEl.style.display = 'none' })
   document.body.appendChild(picEl)
   var lastSnapshot = null
+  var balanceFrame = null
+  var petPaused = false
+  var petAnimatedSrc = null
+  function setPetPaused(v) {
+    if (v === petPaused) return
+    petPaused = v
+    if (v) {
+      // 暂停 GIF：把当前帧冻结成静态图
+      try {
+        var cv = document.createElement('canvas')
+        cv.width = imgEl.naturalWidth || 180
+        cv.height = imgEl.naturalHeight || 180
+        var g = cv.getContext('2d')
+        g.drawImage(imgEl, 0, 0, cv.width, cv.height)
+        petAnimatedSrc = imgEl.src
+        imgEl.src = cv.toDataURL('image/png')
+      } catch (e) { /* 冻结失败则忽略 */ }
+    } else {
+      if (petAnimatedSrc) { imgEl.src = petAnimatedSrc; petAnimatedSrc = null }
+      imgEl.dataset.mood = '' // 强制下次 apply 重新设置正确贴纸
+    }
+  }
   var BUBBLE_TITLE_MS = 2000
   var lastBubbleMood = ''
   var lastBubbleText = ''
@@ -104,8 +130,9 @@
   function hitInteractive(e) {
     var el = document.elementFromPoint(e.clientX, e.clientY)
     if (!el || !el.closest) return false
-    // pet image, artwork popup, or the right-click menu — anything else passes through
-    return Boolean(el.closest('img') || el.closest('#menu'))
+    // pet image, artwork popup, status/balance bubble, or the right-click
+    // menu — anything else passes through
+    return Boolean(el.closest('img') || el.closest('#menu') || el.closest('.bubble'))
   }
   function syncClickThrough(e) {
     if (dragState) return // keep the window interactive while dragging
@@ -281,6 +308,8 @@
       var pick = moods.filter(function (m) { return m !== current })
       moodOverride = { mood: pick[Math.floor(Math.random() * pick.length)], until: Date.now() + 1800 }
       apply(lastSnapshot)
+      // 余额：单击宠物切换到余额+时段显示并手动刷新
+      if (window.__petBalance) window.__petBalance.click()
     }
     dragState = null
     syncCursor()
@@ -295,23 +324,37 @@
   function apply(snapshot) {
     if (!snapshot) return
     lastSnapshot = snapshot
+    if (window.__petBalance) {
+      if (!window.__petBalanceInited) {
+        window.__petBalanceInited = true
+        window.__petBalance.init(snapshot.usageMode || 'ledger')
+      } else if (snapshot.usageMode) {
+        window.__petBalance.setUsageMode(snapshot.usageMode)
+      }
+    }
     lockedNow = snapshot.locked === true
     syncCursor()
-    // 禁用桌宠：隐藏宠物与气泡（页面内宠物已在宿主侧随之隐藏）
-    if (snapshot.enabled === false) {
+    // 禁用桌宠或隐藏桌宠：隐藏宠物与气泡
+    if (snapshot.enabled === false || snapshot.hidden === true) {
       imgEl.style.display = 'none'
       bubbleEl.style.display = 'none'
       return
     }
     imgEl.style.display = 'block'
+    setPetPaused(snapshot.paused === true)
     var mood = moodOverride && moodOverride.until > Date.now() ? moodOverride.mood : (snapshot.mood || '06')
     var src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(snapshot.petId || 'remielle') + '/' + mood + '.gif'
-    if (imgEl.dataset.mood !== mood) {
+    if (!petPaused && imgEl.dataset.mood !== mood) {
       imgEl.src = src
       imgEl.dataset.mood = mood
     }
     applyTransform(mood, snapshot)
     imgEl.style.opacity = String(snapshot.opacity ?? 1)
+    // 余额/随机台词模式下，气泡内容由余额控制器渲染，不被会话状态覆盖
+    if (balanceFrame && balanceFrame.kind === 'balance') {
+      bubbleEl.style.display = 'block'
+      return
+    }
     var show = snapshot.bubble !== false && Boolean(snapshot.detail)
     if (show) {
       // 标题：mood 未变时最多每 BUBBLE_TITLE_MS 换一次（think/输出不逐 chunk 翻），
@@ -347,6 +390,28 @@
   }
   setInterval(poll, 5000)
   poll()
+
+  // 余额控制器：把显示帧渲染进自带气泡
+  if (window.__petBalance) {
+    window.__petBalance.subscribe(function (frame) {
+      balanceFrame = frame
+      if (frame.kind === 'balance') {
+        bubbleEl.classList.add('balance-mode')
+        titleEl.textContent = (frame.label || 'DeepSeek 余额') + '  ' + frame.amount
+        titleEl.style.color = ''
+        detailEl.innerHTML = frame.detail + ' · <span style="color:' + (frame.color || '') + '">' + frame.period + '</span>'
+        bubbleEl.style.display = 'block'
+      } else if (frame.kind === 'status') {
+        balanceFrame = null
+        bubbleEl.classList.remove('balance-mode')
+        // 清掉状态气泡的节流缓存，强制恢复会话状态内容
+        lastBubbleMood = ''
+        lastBubbleText = ''
+        lastBubbleDetail = ''
+        if (lastSnapshot) apply(lastSnapshot)
+      }
+    })
+  }
 
   // Double-click (or menu 画画): drawing sticker loop + brush-reveal artwork.
   // Renders off-screen and streams frames to a desktop-top-right window (via

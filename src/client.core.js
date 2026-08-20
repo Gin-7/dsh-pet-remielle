@@ -60,6 +60,9 @@ var CSS = [
   '.rm2-pet-bubble{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;min-width:170px;max-width:340px;padding:8px 12px;border-radius:10px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 6px 20px rgba(190,70,110,.20);font-size:12px;line-height:1.45;text-align:center;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
   '.rm2-pet-bubble-title{font-weight:600;color:#b03a60;}',
   '.rm2-pet-bubble-detail{color:#c2607f;margin-top:2px;font-size:11px;}',
+  '.rm2-pet-bubble.rm2-balance-mode{min-width:210px;padding:10px 14px;}',
+  '.rm2-pet-bubble.rm2-balance-mode .rm2-pet-bubble-title{font-size:18px;font-weight:800;letter-spacing:.02em;color:#8a2f52;}',
+  '.rm2-pet-bubble.rm2-balance-mode .rm2-pet-bubble-detail{font-size:12px;margin-top:3px;}',
   '.rm2-pet-bubble::after{content:\"\";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:6px solid transparent;border-top-color:rgba(240,120,160,.45);}',
   'body[data-ds-dark-theme] .rm2-pet-bubble{background:rgba(72,20,42,.96);border-color:rgba(255,150,185,.42);color:#ffd6e4;}',
   'body[data-ds-dark-theme] .rm2-pet-bubble-title{color:#ffd6e4;}',
@@ -772,6 +775,13 @@ function PetsSection() {
 /** ---------- floating pet (plain DOM) ---------- */
 
 function mountPet(ctx) {
+  // 余额控制器：幂等加载共享客户端脚本
+  if (!window.__petBalance && !document.querySelector('script[src*="balance-widget.js"]')) {
+    var balanceScript = document.createElement('script')
+    balanceScript.src = '/plugins/dsh-pet-remielle/balance-widget.js'
+    balanceScript.async = true
+    document.head.appendChild(balanceScript)
+  }
   var root = mk('div', 'position:fixed;right:20px;bottom:20px;z-index:2147483000;pointer-events:auto;user-select:none;')
   root.setAttribute('data-rm2-pet-root', '')
   var dock = mk('div', 'position:relative;display:inline-block;cursor:grab;touch-action:none;')
@@ -864,6 +874,7 @@ function mountPet(ctx) {
   var displayedMood = null
   var currentPetId = DEFAULT_PET_ID
   var lastSnapshot = null
+  var balanceFrame = null
   var manualOverride = null
   var paused = false
   var hidden = false
@@ -894,6 +905,8 @@ function mountPet(ctx) {
   var lastBubbleDetail = ''
   function updateBubble(snapshot) {
     if (!snapshot) return
+    // 余额/随机台词模式下，气泡由余额控制器渲染，不被会话状态覆盖
+    if (balanceFrame && balanceFrame.kind === 'balance') return
     var show = snapshot.bubble !== false && Boolean(snapshot.detail)
     if (show) {
       var text = snapshot.message || ''
@@ -960,6 +973,15 @@ function mountPet(ctx) {
       return
     }
     lastSnapshot = snapshot
+    // 余额控制器：初始化/同步用量模式
+    if (window.__petBalance) {
+      if (!window.__petBalanceInited) {
+        window.__petBalanceInited = true
+        window.__petBalance.init(snapshot.usageMode || 'ledger')
+      } else if (snapshot.usageMode) {
+        window.__petBalance.setUsageMode(snapshot.usageMode)
+      }
+    }
     // The desktop pet window is showing; keep the page pet hidden to avoid
     // two pets on screen. Restores automatically when the window goes away.
     if (snapshot.desktopActive === true) {
@@ -991,12 +1013,12 @@ function mountPet(ctx) {
       manualOverride = { mood: '03', until: Date.now() + 2000 }
     }
     if (snapshot.state !== 'IDLE') lastTurnEndShown = false
-    var enabled = snapshot.enabled !== false
-    if (!enabled) {
-      setHidden(true)
-      return
-    }
-    if (hidden) setHidden(false)
+    var wantHidden = snapshot.enabled === false || snapshot.hidden === true
+    if (wantHidden && !hidden) setHidden(true)
+    else if (!wantHidden && hidden) setHidden(false)
+    if (wantHidden) return
+    if (snapshot.paused === true && !paused) setPaused(true)
+    else if (snapshot.paused !== true && paused) setPaused(false)
     sync()
     schedulePulseFallback(snapshot)
   }
@@ -1279,6 +1301,45 @@ function mountPet(ctx) {
     var pick = candidates[Math.floor(Math.random() * candidates.length)]
     manualOverride = { mood: pick, until: Date.now() + 1800 }
     sync()
+    // 余额：单击宠物切换到余额+时段显示并手动刷新
+    if (window.__petBalance) window.__petBalance.click()
+  })
+
+  // 余额控制器：把显示帧渲染进自带气泡（脚本异步加载，重试直到就绪）
+  function whenPetBalance(cb) {
+    if (window.__petBalance) { cb(); return }
+    var tries = 0
+    var timer = window.setInterval(function () {
+      tries++
+      if (window.__petBalance) {
+        window.clearInterval(timer)
+        cb()
+      } else if (tries > 60) {
+        window.clearInterval(timer)
+      }
+    }, 100)
+  }
+  whenPetBalance(function () {
+    window.__petBalance.subscribe(function (frame) {
+      balanceFrame = frame
+      if (frame.kind === 'balance') {
+        bubble.style.pointerEvents = 'auto'
+        bubble.classList.add('rm2-balance-mode')
+        bubbleTitle.textContent = (frame.label || 'DeepSeek 余额') + '  ' + frame.amount
+        bubbleTitle.style.color = ''
+        bubbleDetail.innerHTML = frame.detail + ' · <span style="color:' + (frame.color || '') + '">' + frame.period + '</span>'
+        bubble.style.display = 'block'
+      } else if (frame.kind === 'status') {
+        balanceFrame = null
+        bubble.style.pointerEvents = 'none'
+        bubble.classList.remove('rm2-balance-mode')
+        // 清掉状态气泡的节流缓存，强制恢复会话状态内容
+        lastBubbleMood = ''
+        lastBubbleText = ''
+        lastBubbleDetail = ''
+        if (lastSnapshot) updateBubble(lastSnapshot)
+      }
+    })
   })
 
   // Double-click: play a drawing sticker loop and pop a random artwork.
