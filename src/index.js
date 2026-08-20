@@ -686,8 +686,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             if (action === 'start') startDesktop(true)
             else if (action === 'stop') stopDesktop('in-page menu')
             else if (action === 'confirm-download') runDownload()
+            else if (action === 'cancel-download') { confirmSent = false; jsonResponse(res, 200, { ok: true }) }
             else {
-              jsonResponse(res, 400, { ok: false, error: 'expected /desktop/start, /desktop/stop, or /desktop/confirm-download' })
+              jsonResponse(res, 400, { ok: false, error: 'expected /desktop/start, /desktop/stop, /desktop/confirm-download, or /desktop/cancel-download' })
               return
             }
             jsonResponse(res, 200, { ok: true, desktopActive })

@@ -141,6 +141,8 @@ if (document.body) document.body.appendChild(updBubble)
 else window.addEventListener('DOMContentLoaded', function () { document.body.appendChild(updBubble) })
 
 var updCard = mk('div', 'display:none;position:fixed;z-index:2147483301;top:50%;left:50%;transform:translate(-50%,-50%);width:min(460px,92vw);max-height:82vh;overflow:auto;background:var(--dsw-alias-bg-layer-2,#fff);border:1px solid var(--dsw-alias-border-l2,#d8d8d8);border-radius:12px;padding:18px;font-size:13px;color:var(--dsw-alias-label-primary,#172347);font-family:system-ui,sans-serif;box-shadow:var(--dsw-shadow-lv3,0 24px 64px rgba(15,30,72,.28));')
+if (document.body) document.body.appendChild(updCard)
+else window.addEventListener('DOMContentLoaded', function () { document.body.appendChild(updCard) })
 function closeUpdateCard() { updCard.style.display = 'none' }
 document.addEventListener('pointerdown', function (e) {
   if (updCard.style.display === 'block' && !updCard.contains(e.target)) closeUpdateCard()
@@ -540,6 +542,7 @@ function PetsSection() {
         setUpdInfo(info)
         setUpdMsg(isNew ? 'has-update' : 'latest')
         setLatestUpdate(info, isNew)
+        updBubble.style.display = 'none' // 设置页已显示更新信息，不需要气泡
       })
       .catch(function () {
         setUpdChecking(false)
@@ -692,17 +695,13 @@ function PetsSection() {
     React.createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' } },
       React.createElement('span', { style: { fontSize: 13 } }, '当前版本：'),
       React.createElement('span', { style: { fontWeight: 600 } }, currentVersion),
-      updMsg !== 'has-update' && updMsg !== 'latest'
-        ? React.createElement('button', {
+      updMsg === 'has-update'
+        ? null
+        : React.createElement('button', {
             type: 'button', disabled: updChecking,
             style: { padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border-color, #d8d8d8)', background: 'transparent', cursor: updChecking ? 'default' : 'pointer', fontSize: 13, fontFamily: 'inherit' },
             onClick: checkUpdate,
-          }, updChecking ? '检查中…' : '检查更新')
-        : React.createElement('button', {
-            type: 'button',
-            style: { padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border-color, #d8d8d8)', background: 'transparent', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' },
-            onClick: checkUpdate,
-          }, '重新检查'),
+          }, updChecking ? '检查中…' : (updMsg === 'latest' ? '重新检查' : '检查更新')),
     ),
     updMsg === 'checking'
       ? React.createElement('p', { style: { margin: '10px 0 0', opacity: 0.6, fontSize: 12, color: 'var(--dsw-alias-label-tertiary, #6f7c99)' } }, '正在检查更新…')
@@ -825,7 +824,11 @@ function mountPet(ctx) {
   confirmBox.appendChild(confirmActions)
   confirmOverlay.appendChild(confirmBox)
   document.body.appendChild(confirmOverlay)
-  confirmCancel.addEventListener('click', function () { confirmOverlay.style.display = 'none' })
+  confirmCancel.addEventListener('click', function () {
+    confirmOverlay.style.display = 'none'
+    fetch(DESKTOP_ENDPOINT + '/cancel-download', { method: 'POST' }).catch(function () {})
+    patchConfig('desktopMode', false) // 取消 = 不启用桌面模式，开关回到关闭
+  })
   confirmOk.addEventListener('click', function () {
     confirmOk.disabled = true
     confirmOk.textContent = '下载中…'
