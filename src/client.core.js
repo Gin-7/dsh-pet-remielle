@@ -65,6 +65,15 @@ var CSS = [
   'body[data-ds-dark-theme] .rm2-pet-bubble-title{color:#ffd6e4;}',
   'body[data-ds-dark-theme] .rm2-pet-bubble-detail{color:#f0a8c0;}',
   'body[data-ds-dark-theme] .rm2-pet-bubble::after{border-top-color:rgba(255,150,185,.42);}',
+  // Stacked status bubbles (one per active session). The column renders
+  // bottom-up: the top of the stack is the highest-ranked bubble.
+  '.rm2-pet-bubbles{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);display:flex;flex-direction:column-reverse;align-items:center;gap:6px;margin-bottom:10px;pointer-events:none;max-width:380px;z-index:1;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble{position:relative;bottom:auto;left:auto;transform:none;margin-bottom:0;transition:box-shadow .2s;}',
+  '.rm2-pet-bubble.top{border-color:#b03a60;box-shadow:0 6px 20px rgba(190,70,110,.38);}',
+  '.rm2-pet-bubble.attention{border-color:#e8508a;animation:rm2-pet-attention 1.6s ease-in-out infinite;}',
+  '@keyframes rm2-pet-attention{0%,100%{box-shadow:0 0 0 0 rgba(232,80,138,.35);}50%{box-shadow:0 0 0 6px rgba(232,80,138,0);}}',
+  'body[data-ds-dark-theme] .rm2-pet-bubble.top{border-color:#ffb3c9;}',
+  'body[data-ds-dark-theme] .rm2-pet-bubble.attention{border-color:#ff6fa8;}',
   // Progress bar inside confirmation dialog
   '.rm2-pet-dl-text{color:#b03a60;font-weight:600;font-size:12px;font-family:system-ui,sans-serif;}',
   '.rm2-pet-dl-bar{width:100%;height:4px;border-radius:2px;background:rgba(240,120,160,.2);overflow:hidden;}',
@@ -779,14 +788,10 @@ function mountPet(ctx) {
   var img = mk('img', 'width:180px;height:auto;pointer-events:none;display:none;')
   img.alt = '桌宠'
   img.draggable = false
-  var bubble = mk('div', 'display:none;')
-  bubble.className = 'rm2-pet-bubble'
-  var bubbleTitle = mk('div', '')
-  bubbleTitle.className = 'rm2-pet-bubble-title'
-  var bubbleDetail = mk('div', '')
-  bubbleDetail.className = 'rm2-pet-bubble-detail'
-  bubble.appendChild(bubbleTitle)
-  bubble.appendChild(bubbleDetail)
+  // Stacked status bubbles: one per active session, top = highest rank
+  // (attention-needing first, then the current conversation, then priority).
+  var bubbleStack = mk('div', 'display:none;')
+  bubbleStack.className = 'rm2-pet-bubbles'
   // Confirmation dialog
   var confirmOverlay = mk('div')
   confirmOverlay.className = 'rm2-pet-confirm-overlay'
@@ -852,7 +857,7 @@ function mountPet(ctx) {
   styleEl.setAttribute('data-rm2-pet-css', '')
 
   dock.appendChild(img)
-  dock.appendChild(bubble)
+  dock.appendChild(bubbleStack)
   root.appendChild(dock)
   document.body.appendChild(picEl)
   document.head.appendChild(styleEl)
@@ -883,35 +888,114 @@ function mountPet(ctx) {
     dock.style.cursor = lockedNow ? 'default' : 'grab'
   }
 
-  /** Status bubble above the pet: message + detail (project · progress · stage).
-   *  The title changes at most once per BUBBLE_TITLE_MS while the mood stays put
-   *  (so think 04 / streaming 01 doesn't flip on every chunk, but still refreshes
-   *  occasionally), and updates immediately when the mood/phase changes. */
-  var BUBBLE_TITLE_MS = 2000
-  var lastBubbleMood = ''
-  var lastBubbleText = ''
-  var lastBubbleTitleAt = 0
-  var lastBubbleDetail = ''
-  function updateBubble(snapshot) {
+  /** ---- stacked status bubbles (one per active session) ----
+   *  Order: attention-needing sessions (waiting on the human / errors) on
+   *  top, then the session the user currently has open, then the rest by
+   *  state priority and recency. MAX_BUBBLES caps the visible stack; the pet
+   *  body follows the top bubble's mood. */
+  var MAX_BUBBLES = 5
+  var currentSessionId = undefined
+  var lastTopEntry = null
+  var bubbleEls = new Map() // sessionId -> { node, title, detail }
+  function stateRank(state) {
+    switch (state) {
+      case 'WAITING': return 60
+      case 'ERROR': return 50
+      case 'WORKING': return 30
+      case 'THINKING': return 20
+      case 'DISCONNECTED': return -1
+      default: return 0
+    }
+  }
+  function attentionOf(entry) {
+    return entry.attention === true || entry.state === 'WAITING' || entry.state === 'ERROR'
+  }
+  function orderSessions(sessions) {
+    return sessions.slice().sort(function (a, b) {
+      var aAtt = attentionOf(a) ? 1 : 0
+      var bAtt = attentionOf(b) ? 1 : 0
+      if (aAtt !== bAtt) return bAtt - aAtt
+      var aCur = a.sessionId === currentSessionId ? 1 : 0
+      var bCur = b.sessionId === currentSessionId ? 1 : 0
+      if (aCur !== bCur) return bCur - aCur
+      var priority = stateRank(b.state) - stateRank(a.state)
+      return priority || (b.updatedAt || 0) - (a.updatedAt || 0)
+    })
+  }
+  function ensureBubbleEl(sessionId) {
+    var existing = bubbleEls.get(sessionId)
+    if (existing) return existing
+    var node = mk('div', 'display:none;')
+    node.className = 'rm2-pet-bubble'
+    var title = mk('div', '')
+    title.className = 'rm2-pet-bubble-title'
+    var detail = mk('div', '')
+    detail.className = 'rm2-pet-bubble-detail'
+    node.appendChild(title)
+    node.appendChild(detail)
+    bubbleStack.appendChild(node)
+    var el = { node: node, title: title, detail: detail, lastText: '', lastDetail: '' }
+    bubbleEls.set(sessionId, el)
+    return el
+  }
+  function renderBubble(el, entry, index) {
+    var text = entry.message || ''
+    var detail = entry.detail || ''
+    if (text !== el.lastText) {
+      el.lastText = text
+      el.title.textContent = text
+    }
+    if (detail !== el.lastDetail) {
+      el.lastDetail = detail
+      el.detail.textContent = detail
+    }
+    if (!text && !detail) {
+      el.node.style.display = 'none'
+      return
+    }
+    el.node.className = 'rm2-pet-bubble' + (index === 0 ? ' top' : '') + (attentionOf(entry) ? ' attention' : '')
+    el.node.style.display = 'block'
+  }
+  function updateBubbles(snapshot) {
     if (!snapshot) return
-    var show = snapshot.bubble !== false && Boolean(snapshot.detail)
-    if (show) {
-      var text = snapshot.message || ''
-      var detail = snapshot.detail || ''
-      var now = Date.now()
-      var moodChanged = snapshot.mood !== lastBubbleMood
-      if (moodChanged || (text !== lastBubbleText && now - lastBubbleTitleAt >= BUBBLE_TITLE_MS)) {
-        lastBubbleTitleAt = now
-        lastBubbleMood = snapshot.mood
-        lastBubbleText = text
-        bubbleTitle.textContent = text
-      }
-      if (detail !== lastBubbleDetail) {
-        lastBubbleDetail = detail
-        bubbleDetail.textContent = detail
+    var sessions = Array.isArray(snapshot.sessions) && snapshot.sessions.length > 0
+      ? snapshot.sessions
+      : [snapshot] // legacy single-session snapshot
+    var ordered = orderSessions(sessions)
+    lastTopEntry = ordered[0] || null
+    // Pet body follows the top bubble's mood; the turn-end "得意中" flash
+    // below also keys off the top entry's state.
+    if (lastTopEntry && lastTopEntry.mood) snapshot.mood = lastTopEntry.mood
+    var count = Math.min(ordered.length, MAX_BUBBLES)
+    var seen = new Set()
+    for (var i = 0; i < count; i++) {
+      var entry = ordered[i]
+      seen.add(entry.sessionId)
+      renderBubble(ensureBubbleEl(entry.sessionId), entry, i)
+    }
+    for (var key of bubbleEls.keys()) {
+      if (!seen.has(key)) {
+        var el = bubbleEls.get(key)
+        if (el && el.node && el.node.remove) el.node.remove()
+        bubbleEls.delete(key)
       }
     }
-    bubble.style.display = show ? 'block' : 'none'
+    bubbleStack.style.display = snapshot.bubble !== false && count > 0 ? 'flex' : 'none'
+  }
+  // Follow the user's current conversation so its bubble ranks on top of
+  // same-priority peers (the "which dialog is on top" rule).
+  if (ctx && ctx.sessions && ctx.sessions.list && typeof ctx.effect === 'function') {
+    var sessionList = ctx.sessions.list
+    currentSessionId = typeof sessionList.getSnapshot === 'function' ? sessionList.getSnapshot().current : undefined
+    ctx.effect(function () {
+      return sessionList.subscribe(function () {
+        var next = typeof sessionList.getSnapshot === 'function' ? sessionList.getSnapshot().current : undefined
+        if (next !== currentSessionId) {
+          currentSessionId = next
+          if (lastSnapshot) updateBubbles(lastSnapshot)
+        }
+      })
+    })
   }
 
   /** After a pulse overlay expires the host falls back to the durable state; schedule one refresh. */
@@ -984,13 +1068,15 @@ function mountPet(ctx) {
       currentPetId = snapshot.petId
       displayedMood = null
     }
-    updateBubble(snapshot)
-    // Agent 回复完成时短暂"得意中"（仅触发一次，避免重复）
-    if (snapshot.state === 'IDLE' && snapshot.phase === 'turn-end' && !manualOverride && !lastTurnEndShown) {
+    updateBubbles(snapshot)
+    // Agent 回复完成时短暂"得意中"（仅触发一次，避免重复）——以堆叠顶部会话为准
+    var topState = lastTopEntry ? lastTopEntry.state : snapshot.state
+    var topPhase = lastTopEntry ? lastTopEntry.phase : snapshot.phase
+    if (topState === 'IDLE' && topPhase === 'turn-end' && !manualOverride && !lastTurnEndShown) {
       lastTurnEndShown = true
       manualOverride = { mood: '03', until: Date.now() + 2000 }
     }
-    if (snapshot.state !== 'IDLE') lastTurnEndShown = false
+    if (topState !== 'IDLE') lastTurnEndShown = false
     var enabled = snapshot.enabled !== false
     if (!enabled) {
       setHidden(true)
@@ -1465,6 +1551,6 @@ function apply(ctx) {
 
 module.exports = {
   name: 'dsh-pet-remielle-client',
-  inject: ['slots'],
+  inject: ['slots', 'sessions'],
   apply: apply,
 }

@@ -331,3 +331,76 @@ test('approval/asked -> WAITING, approval/decided restores WORKING', () => {
   assert.equal(states.at(-1).state, PetState.THINKING)
 })
 
+test('states() is empty with no sessions', () => {
+  const reducer = new PetReducer()
+  assert.deepEqual(reducer.states(), [])
+})
+
+test('states() returns one entry per session with mood/message/detail', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('s1'), [
+    event('turn/start'),
+    event('assistant/message', {}, 2),
+  ])
+  const states = reducer.states()
+  assert.equal(states.length, 1)
+  assert.equal(states[0].sessionId, 's1')
+  assert.equal(states[0].state, PetState.THINKING)
+  assert.equal(states[0].mood, '01')
+  assert.ok(states[0].detail)
+  assert.equal(states[0].attention, false)
+})
+
+test('states() ranks attention-needing sessions on top', () => {
+  const reducer = new PetReducer()
+  // s1 is streaming (THINKING), s2 waits on the human (WAITING via ask).
+  collect(reducer, session('s1'), [
+    event('turn/start', {}, 1),
+    event('assistant/message', {}, 2),
+  ])
+  collect(reducer, session('s2'), [
+    event('turn/start', {}, 3),
+    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 4),
+  ])
+  const states = reducer.states()
+  assert.equal(states.length, 2)
+  // WAITING (s2) must come first even though s1 was updated later.
+  assert.equal(states[0].sessionId, 's2')
+  assert.equal(states[0].state, PetState.WAITING)
+  assert.equal(states[0].attention, true)
+  assert.equal(states[1].sessionId, 's1')
+  assert.equal(states[1].state, PetState.THINKING)
+  assert.equal(states[1].attention, false)
+})
+
+test('states() marks ERROR as attention and sorts before WORKING', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('s1'), [
+    event('turn/start'),
+    event('tool/call', { callId: 'c1', name: 'bash' }, 2),
+  ])
+  collect(reducer, session('s2'), [
+    event('turn/start', {}, 3),
+    event('assistant/message', {}, 4),
+    event('turn/end', { reason: { kind: 'max-tokens' } }, 5),
+  ])
+  const states = reducer.states()
+  assert.equal(states.length, 2)
+  assert.equal(states[0].sessionId, 's2')
+  assert.equal(states[0].state, PetState.ERROR)
+  assert.equal(states[0].attention, true)
+  assert.equal(states[1].sessionId, 's1')
+  assert.equal(states[1].state, PetState.WORKING)
+})
+
+test('disposeSession removes the session from states()', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('s1'), [event('turn/start')])
+  collect(reducer, session('s2'), [event('turn/start', {}, 2)])
+  assert.equal(reducer.states().length, 2)
+  reducer.disposeSession(session('s1'))
+  const states = reducer.states()
+  assert.equal(states.length, 1)
+  assert.equal(states[0].sessionId, 's2')
+})
+

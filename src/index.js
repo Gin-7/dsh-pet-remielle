@@ -302,10 +302,11 @@ export function createAssetsHandler(petsRoot) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
   const activePetOf = typeof getActivePet === 'function' ? getActivePet : () => undefined
+  const statesOf = typeof getStates === 'function' ? getStates : () => []
   return () => {
     const config = publicConfig(getConfig())
     const now = Date.now()
@@ -313,6 +314,22 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
     const base = getLatest()
     const activePulse = pulse && pulse.until > now ? pulse : undefined
     const source = activePulse ?? base
+    // One entry per tracked session for the stacked-bubble view. The active
+    // PULSE overlay (success / error flash) overrides its own session's entry
+    // so the flash lands on the right bubble, not on the primary.
+    const sessions = statesOf().map((entry) => {
+      if (activePulse && activePulse.sessionId === entry.sessionId) {
+        return {
+          ...entry,
+          state: activePulse.state,
+          mood: activePulse.mood ?? entry.mood,
+          message: activePulse.message ?? entry.message,
+          detail: activePulse.detail ?? entry.detail,
+          pulseUntil: activePulse.until,
+        }
+      }
+      return entry
+    })
     return {
       ok: true,
       enabled: config.enabled === true,
@@ -335,6 +352,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       task: base?.task ?? undefined,
       progress: base?.progress ?? undefined,
       pulseUntil: activePulse ? activePulse.until : 0,
+      sessions,
       ts: now,
     }
   }
@@ -496,6 +514,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getPetId: () => registry.activePetId,
     getDesktopActive: () => desktopActive,
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
+    getStates: () => reducer.states(),
   })
 
   const hub = createStreamHub({ serve: serveState })

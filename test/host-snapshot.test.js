@@ -4,12 +4,13 @@ import { createStateSnapshot } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
-function snapshotWith({ latest, pulse = null, config = {}, petId }) {
+function snapshotWith({ latest, pulse = null, config = {}, petId, getStates }) {
   return createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
     getConfig: () => config,
     getPetId: () => petId,
+    getStates,
   })()
 }
 
@@ -150,4 +151,49 @@ test('expired pulse falls back to durable state', () => {
 test('disabled config is reflected in the snapshot', () => {
   const snapshot = snapshotWith({ latest: idle, config: { enabled: false } })
   assert.equal(snapshot.enabled, false)
+})
+
+test('snapshot carries one entry per tracked session for stacked bubbles', () => {
+  const states = [
+    { sessionId: 's2', state: PetState.WAITING, mood: '05', phase: 'ask', message: '等你回答', detail: 's2 · 等待回答', attention: true, updatedAt: 4 },
+    { sessionId: 's1', state: PetState.THINKING, mood: '01', phase: 'streaming', message: '正在输出', detail: 's1 · 输出阶段', attention: false, updatedAt: 3 },
+  ]
+  const snapshot = snapshotWith({ latest: idle, getStates: () => states })
+  assert.deepEqual(snapshot.sessions, states)
+})
+
+test('active pulse overrides its own session entry in sessions[]', () => {
+  const states = [
+    { sessionId: 's2', state: PetState.WAITING, mood: '05', phase: 'ask', message: '等你回答', detail: 's2 · 等待回答', attention: true, updatedAt: 4 },
+    { sessionId: 's1', state: PetState.THINKING, mood: '01', phase: 'streaming', message: '正在输出', detail: 's1 · 输出阶段', attention: false, updatedAt: 3 },
+  ]
+  const pulse = createMessage(PetMessageKind.PULSE, {
+    sessionId: 's1',
+    state: PetState.SUCCESS,
+    mood: '03',
+    ttlMs: 5000,
+    resumeState: PetState.IDLE,
+    resumeMood: '06',
+    message: '这次任务搞定啦~',
+    detail: 's1 · 本轮已完成',
+  })
+  const snapshot = snapshotWith({
+    latest: idle,
+    getStates: () => states,
+    pulse: { ...pulse, until: Date.now() + 4000 },
+  })
+  assert.equal(snapshot.sessions.length, 2)
+  const flashed = snapshot.sessions.find((entry) => entry.sessionId === 's1')
+  assert.equal(flashed.state, PetState.SUCCESS)
+  assert.equal(flashed.mood, '03')
+  assert.equal(flashed.message, '这次任务搞定啦~')
+  assert.ok(flashed.pulseUntil > Date.now())
+  // The waiting session's entry is untouched.
+  const waiting = snapshot.sessions.find((entry) => entry.sessionId === 's2')
+  assert.equal(waiting.state, PetState.WAITING)
+})
+
+test('sessions defaults to an empty array when no states feed is provided', () => {
+  const snapshot = snapshotWith({ latest: idle })
+  assert.deepEqual(snapshot.sessions, [])
 })

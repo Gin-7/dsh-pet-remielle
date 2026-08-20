@@ -259,6 +259,38 @@ export class PetReducer {
     return this.#render()
   }
 
+  /**
+   * One renderable state per tracked session, for the stacked-bubble view.
+   * Default order: attention (needs the human) first, then state priority,
+   * then recency. The browser client re-sorts with the current-conversation
+   * rule (current conversation above same-rank peers) before rendering.
+   */
+  states() {
+    const out = []
+    for (const record of this.sessions.values()) {
+      out.push({
+        sessionId: record.id,
+        state: record.state,
+        mood: moodFor(record.state, record.payload.phase),
+        phase: record.payload.phase ?? '',
+        message: record.payload.message ?? '',
+        detail: detailFor(record),
+        project: record.project,
+        task: record.task,
+        progress: record.progress,
+        attention: record.state === PetState.WAITING || record.state === PetState.ERROR,
+        updatedAt: record.updatedAt,
+      })
+    }
+    out.sort((left, right) => {
+      const attention = Number(right.attention) - Number(left.attention)
+      if (attention !== 0) return attention
+      const priority = (statePriority[right.state] ?? 0) - (statePriority[left.state] ?? 0)
+      return priority || right.updatedAt - left.updatedAt || left.sessionId.localeCompare(right.sessionId)
+    })
+    return out
+  }
+
   #toolResult(record, event) {
     const callId = String(event.data?.message?.source?.callId
       ?? event.data?.message?.toolCallId
