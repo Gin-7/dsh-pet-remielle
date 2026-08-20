@@ -27,6 +27,8 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | Multi-session priority | ✓ (WAITING > ERROR > WORKING > THINKING > IDLE) |
 | Live push | SSE stream (auto-reconnect + polling fallback) |
 | Status bubble | message + detail (project · completed x/y · phase) |
+| Balance | Single-click the pet to show DeepSeek balance + time period (60s auto-refresh, rolling-number animation, stale fallback on network blips), auto-returns to the status bubble after 5s |
+| Today usage | Two modes: ledger (default, token-free, balance-delta) / real-time token (platform usage API + peak/off-peak pricing, exact) |
 | Desktop float | Bundled Electron transparent always-on-top window (opt-in) |
 | Multi-pet | Settings → Pet Management (registry + switch active pet) |
 | Version update | Built-in check + one-click incremental update |
@@ -140,12 +142,30 @@ dsh plugin --profile web add dsh-pet-remielle
 
 ## Usage
 
-- **Click pet**: cycle through random sticker moods.
+- **Single-click pet**: cycle through random sticker moods, and show the balance + time-period bubble (DeepSeek balance / today usage / off-peak or peak period); auto-returns to the status bubble after 5s.
 - **Double-click pet**: enter drawing animation; after completion a artwork pops up (screen top-right) and fades out.
-- **Right-click pet (in-page)**: character size / lock position / show bubble / desktop float mode / reset position / pause animation.
-- **Right-click pet (desktop window)**: character size / lock position / show bubble / drawing / switch to web mode.
+- **Right-click pet (in-page)**: character size / lock position / show bubble / usage mode / desktop float mode / reset position / pause animation.
+- **Right-click pet (desktop window)**: character size / lock position / show bubble / usage mode / drawing / switch to web mode.
 - **Scroll wheel**: resize character.
 - In-page pet menu can also launch the desktop window.
+
+---
+
+## Balance & Today Usage
+
+Single-click the pet to see your DeepSeek account balance and today's spend (bubble shows "DeepSeek Balance ¥X" + "Today ¥X · Off-peak/Peak", the period is color-coded: green = off-peak, red = peak).
+
+- **Balance**: from the official API `api.deepseek.com/user/balance` (credential `DEEPSEEK_API_KEY`). Auto-refreshes every 60s; single-click the pet to refresh manually; rolling-number animation on changes; transient network blips keep the last known balance instead of flashing errors.
+- **Today usage · ledger (default, token-free)**: accumulates balance deltas into `$DSH_HOME/.dshp-usage.json` (cross-day reset & archive). No extra token needed, but it is an estimate — usage while DSH is off is not recorded.
+- **Today usage · real-time token (exact)**: after configuring the platform session token `DEEPSEEK_PLATFORM_TOKEN`, it queries the platform usage API (`platform.deepseek.com/api/v0/usage/by_api_key/amount`) and converts with **peak/off-peak pricing**:
+  - Peak hours: 09:00–12:00 and 14:00–18:00 (Beijing time)
+  - Prices (off-peak/peak, per million tokens): cache hit 0.05/0.10 CNY; cache miss 1.5/3.0 CNY; output 4.5/9.0 CNY
+  - The pricing table lives at the top of `src/balance.js` (`PRICING`); update it when DeepSeek changes prices
+  - Falls back to ledger mode when the token is missing or invalid
+
+**Switching usage mode**: Settings → Pet Management → Behavior → "Usage Mode" (ledger / real-time token), or the pet's right-click menu → "Usage Mode".
+
+> To obtain `DEEPSEEK_PLATFORM_TOKEN`: sign in to platform.deepseek.com → F12 DevTools → Network → open the "Usage" page → copy the `Authorization` header value of the `api/v0/usage/...` request → add it to the DSH credentials service.
 
 ---
 
@@ -155,13 +175,14 @@ dsh plugin --profile web add dsh-pet-remielle
 |---|---|---|
 | enabled | true | Enable the pet (disables immediately, re-enabling restores) |
 
-All other appearance/behavior options (size, opacity, lock, bubble, desktop float, pause, hide, etc.) are managed in Settings → Pet Management and the right-click menu, not duplicated in the plugin config card.
+All other appearance/behavior options (size, opacity, lock, bubble, usage mode, desktop float, pause, hide, etc.) are managed in Settings → Pet Management and the right-click menu, not duplicated in the plugin config card.
 
 ## Settings → Pet Management
 
 Pet registry section with tabbed sub-pages: **Appearance / Behavior / Desktop Float / Update / Feedback**.
 
 - Enable/disable pets, set as current, rename, add new pets.
+- Behavior page: enable / lock / pause / hide / respond to sub-agents / show bubble / **usage mode**.
 - "Update": shows current version, check for updates, one-click update, upgrade guide.
 - "Feedback": shows pet version, submit bug reports / feature requests.
 
@@ -180,7 +201,8 @@ npm run check                     # Syntax check
 
 ```
 src/
-├── index.js          # Host: config, event wiring, config/state/pets/assets/desktop endpoints, self-update routes
+├── index.js          # Host: config, event wiring, config/state/balance/pets/assets/desktop endpoints, self-update routes
+├── balance.js        # Balance service: fetch (retry/cache/stale fallback), today usage (ledger/token), peak pricing
 ├── self-update.js    # Version check + one-click update (GitHub direct + HTTP proxy fallback; git pull / pnpm update)
 ├── pet-reducer.js    # Pure state machine: session events → state/pulse/task (unit-tested)
 ├── protocol.js       # Typed protocol: PetState / PetMood / PetMessageKind
@@ -188,7 +210,8 @@ src/
 ├── status-copy.js    # Remielle-flavored status copy (replaceable)
 ├── desktop-window.js # Desktop mode: Electron discovery + window process management (unit-tested)
 ├── pet-window.js     # Desktop mode: Electron main (transparent window + top-right artwork window)
-├── pet-view.html     # Desktop mode: pet window page (GIF + bubble + SSE + drawing)
+├── pet-view.html     # Desktop mode: pet window page (GIF + bubble + SSE + drawing + balance bubble)
+├── balance-widget.js # Balance controller (client): fetch/rolling animation/5s auto-return, rendered into the pet's own bubble
 └── client.core.js    # Browser side: pet UI + settings (wrapped at build time)
 lib/client.js         # Build artifact (version injected, ready to use)
 assets/pets/remielle/ # Remielle assets (GIFs + artwork)
