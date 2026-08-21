@@ -694,6 +694,49 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         } }),
         'dsh-pet-remielle: balance endpoint',
       )
+      // ---- 平台令牌（DEEPSEEK_PLATFORM_TOKEN）：在宠物设置里直接填写 ----
+      // GET  → 是否已配置（不返回令牌本身）
+      // POST → { token: '...' } 写入凭据服务；空字符串清除
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/platform-token', handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const cred = eventCtx.credentials ?? ctx.credentials
+          if (req.method === 'GET') {
+            let configured = false
+            if (cred && typeof cred.resolve === 'function') {
+              try { configured = !!(await cred.resolve('DEEPSEEK_PLATFORM_TOKEN')) } catch { /* 保持 false */ }
+            }
+            jsonResponse(res, 200, { ok: true, configured })
+            return
+          }
+          if (req.method !== 'POST') {
+            jsonResponse(res, 405, { ok: false, error: 'method not allowed (GET/POST only)' })
+            return
+          }
+          try {
+            const value = await readJsonBody(req)
+            const token = typeof value.token === 'string' ? value.token.trim() : ''
+            if (!cred || typeof cred.set !== 'function') {
+              jsonResponse(res, 500, { ok: false, error: 'credentials service unavailable' })
+              return
+            }
+            if (token) {
+              await cred.set('DEEPSEEK_PLATFORM_TOKEN', token)
+              balanceService.invalidate()
+              jsonResponse(res, 200, { ok: true, configured: true })
+            } else {
+              if (typeof cred.unset === 'function') {
+                try { await cred.unset('DEEPSEEK_PLATFORM_TOKEN') } catch { /* 忽略 */ }
+              }
+              balanceService.invalidate()
+              jsonResponse(res, 200, { ok: true, configured: false })
+            }
+          } catch (error) {
+            jsonResponse(res, 400, { ok: false, error: String((error && error.message) || error) })
+          }
+        } }),
+        'dsh-pet-remielle: platform token endpoint',
+      )
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: STREAM_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return

@@ -517,6 +517,12 @@ function PetsSection() {
   var config = configState[0]
   var setConfig = configState[1]
   var sliderTimers = React.useRef(new Map())
+  var tokenState = React.useState('')               // 平台令牌输入框
+  var tokenValue = tokenState[0]
+  var setTokenValue = tokenState[1]
+  var tokenOkState = React.useState(null)           // null=未知 true=已配置 false=未配置
+  var tokenConfigured = tokenOkState[0]
+  var setTokenConfigured = tokenOkState[1]
   var updState = React.useState(null)       // { latest, notes, htmlUrl } | null
   var updInfo = updState[0]
   var setUpdInfo = updState[1]
@@ -563,6 +569,10 @@ function PetsSection() {
     var active = true
     fetchJson(CONFIG_ENDPOINT)
       .then(function (next) { if (active) setConfig(next) })
+      .catch(function () {})
+    fetch('/plugins/dsh-pet-remielle/platform-token', { cache: 'no-store' })
+      .then(function (r) { return r.json().catch(function () { return null }) })
+      .then(function (j) { if (active && j && typeof j.configured === 'boolean') setTokenConfigured(j.configured) })
       .catch(function () {})
     return function () { active = false; for (var _t of sliderTimers.current.values()) clearTimeout(_t); sliderTimers.current.clear() }
   }, [])
@@ -693,6 +703,55 @@ function PetsSection() {
       },
         React.createElement('option', { value: 'ledger' }, '小鲸鱼记账（免令牌）'),
         React.createElement('option', { value: 'token' }, '实时·令牌（精确）'),
+      ),
+    ),
+    React.createElement(Field, { label: '平台令牌（DEEPSEEK_PLATFORM_TOKEN）', hint: '用于「实时·令牌」模式（精确统计今日已用）。获取：登录 platform.deepseek.com → F12 → Network → 用量请求的 Authorization 头。令牌仅保存到 DSH 凭据服务，不会写入插件配置。' },
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
+        React.createElement('input', {
+          type: 'password',
+          value: tokenValue,
+          disabled: !config,
+          placeholder: tokenConfigured === true ? '已配置 ✓（输入新令牌可覆盖，留空并保存可清除）' : '粘贴平台令牌',
+          onChange: function (e) { setTokenValue(e.target.value) },
+          style: { flex: 1, minWidth: 0, padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-color, #d8d8d8)', background: 'transparent', fontSize: 12, fontFamily: 'inherit', color: 'inherit' },
+        }),
+        React.createElement('button', {
+          type: 'button',
+          disabled: !config || tokenValue.trim() === '',
+          style: { padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border-color, #d8d8d8)', background: 'transparent', cursor: config ? 'pointer' : 'default', fontSize: 12, fontFamily: 'inherit', whiteSpace: 'nowrap' },
+          onClick: function () {
+            fetch('/plugins/dsh-pet-remielle/platform-token', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: tokenValue.trim() }),
+            })
+              .then(function (r) { return r.json().catch(function () { return null }) })
+              .then(function (j) {
+                if (j && j.ok) {
+                  setTokenConfigured(true)
+                  setTokenValue('')
+                }
+              })
+              .catch(function () {})
+          },
+        }, '保存'),
+        tokenConfigured === true
+          ? React.createElement('button', {
+              type: 'button',
+              disabled: !config,
+              style: { padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border-color, #d8d8d8)', background: 'transparent', cursor: config ? 'pointer' : 'default', fontSize: 12, fontFamily: 'inherit', whiteSpace: 'nowrap' },
+              onClick: function () {
+                fetch('/plugins/dsh-pet-remielle/platform-token', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ token: '' }),
+                })
+                  .then(function (r) { return r.json().catch(function () { return null }) })
+                  .then(function (j) { if (j && j.ok) setTokenConfigured(false) })
+                  .catch(function () {})
+              },
+            }, '清除')
+          : null,
       ),
     ),
   )
