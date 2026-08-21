@@ -30,6 +30,18 @@
   }
   .bubble-title { font-weight: 600; color: #b03a60; }
   .bubble-detail { color: #c2607f; margin-top: 2px; font-size: 11px; }
+  /* 气泡翻页圆点 */
+  .bubble-dots { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 5px; pointer-events: auto; z-index: 1; }
+  .bubble-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(240,120,160,.25); cursor: pointer; transition: background .2s; }
+  .bubble-dot.active { background: #b03a60; }
+  /* 气泡翻页圆点 */
+  .bubble-dots { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 5px; pointer-events: auto; z-index: 1; }
+  .bubble-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(240,120,160,.25); cursor: pointer; transition: background .2s; }
+  .bubble-dot.active { background: #b03a60; }
+  /* 气泡翻页圆点 */
+  .bubble-dots { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 5px; pointer-events: auto; z-index: 1; }
+  .bubble-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(240,120,160,.25); cursor: pointer; transition: background .2s; }
+  .bubble-dot.active { background: #b03a60; }
   img { width: 180px; height: auto; display: block; }
   @media (prefers-color-scheme: dark) {
     .bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
@@ -65,11 +77,16 @@
 </style>
 </head>
 <body>
+  <script src="/plugins/dsh-pet-remielle/balance-widget.js"></script>
   <div class="menu" id="menu"></div>
   <div class="pet">
-    <div class="bubble" id="bubble">
+    <div class="bubble" id="bubble" style="position:relative;">
       <div class="bubble-title" id="title"></div>
       <div class="bubble-detail" id="detail"></div>
+      <div class="bubble-dots">
+        <div class="bubble-dot active" id="dot0" title="状态"></div>
+        <div class="bubble-dot" id="dot1" title="余额"></div>
+      </div>
     </div>
     <img id="pet" alt="蕾米埃尔" draggable="false">
   </div>
@@ -78,12 +95,58 @@
   var titleEl = document.getElementById('title')
   var detailEl = document.getElementById('detail')
   var imgEl = document.getElementById('pet')
+  var dot0El = document.getElementById('dot0')
+  var dot1El = document.getElementById('dot1')
+  var currentBubblePage = 0
+  var prevBubbleVisible = false
+  var balanceRequested = false
+  function switchBubblePage(p) {
+    currentBubblePage = p
+    dot0El.className = 'bubble-dot' + (p === 0 ? ' active' : '')
+    dot1El.className = 'bubble-dot' + (p === 1 ? ' active' : '')
+    if (p === 0) {
+      balanceFrame = null
+      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
+      if (lastSnapshot) apply(lastSnapshot)
+      if (window.__petBalance && window.__petBalance.showStatus) window.__petBalance.showStatus()
+    } else if (p === 1 && window.__petBalance && window.__petBalance.showBalance) {
+      window.__petBalance.showBalance()
+    }
+  }
+  dot0El.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(0) })
+  dot1El.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(1) })
+  bubbleEl.addEventListener('wheel', function (e) {
+    e.preventDefault(); e.stopPropagation()
+    switchBubblePage(currentBubblePage === 0 ? 1 : 0)
+  }, { passive: false })
   var picEl = document.createElement('img')
   picEl.style.cssText = 'position:fixed;right:24px;top:24px;width:220px;height:auto;border-radius:10px;box-shadow:0 8px 24px rgba(15,30,72,.3);display:none;cursor:pointer;'
   picEl.title = '点击关闭'
   picEl.addEventListener('click', function () { picEl.style.display = 'none' })
   document.body.appendChild(picEl)
   var lastSnapshot = null
+  var balanceFrame = null
+  var petPaused = false
+  var petAnimatedSrc = null
+  function setPetPaused(v) {
+    if (v === petPaused) return
+    petPaused = v
+    if (v) {
+      // 暂停 GIF：把当前帧冻结成静态图
+      try {
+        var cv = document.createElement('canvas')
+        cv.width = imgEl.naturalWidth || 180
+        cv.height = imgEl.naturalHeight || 180
+        var g = cv.getContext('2d')
+        g.drawImage(imgEl, 0, 0, cv.width, cv.height)
+        petAnimatedSrc = imgEl.src
+        imgEl.src = cv.toDataURL('image/png')
+      } catch (e) { /* 冻结失败则忽略 */ }
+    } else {
+      if (petAnimatedSrc) { imgEl.src = petAnimatedSrc; petAnimatedSrc = null }
+      imgEl.dataset.mood = '' // 强制下次 apply 重新设置正确贴纸
+    }
+  }
   var BUBBLE_TITLE_MS = 2000
   var lastBubbleMood = ''
   var lastBubbleText = ''
@@ -104,8 +167,9 @@
   function hitInteractive(e) {
     var el = document.elementFromPoint(e.clientX, e.clientY)
     if (!el || !el.closest) return false
-    // pet image, artwork popup, or the right-click menu — anything else passes through
-    return Boolean(el.closest('img') || el.closest('#menu'))
+    // pet image, artwork popup, status/balance bubble, or the right-click
+    // menu — anything else passes through
+    return Boolean(el.closest('img') || el.closest('#menu') || el.closest('.bubble'))
   }
   function syncClickThrough(e) {
     if (dragState) return // keep the window interactive while dragging
@@ -195,15 +259,40 @@
     }, true))
     menuEl.appendChild(menuRow('显示气泡', snap ? snap.bubble !== false : true, function () {
       var next = !(snap ? snap.bubble !== false : true)
+      // 与设置中的总开关逻辑一致：关闭→全部子开关关闭；开启→全部子开关打开
+      var body = { showBubble: next }
+      if (!next) { body.showBubbleStatus = false; body.showBubbleUsage = false }
+      else { body.showBubbleStatus = true; body.showBubbleUsage = true }
       fetch('/plugins/dsh-pet-remielle/config', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ showBubble: next }),
+        body: JSON.stringify(body),
       }).catch(function () {})
-      if (snap) { snap.bubble = next; apply(snap) }
+      if (snap) { snap.bubble = next; snap.showBubbleStatus = next; snap.showBubbleUsage = next; apply(snap) }
       buildMenu()
     }, true))
     menuEl.appendChild(menuRow('画画', null, function () { playDraw(); closeMenu() }, true))
+    // 用量模式：小鲸鱼记账（免令牌） / 实时·令牌（精确）
+    var umRow = document.createElement('div')
+    umRow.className = 'menu-item'
+    var umLabel = document.createElement('span')
+    umLabel.textContent = '用量模式'
+    var umSelect = document.createElement('select')
+    umSelect.style.cssText = 'flex:1;border:1px solid rgba(240,120,160,.4);border-radius:6px;background:rgba(240,120,160,.08);color:#8a2f52;font-size:12px;padding:3px 0;cursor:pointer;'
+    function umOpt(value, text) { var o = document.createElement('option'); o.value = value; o.textContent = text; return o }
+    umSelect.appendChild(umOpt('ledger', '小鲸鱼记账'))
+    umSelect.appendChild(umOpt('token', '实时·令牌'))
+    umSelect.value = snap && snap.usageMode === 'token' ? 'token' : 'ledger'
+    umSelect.addEventListener('change', function () {
+      fetch('/plugins/dsh-pet-remielle/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ usageMode: umSelect.value }),
+      }).catch(function () {})
+    })
+    umRow.appendChild(umLabel)
+    umRow.appendChild(umSelect)
+    menuEl.appendChild(umRow)
     menuEl.appendChild(menuSep())
     menuEl.appendChild(menuRow('切换到网页模式', null, function () {
       // 与设置同步：先确保 desktopMode=false 写入成功，宿主 watch 会关停
@@ -221,6 +310,9 @@
   function openMenuAt() {
     buildMenu()
     menuEl.style.display = 'block'
+    // 菜单打开时强制窗口可交互（关闭点击穿透），否则外部点击会落到桌面
+    clickThrough = false
+    if (window.petBridge) window.petBridge.setClickThrough(false)
     var mw = menuEl.offsetWidth
     var mh = menuEl.offsetHeight
     var W = window.innerWidth || 380
@@ -295,38 +387,95 @@
   function apply(snapshot) {
     if (!snapshot) return
     lastSnapshot = snapshot
+    if (window.__petBalance) {
+      if (!window.__petBalanceInited) {
+        window.__petBalanceInited = true
+        window.__petBalance.init(snapshot.usageMode || 'ledger')
+      } else if (snapshot.usageMode) {
+        window.__petBalance.setUsageMode(snapshot.usageMode)
+      }
+    }
     lockedNow = snapshot.locked === true
     syncCursor()
-    // 禁用桌宠：隐藏宠物与气泡（页面内宠物已在宿主侧随之隐藏）
-    if (snapshot.enabled === false) {
+    // 禁用桌宠或隐藏桌宠：隐藏宠物与气泡
+    if (snapshot.enabled === false || snapshot.hidden === true) {
       imgEl.style.display = 'none'
       bubbleEl.style.display = 'none'
       return
     }
     imgEl.style.display = 'block'
+    setPetPaused(snapshot.paused === true)
     var mood = moodOverride && moodOverride.until > Date.now() ? moodOverride.mood : (snapshot.mood || '06')
     var src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(snapshot.petId || 'remielle') + '/' + mood + '.gif'
-    if (imgEl.dataset.mood !== mood) {
+    if (!petPaused && imgEl.dataset.mood !== mood) {
       imgEl.src = src
       imgEl.dataset.mood = mood
     }
     applyTransform(mood, snapshot)
     imgEl.style.opacity = String(snapshot.opacity ?? 1)
-    var show = snapshot.bubble !== false && Boolean(snapshot.detail)
-    if (show) {
-      // 标题：mood 未变时最多每 BUBBLE_TITLE_MS 换一次（think/输出不逐 chunk 翻），
-      // mood/阶段切换则立即更新；详情（进度/任务）随变化即时更新。
-      var now = Date.now()
-      var moodChanged = snapshot.mood !== lastBubbleMood
-      if (moodChanged || (snapshot.message !== lastBubbleText && now - lastBubbleTitleAt >= BUBBLE_TITLE_MS)) {
-        lastBubbleTitleAt = now
-        lastBubbleMood = snapshot.mood
-        lastBubbleText = snapshot.message || ''
-        titleEl.textContent = snapshot.message || ''
+    // 翻页逻辑：双开时 currentBubblePage 决定显示哪个子项；单开时强制显示开启的子项
+    var statusOn = snapshot.showBubble !== false && snapshot.showBubbleStatus !== false
+    var usageOn = snapshot.showBubble !== false && snapshot.showBubbleUsage === true
+    var bothOn = statusOn && usageOn
+    var anyOn = statusOn || usageOn
+    // 气泡从无到有时回到状态页
+    var bubbleEnabled = snapshot.showBubble !== false && anyOn
+    if (bubbleEnabled && !prevBubbleVisible && currentBubblePage !== 0) {
+      currentBubblePage = 0
+      balanceFrame = null
+      balanceRequested = false
+      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
+    }
+    prevBubbleVisible = bubbleEnabled
+    // 强制页面归属
+    var pageBefore = currentBubblePage
+    if (!statusOn && usageOn && currentBubblePage === 0) { currentBubblePage = 1 }
+    if (statusOn && !usageOn) { currentBubblePage = 0 }
+    if (statusOn && usageOn && currentBubblePage > 1) currentBubblePage = 0
+    // 页面发生强制切换时，清掉文本节流缓存，避免旧页面内容（如余额）残留
+    if (currentBubblePage !== pageBefore) {
+      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
+      if (currentBubblePage === 0) balanceFrame = null
+    }
+    // 进入余额页且尚无余额数据时，触发一次拉取（延迟执行，避免同步重入）
+    if (currentBubblePage === 1 && !(balanceFrame && balanceFrame.kind === 'balance') && window.__petBalance && !balanceRequested) {
+      balanceRequested = true
+      window.setTimeout(function () { if (window.__petBalance) window.__petBalance.showBalance() }, 0)
+    }
+    if (currentBubblePage === 0) balanceRequested = false
+    // 圆点：双开时显示并高亮当前页
+    var dotsEl = dot0El ? dot0El.parentNode : null
+    if (dotsEl) dotsEl.style.display = bothOn ? '' : 'none'
+    if (dot0El && dot1El) {
+      dot0El.className = 'bubble-dot' + (currentBubblePage === 0 ? ' active' : '')
+      dot1El.className = 'bubble-dot' + (currentBubblePage === 1 ? ' active' : '')
+    }
+    var cur = currentBubblePage
+    var show = anyOn && (cur === 0 ? statusOn : usageOn)
+    if (cur === 0) {
+      // 状态页
+      show = show && Boolean(snapshot.detail)
+      if (show) {
+        var now = Date.now()
+        var moodChanged = snapshot.mood !== lastBubbleMood
+        if (moodChanged || (snapshot.message !== lastBubbleText && now - lastBubbleTitleAt >= BUBBLE_TITLE_MS)) {
+          lastBubbleTitleAt = now
+          lastBubbleMood = snapshot.mood
+          lastBubbleText = snapshot.message || ''
+          titleEl.textContent = snapshot.message || ''
+        }
+        if (snapshot.detail !== lastBubbleDetail) {
+          lastBubbleDetail = snapshot.detail || ''
+          detailEl.textContent = snapshot.detail || ''
+        }
       }
-      if (snapshot.detail !== lastBubbleDetail) {
-        lastBubbleDetail = snapshot.detail || ''
-        detailEl.textContent = snapshot.detail || ''
+    } else if (cur === 1) {
+      // 余额页
+      show = show && !!balanceFrame && balanceFrame.kind === 'balance'
+      if (show) {
+        titleEl.textContent = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
+        titleEl.style.color = ''
+        detailEl.innerHTML = (balanceFrame.detail || '') + ' · <span style="color:' + (balanceFrame.color || '#888') + '">' + (balanceFrame.period || '') + '</span>'
       }
     }
     bubbleEl.style.display = show ? 'block' : 'none'
@@ -347,6 +496,18 @@
   }
   setInterval(poll, 5000)
   poll()
+
+  // 余额控制器：把显示帧渲染进自带气泡
+  if (window.__petBalance) {
+    window.__petBalance.subscribe(function (frame) {
+      // 只存数据，不直接渲染气泡；气泡渲染统一由 apply 根据 currentBubblePage 决定
+      balanceFrame = frame
+      // 延迟渲染，避免与快照驱动的 apply 重入竞争
+      if (currentBubblePage === 1 && lastSnapshot) {
+        window.setTimeout(function () { if (currentBubblePage === 1 && lastSnapshot) apply(lastSnapshot) }, 0)
+      }
+    })
+  }
 
   // Double-click (or menu 画画): drawing sticker loop + brush-reveal artwork.
   // Renders off-screen and streams frames to a desktop-top-right window (via

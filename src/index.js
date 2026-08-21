@@ -39,9 +39,10 @@ import {
   parsePetManifest,
   upsertPet,
 } from './pets.js'
+import { createBalanceService, normalizeUsageMode } from './balance.js'
 
 export const name = 'dsh-pet-remielle'
-export const inject = ['sessions']
+export const inject = ['sessions', 'credentials']
 export const CONFIG_ENDPOINT = '/plugins/dsh-pet-remielle/config'
 export const STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
 export const STREAM_ENDPOINT = '/plugins/dsh-pet-remielle/stream'
@@ -51,6 +52,7 @@ export const ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 export const PET_VIEW_ENDPOINT = '/plugins/dsh-pet-remielle/pet-view'
 export const DESKTOP_ENDPOINT = '/plugins/dsh-pet-remielle/desktop'
 export const PLUGIN_KEY = 'dsh-pet-remielle'
+export const BALANCE_ENDPOINT = '/plugins/dsh-pet-remielle/balance'
 
 const petEntry = Schema.object({
   id: Schema.string().required().description('宠物 id（assets/pets/<id> 目录名）'),
@@ -67,6 +69,10 @@ export const Config = Schema.object({
   hidden: Schema.boolean().default(false).description('隐藏桌宠'),
   includeSubagents: Schema.boolean().default(false).description('允许子 Agent 抢占宠物状态'),
   showBubble: Schema.boolean().default(true).description('在宠物上方显示状态气泡（阶段/待办/进度）'),
+  showBubbleStatus: Schema.boolean().default(true).description('气泡中显示会话状态（任务阶段/进度）'),
+  showBubbleUsage: Schema.boolean().default(false).description('气泡中显示 DeepSeek 余额/今日已用'),
+  usageMode: Schema.string().default('ledger').description('今日已用统计模式：小鲸鱼记账（ledger，免令牌）或 实时·令牌（token，需平台会话令牌）'),
+  platformToken: Schema.string().default('').description('DEEPSEEK_PLATFORM_TOKEN 平台会话令牌（实时·令牌模式需要，留空时回落到 DSH 凭据服务）'),
   desktopMode: Schema.boolean().default(false).description('桌面悬浮模式：用独立置顶窗口显示宠物（打开时如无 Electron 会自动下载运行时，下载失败则回落页面内）'),
   posX: Schema.number().default(null).description('宠物 X 位置（null = 使用默认位置）'),
   posY: Schema.number().default(null).description('宠物 Y 位置（null = 使用默认位置）'),
@@ -83,6 +89,10 @@ const defaults = Object.freeze({
   hidden: false,
   includeSubagents: false,
   showBubble: true,
+  showBubbleStatus: true,
+  showBubbleUsage: false,
+  usageMode: 'ledger',
+  platformToken: '',
   desktopMode: false,
   posX: null,
   posY: null,
@@ -100,6 +110,10 @@ function publicConfig(config = {}) {
     hidden: config.hidden ?? defaults.hidden,
     includeSubagents: config.includeSubagents ?? defaults.includeSubagents,
     showBubble: config.showBubble ?? defaults.showBubble,
+    showBubbleStatus: config.showBubbleStatus ?? defaults.showBubbleStatus,
+    showBubbleUsage: config.showBubbleUsage ?? defaults.showBubbleUsage,
+    usageMode: normalizeUsageMode(config.usageMode),
+    platformToken: config.platformToken ?? defaults.platformToken,
     desktopMode: config.desktopMode ?? defaults.desktopMode,
     posX: config.posX ?? defaults.posX,
     posY: config.posY ?? defaults.posY,
@@ -159,7 +173,7 @@ async function readJsonBody(req) {
 }
 
 export function createConfigHandler(settings) {
-  const allowed = new Set(['enabled', 'scale', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'desktopMode', 'posX', 'posY'])
+  const allowed = new Set(['enabled', 'scale', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus', 'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY'])
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method === 'GET') {
@@ -411,6 +425,12 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       opacity: config.opacity,
       locked: config.locked === true,
       bubble: config.showBubble !== false,
+      showBubbleStatus: config.showBubbleStatus !== false,
+      showBubbleUsage: config.showBubbleUsage === true,
+      usageMode: config.usageMode ?? 'ledger',
+      platformToken: config.platformToken ?? '',
+      paused: config.paused === true,
+      hidden: config.hidden === true,
       desktopActive: desktopActiveOf(),
       desktopMode: config.desktopMode === true,
       petId: petIdOf() ?? DEFAULT_PET_ID,
@@ -512,6 +532,22 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     base,
     applies: 'live',
   }) ?? localSettingsScope(base)
+
+  const resolveCredential = (name) => {
+    const cred = eventCtx.credentials ?? ctx.credentials
+    if (!cred || typeof cred.resolve !== 'function') return Promise.resolve(null)
+    try {
+      return cred.resolve(name)
+    } catch (err) {
+      return Promise.reject(err)
+    }
+  }
+  const balanceService = createBalanceService({
+    resolveCredential,
+    getPlatformToken: () => String(settings.get().platformToken || ''),
+    log: (code, error) => logger.error?.(`dsh-pet-remielle: ${code} ${error}`),
+  })
+  let usageModeNow = normalizeUsageMode(settings.get().usageMode)
 
   const petsRoot = fileURLToPath(new URL('../assets/pets/', import.meta.url))
 
@@ -631,6 +667,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       onMessage(message)
       hub.broadcast()
     }
+    // 用量模式切换时使余额缓存失效，下次请求立即按新模式计算
+    const mode = normalizeUsageMode(next.usageMode)
+    if (mode !== usageModeNow) {
+      usageModeNow = mode
+      balanceService.invalidate()
+    }
     // enabled/scale/opacity/locked are read live by the client on every poll.
     refreshRegistry().then(() => hub.broadcast())
   })
@@ -744,6 +786,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         petViewHtml = await readFile(new URL('../src/pet-view.html', import.meta.url), 'utf8')
         return petViewHtml
       }
+      let balanceWidgetJs = null
+      const readBalanceWidget = async () => {
+        if (balanceWidgetJs) return balanceWidgetJs
+        balanceWidgetJs = await readFile(new URL('../src/balance-widget.js', import.meta.url), 'utf8')
+        return balanceWidgetJs
+      }
 
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: CONFIG_ENDPOINT, handler: createConfigHandler(settings) }),
@@ -766,6 +814,16 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           }),
         }),
         'dsh-pet-remielle: completion notification acknowledgement',
+        () => httpCtx.webServer.register({ kind: 'exact', path: BALANCE_ENDPOINT, handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          try {
+            const payload = await balanceService.getBalance(settings.get().usageMode)
+            jsonResponse(res, 200, payload)
+          } catch (err) {
+            jsonResponse(res, 200, { ok: false, code: 'ERROR', error: String((err && err.message) || err).slice(0, 200) })
+          }
+        } }),
+        'dsh-pet-remielle: balance endpoint',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: STREAM_ENDPOINT, handler: async (req, res) => {
@@ -786,6 +844,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           res.end(html)
         } }),
         'dsh-pet-remielle: pet window view',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/balance-widget.js', handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const js = await readBalanceWidget()
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'cache-control': 'no-store',
+          })
+          res.end(js)
+        } }),
+        'dsh-pet-remielle: balance bubble client script',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({
