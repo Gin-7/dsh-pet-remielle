@@ -175,6 +175,19 @@
       enterBalance()
       refresh(true)
     },
+    /** 立即退出余额/展示模式，回到会话状态（如开始画画时调用）。 */
+    cancel: function () {
+      if (mode !== 'status') {
+        mode = 'status'
+        if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
+        emit({ kind: 'status' })
+      }
+    },
+    /** Pet single-click: manual refresh + switch the bubble to balance/time period. */
+    click: function () {
+      enterBalance()
+      refresh(true)
+    },
     subscribe: function (cb) {
       listeners.push(cb)
       return function () {

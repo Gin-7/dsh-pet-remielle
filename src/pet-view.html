@@ -89,6 +89,8 @@
   document.body.appendChild(picEl)
   var lastSnapshot = null
   var balanceFrame = null
+  var drawingActive = false
+  var clickTimer = null
   var petPaused = false
   var petAnimatedSrc = null
   function setPetPaused(v) {
@@ -329,8 +331,13 @@
       var pick = moods.filter(function (m) { return m !== current })
       moodOverride = { mood: pick[Math.floor(Math.random() * pick.length)], until: Date.now() + 1800 }
       apply(lastSnapshot)
-      // 余额：单击宠物切换到余额+时段显示并手动刷新
-      if (window.__petBalance) window.__petBalance.click()
+      // 余额：单击宠物切换到余额+时段显示并手动刷新。
+      // 延迟 250ms 执行，若紧随其后的双击（画画）到来则取消，避免双击先弹余额。
+      if (clickTimer) clearTimeout(clickTimer)
+      clickTimer = setTimeout(function () {
+        clickTimer = null
+        if (window.__petBalance) window.__petBalance.click()
+      }, 250)
     }
     dragState = null
     syncCursor()
@@ -451,7 +458,12 @@
   // petBridge) so it never covers the pet bubble; falls back to an in-window
   // canvas if no bridge is available.
   function playDraw() {
+    // 画画锁：上一张还在画时忽略新的触发，避免多张画面同时抽搐
+    if (drawingActive) return
     if (!lastSnapshot || !lastSnapshot.pics) return
+    drawingActive = true
+    // 立即退出余额展示，让「正在创作隐晦物品」立刻显示
+    if (window.__petBalance) window.__petBalance.cancel()
     var PIC_DRAW_MS = 6000 // 绘制时长 == 显示“绘制中(01)”的时长
     moodOverride = { mood: '01', until: Date.now() + PIC_DRAW_MS }
     apply(lastSnapshot)
@@ -462,6 +474,8 @@
       runBrushReveal(img, img.naturalWidth || 220, img.naturalHeight || 220)
     }
     img.src = src
+    // 整个画画序列（绘制 6s + 得意 2.2s + 淡出 0.8s + 余量）结束后解锁
+    setTimeout(function () { drawingActive = false }, PIC_DRAW_MS + 3500)
   }
 
   function runBrushReveal(img, W, H) {
@@ -554,7 +568,11 @@
     }
     window.requestAnimationFrame(frame)
   }
-  window.addEventListener('dblclick', playDraw)
+  window.addEventListener('dblclick', function () {
+    // 双击=画画：取消挂起的单击（余额）动作，立即进入画画
+    if (clickTimer) { clearTimeout(clickTimer); clickTimer = null }
+    playDraw()
+  })
 
   // Mouse wheel: resize the pet (persisted through host config).
   window.addEventListener('wheel', function (e) {
