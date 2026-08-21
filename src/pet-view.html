@@ -376,8 +376,19 @@
       bubbleEl.style.display = 'block'
       return
     }
-    var show = snapshot.bubble !== false && Boolean(snapshot.detail)
+    var drawing = moodOverride && moodOverride.mood === '01' && moodOverride.until > Date.now()
+    var show = drawing || (snapshot.bubble !== false && Boolean(snapshot.detail))
     if (show) {
+      if (drawing) {
+        // 画画中：显示指定文案（离开画画后通过 lastBubbleMood 标记强制恢复会话消息）
+        if (lastBubbleMood !== '__drawing__') {
+          lastBubbleMood = '__drawing__'
+          lastBubbleText = ''
+          lastBubbleDetail = ''
+        }
+        titleEl.textContent = '正在创作隐晦物品'
+        detailEl.textContent = ''
+      } else {
       // 标题：mood 未变时最多每 BUBBLE_TITLE_MS 换一次（think/输出不逐 chunk 翻），
       // mood/阶段切换则立即更新；详情（进度/任务）随变化即时更新。
       var now = Date.now()
@@ -391,6 +402,7 @@
       if (snapshot.detail !== lastBubbleDetail) {
         lastBubbleDetail = snapshot.detail || ''
         detailEl.textContent = snapshot.detail || ''
+      }
       }
     }
     bubbleEl.style.display = show ? 'block' : 'none'
