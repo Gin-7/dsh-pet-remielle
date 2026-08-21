@@ -98,6 +98,8 @@
   var dot0El = document.getElementById('dot0')
   var dot1El = document.getElementById('dot1')
   var currentBubblePage = 0
+  var prevBubbleVisible = false
+  var balanceRequested = false
   function switchBubblePage(p) {
     currentBubblePage = p
     dot0El.className = 'bubble-dot' + (p === 0 ? ' active' : '')
@@ -257,12 +259,16 @@
     }, true))
     menuEl.appendChild(menuRow('显示气泡', snap ? snap.bubble !== false : true, function () {
       var next = !(snap ? snap.bubble !== false : true)
+      // 与设置中的总开关逻辑一致：关闭→全部子开关关闭；开启→全部子开关打开
+      var body = { showBubble: next }
+      if (!next) { body.showBubbleStatus = false; body.showBubbleUsage = false }
+      else { body.showBubbleStatus = true; body.showBubbleUsage = true }
       fetch('/plugins/dsh-pet-remielle/config', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ showBubble: next }),
+        body: JSON.stringify(body),
       }).catch(function () {})
-      if (snap) { snap.bubble = next; apply(snap) }
+      if (snap) { snap.bubble = next; snap.showBubbleStatus = next; snap.showBubbleUsage = next; apply(snap) }
       buildMenu()
     }, true))
     menuEl.appendChild(menuRow('画画', null, function () { playDraw(); closeMenu() }, true))
@@ -304,6 +310,9 @@
   function openMenuAt() {
     buildMenu()
     menuEl.style.display = 'block'
+    // 菜单打开时强制窗口可交互（关闭点击穿透），否则外部点击会落到桌面
+    clickThrough = false
+    if (window.petBridge) window.petBridge.setClickThrough(false)
     var mw = menuEl.offsetWidth
     var mh = menuEl.offsetHeight
     var W = window.innerWidth || 380
@@ -404,26 +413,69 @@
     }
     applyTransform(mood, snapshot)
     imgEl.style.opacity = String(snapshot.opacity ?? 1)
-    // 余额/随机台词模式下，气泡内容由余额控制器渲染，不被会话状态覆盖
-    if (balanceFrame && balanceFrame.kind === 'balance') {
-      bubbleEl.style.display = 'block'
-      return
+    // 翻页逻辑：双开时 currentBubblePage 决定显示哪个子项；单开时强制显示开启的子项
+    var statusOn = snapshot.showBubble !== false && snapshot.showBubbleStatus !== false
+    var usageOn = snapshot.showBubble !== false && snapshot.showBubbleUsage === true
+    var bothOn = statusOn && usageOn
+    var anyOn = statusOn || usageOn
+    // 气泡从无到有时回到状态页
+    var bubbleEnabled = snapshot.showBubble !== false && anyOn
+    if (bubbleEnabled && !prevBubbleVisible && currentBubblePage !== 0) {
+      currentBubblePage = 0
+      balanceFrame = null
+      balanceRequested = false
+      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
     }
-    var show = snapshot.bubble !== false && Boolean(snapshot.detail)
-    if (show) {
-      // 标题：mood 未变时最多每 BUBBLE_TITLE_MS 换一次（think/输出不逐 chunk 翻），
-      // mood/阶段切换则立即更新；详情（进度/任务）随变化即时更新。
-      var now = Date.now()
-      var moodChanged = snapshot.mood !== lastBubbleMood
-      if (moodChanged || (snapshot.message !== lastBubbleText && now - lastBubbleTitleAt >= BUBBLE_TITLE_MS)) {
-        lastBubbleTitleAt = now
-        lastBubbleMood = snapshot.mood
-        lastBubbleText = snapshot.message || ''
-        titleEl.textContent = snapshot.message || ''
+    prevBubbleVisible = bubbleEnabled
+    // 强制页面归属
+    var pageBefore = currentBubblePage
+    if (!statusOn && usageOn && currentBubblePage === 0) { currentBubblePage = 1 }
+    if (statusOn && !usageOn) { currentBubblePage = 0 }
+    if (statusOn && usageOn && currentBubblePage > 1) currentBubblePage = 0
+    // 页面发生强制切换时，清掉文本节流缓存，避免旧页面内容（如余额）残留
+    if (currentBubblePage !== pageBefore) {
+      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
+      if (currentBubblePage === 0) balanceFrame = null
+    }
+    // 进入余额页且尚无余额数据时，触发一次拉取（延迟执行，避免同步重入）
+    if (currentBubblePage === 1 && !(balanceFrame && balanceFrame.kind === 'balance') && window.__petBalance && !balanceRequested) {
+      balanceRequested = true
+      window.setTimeout(function () { if (window.__petBalance) window.__petBalance.showBalance() }, 0)
+    }
+    if (currentBubblePage === 0) balanceRequested = false
+    // 圆点：双开时显示并高亮当前页
+    var dotsEl = dot0El ? dot0El.parentNode : null
+    if (dotsEl) dotsEl.style.display = bothOn ? '' : 'none'
+    if (dot0El && dot1El) {
+      dot0El.className = 'bubble-dot' + (currentBubblePage === 0 ? ' active' : '')
+      dot1El.className = 'bubble-dot' + (currentBubblePage === 1 ? ' active' : '')
+    }
+    var cur = currentBubblePage
+    var show = anyOn && (cur === 0 ? statusOn : usageOn)
+    if (cur === 0) {
+      // 状态页
+      show = show && Boolean(snapshot.detail)
+      if (show) {
+        var now = Date.now()
+        var moodChanged = snapshot.mood !== lastBubbleMood
+        if (moodChanged || (snapshot.message !== lastBubbleText && now - lastBubbleTitleAt >= BUBBLE_TITLE_MS)) {
+          lastBubbleTitleAt = now
+          lastBubbleMood = snapshot.mood
+          lastBubbleText = snapshot.message || ''
+          titleEl.textContent = snapshot.message || ''
+        }
+        if (snapshot.detail !== lastBubbleDetail) {
+          lastBubbleDetail = snapshot.detail || ''
+          detailEl.textContent = snapshot.detail || ''
+        }
       }
-      if (snapshot.detail !== lastBubbleDetail) {
-        lastBubbleDetail = snapshot.detail || ''
-        detailEl.textContent = snapshot.detail || ''
+    } else if (cur === 1) {
+      // 余额页
+      show = show && !!balanceFrame && balanceFrame.kind === 'balance'
+      if (show) {
+        titleEl.textContent = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
+        titleEl.style.color = ''
+        detailEl.innerHTML = (balanceFrame.detail || '') + ' · <span style="color:' + (balanceFrame.color || '#888') + '">' + (balanceFrame.period || '') + '</span>'
       }
     }
     bubbleEl.style.display = show ? 'block' : 'none'
@@ -448,19 +500,11 @@
   // 余额控制器：把显示帧渲染进自带气泡
   if (window.__petBalance) {
     window.__petBalance.subscribe(function (frame) {
+      // 只存数据，不直接渲染气泡；气泡渲染统一由 apply 根据 currentBubblePage 决定
       balanceFrame = frame
-      if (frame.kind === 'balance') {
-        titleEl.textContent = (frame.label || 'DeepSeek 余额') + '  ' + frame.amount
-        titleEl.style.color = ''
-        detailEl.innerHTML = frame.detail + ' · <span style="color:' + (frame.color || '') + '">' + frame.period + '</span>'
-        bubbleEl.style.display = 'block'
-      } else if (frame.kind === 'status') {
-        balanceFrame = null
-        // 清掉状态气泡的节流缓存，强制恢复会话状态内容
-        lastBubbleMood = ''
-        lastBubbleText = ''
-        lastBubbleDetail = ''
-        if (lastSnapshot) apply(lastSnapshot)
+      // 延迟渲染，避免与快照驱动的 apply 重入竞争
+      if (currentBubblePage === 1 && lastSnapshot) {
+        window.setTimeout(function () { if (currentBubblePage === 1 && lastSnapshot) apply(lastSnapshot) }, 0)
       }
     })
   }

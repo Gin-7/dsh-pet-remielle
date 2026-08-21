@@ -68,7 +68,10 @@ export const Config = Schema.object({
   hidden: Schema.boolean().default(false).description('隐藏桌宠'),
   includeSubagents: Schema.boolean().default(false).description('允许子 Agent 抢占宠物状态'),
   showBubble: Schema.boolean().default(true).description('在宠物上方显示状态气泡（阶段/待办/进度）'),
+  showBubbleStatus: Schema.boolean().default(true).description('气泡中显示会话状态（任务阶段/进度）'),
+  showBubbleUsage: Schema.boolean().default(false).description('气泡中显示 DeepSeek 余额/今日已用'),
   usageMode: Schema.string().default('ledger').description('今日已用统计模式：小鲸鱼记账（ledger，免令牌）或 实时·令牌（token，需平台会话令牌）'),
+  platformToken: Schema.string().default('').description('DEEPSEEK_PLATFORM_TOKEN 平台会话令牌（实时·令牌模式需要，留空时回落到 DSH 凭据服务）'),
   desktopMode: Schema.boolean().default(false).description('桌面悬浮模式：用独立置顶窗口显示宠物（打开时如无 Electron 会自动下载运行时，下载失败则回落页面内）'),
   posX: Schema.number().default(null).description('宠物 X 位置（null = 使用默认位置）'),
   posY: Schema.number().default(null).description('宠物 Y 位置（null = 使用默认位置）'),
@@ -85,7 +88,10 @@ const defaults = Object.freeze({
   hidden: false,
   includeSubagents: false,
   showBubble: true,
+  showBubbleStatus: true,
+  showBubbleUsage: false,
   usageMode: 'ledger',
+  platformToken: '',
   desktopMode: false,
   posX: null,
   posY: null,
@@ -103,7 +109,10 @@ function publicConfig(config = {}) {
     hidden: config.hidden ?? defaults.hidden,
     includeSubagents: config.includeSubagents ?? defaults.includeSubagents,
     showBubble: config.showBubble ?? defaults.showBubble,
+    showBubbleStatus: config.showBubbleStatus ?? defaults.showBubbleStatus,
+    showBubbleUsage: config.showBubbleUsage ?? defaults.showBubbleUsage,
     usageMode: normalizeUsageMode(config.usageMode),
+    platformToken: config.platformToken ?? defaults.platformToken,
     desktopMode: config.desktopMode ?? defaults.desktopMode,
     posX: config.posX ?? defaults.posX,
     posY: config.posY ?? defaults.posY,
@@ -163,7 +172,7 @@ async function readJsonBody(req) {
 }
 
 export function createConfigHandler(settings) {
-  const allowed = new Set(['enabled', 'scale', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'usageMode', 'desktopMode', 'posX', 'posY'])
+  const allowed = new Set(['enabled', 'scale', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus', 'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY'])
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method === 'GET') {
@@ -325,7 +334,10 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       opacity: config.opacity,
       locked: config.locked === true,
       bubble: config.showBubble !== false,
+      showBubbleStatus: config.showBubbleStatus !== false,
+      showBubbleUsage: config.showBubbleUsage === true,
       usageMode: config.usageMode ?? 'ledger',
+      platformToken: config.platformToken ?? '',
       paused: config.paused === true,
       hidden: config.hidden === true,
       desktopActive: desktopActiveOf(),
@@ -440,6 +452,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   }
   const balanceService = createBalanceService({
     resolveCredential,
+    getPlatformToken: () => String(settings.get().platformToken || ''),
     log: (code, error) => logger.error?.(`dsh-pet-remielle: ${code} ${error}`),
   })
   let usageModeNow = normalizeUsageMode(settings.get().usageMode)
