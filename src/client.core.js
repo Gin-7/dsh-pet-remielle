@@ -60,9 +60,10 @@ var CSS = [
   '.rm2-pet-bubble{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;min-width:170px;max-width:340px;padding:8px 12px;border-radius:10px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 6px 20px rgba(190,70,110,.20);font-size:12px;line-height:1.45;text-align:center;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
   '.rm2-pet-bubble-title{font-weight:600;color:#b03a60;}',
   '.rm2-pet-bubble-detail{color:#c2607f;margin-top:2px;font-size:11px;}',
-  '.rm2-pet-bubble.rm2-balance-mode{min-width:210px;padding:10px 14px;}',
-  '.rm2-pet-bubble.rm2-balance-mode .rm2-pet-bubble-title{font-size:18px;font-weight:800;letter-spacing:.02em;color:#8a2f52;}',
-  '.rm2-pet-bubble.rm2-balance-mode .rm2-pet-bubble-detail{font-size:12px;margin-top:3px;}',
+  // 气泡翻页圆点
+  '.rm2-bubble-dots{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:5px;pointer-events:auto;z-index:1;}',
+  '.rm2-bubble-dot{width:7px;height:7px;border-radius:50%;background:rgba(240,120,160,.25);cursor:pointer;transition:background .2s;}',
+  '.rm2-bubble-dot.active{background:#b03a60;}',
   '.rm2-pet-bubble::after{content:\"\";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:6px solid transparent;border-top-color:rgba(240,120,160,.45);}',
   'body[data-ds-dark-theme] .rm2-pet-bubble{background:rgba(72,20,42,.96);border-color:rgba(255,150,185,.42);color:#ffd6e4;}',
   'body[data-ds-dark-theme] .rm2-pet-bubble-title{color:#ffd6e4;}',
@@ -808,6 +809,37 @@ function mountPet(ctx) {
   bubbleDetail.className = 'rm2-pet-bubble-detail'
   bubble.appendChild(bubbleTitle)
   bubble.appendChild(bubbleDetail)
+  // 翻页圆点
+  var bubbleDots = mk('div', '', '')
+  bubbleDots.className = 'rm2-bubble-dots'
+  var bubbleDot0 = mk('div', '', '')
+  bubbleDot0.className = 'rm2-bubble-dot active'
+  bubbleDot0.title = '状态'
+  var bubbleDot1 = mk('div', '', '')
+  bubbleDot1.className = 'rm2-bubble-dot'
+  bubbleDot1.title = '余额'
+  bubbleDots.appendChild(bubbleDot0)
+  bubbleDots.appendChild(bubbleDot1)
+  var currentBubblePage = 0
+  function switchBubblePage(p) {
+    currentBubblePage = p
+    bubbleDot0.className = 'rm2-bubble-dot' + (p === 0 ? ' active' : '')
+    bubbleDot1.className = 'rm2-bubble-dot' + (p === 1 ? ' active' : '')
+    if (p === 0) {
+      balanceFrame = null
+      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
+      if (lastSnapshot) updateBubble(lastSnapshot)
+      if (window.__petBalance && window.__petBalance.showStatus) window.__petBalance.showStatus()
+    } else if (p === 1 && window.__petBalance && window.__petBalance.showBalance) {
+      window.__petBalance.showBalance()
+    }
+  }
+  bubbleDot0.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(0) })
+  bubbleDot1.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(1) })
+  bubble.addEventListener('wheel', function (e) {
+    e.preventDefault(); e.stopPropagation()
+    switchBubblePage(currentBubblePage === 0 ? 1 : 0)
+  }, { passive: false })
   // Confirmation dialog
   var confirmOverlay = mk('div')
   confirmOverlay.className = 'rm2-pet-confirm-overlay'
@@ -1312,8 +1344,6 @@ function mountPet(ctx) {
     var pick = candidates[Math.floor(Math.random() * candidates.length)]
     manualOverride = { mood: pick, until: Date.now() + 1800 }
     sync()
-    // 余额：单击宠物切换到余额+时段显示并手动刷新
-    if (window.__petBalance) window.__petBalance.click()
   })
 
   // 余额控制器：把显示帧渲染进自带气泡（脚本异步加载，重试直到就绪）
@@ -1335,7 +1365,6 @@ function mountPet(ctx) {
       balanceFrame = frame
       if (frame.kind === 'balance') {
         bubble.style.pointerEvents = 'auto'
-        bubble.classList.add('rm2-balance-mode')
         bubbleTitle.textContent = (frame.label || 'DeepSeek 余额') + '  ' + frame.amount
         bubbleTitle.style.color = ''
         bubbleDetail.innerHTML = frame.detail + ' · <span style="color:' + (frame.color || '') + '">' + frame.period + '</span>'
@@ -1343,7 +1372,6 @@ function mountPet(ctx) {
       } else if (frame.kind === 'status') {
         balanceFrame = null
         bubble.style.pointerEvents = 'none'
-        bubble.classList.remove('rm2-balance-mode')
         // 清掉状态气泡的节流缓存，强制恢复会话状态内容
         lastBubbleMood = ''
         lastBubbleText = ''

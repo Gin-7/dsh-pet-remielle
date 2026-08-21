@@ -30,9 +30,18 @@
   }
   .bubble-title { font-weight: 600; color: #b03a60; }
   .bubble-detail { color: #c2607f; margin-top: 2px; font-size: 11px; }
-  .bubble.balance-mode { min-width: 210px; padding: 10px 14px; }
-  .bubble.balance-mode .bubble-title { font-size: 18px; font-weight: 800; letter-spacing: .02em; color: #8a2f52; }
-  .bubble.balance-mode .bubble-detail { font-size: 12px; margin-top: 3px; }
+  /* 气泡翻页圆点 */
+  .bubble-dots { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 5px; pointer-events: auto; z-index: 1; }
+  .bubble-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(240,120,160,.25); cursor: pointer; transition: background .2s; }
+  .bubble-dot.active { background: #b03a60; }
+  /* 气泡翻页圆点 */
+  .bubble-dots { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 5px; pointer-events: auto; z-index: 1; }
+  .bubble-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(240,120,160,.25); cursor: pointer; transition: background .2s; }
+  .bubble-dot.active { background: #b03a60; }
+  /* 气泡翻页圆点 */
+  .bubble-dots { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 5px; pointer-events: auto; z-index: 1; }
+  .bubble-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(240,120,160,.25); cursor: pointer; transition: background .2s; }
+  .bubble-dot.active { background: #b03a60; }
   img { width: 180px; height: auto; display: block; }
   @media (prefers-color-scheme: dark) {
     .bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
@@ -71,9 +80,13 @@
   <script src="/plugins/dsh-pet-remielle/balance-widget.js"></script>
   <div class="menu" id="menu"></div>
   <div class="pet">
-    <div class="bubble" id="bubble">
+    <div class="bubble" id="bubble" style="position:relative;">
       <div class="bubble-title" id="title"></div>
       <div class="bubble-detail" id="detail"></div>
+      <div class="bubble-dots">
+        <div class="bubble-dot active" id="dot0" title="状态"></div>
+        <div class="bubble-dot" id="dot1" title="余额"></div>
+      </div>
     </div>
     <img id="pet" alt="蕾米埃尔" draggable="false">
   </div>
@@ -82,6 +95,28 @@
   var titleEl = document.getElementById('title')
   var detailEl = document.getElementById('detail')
   var imgEl = document.getElementById('pet')
+  var dot0El = document.getElementById('dot0')
+  var dot1El = document.getElementById('dot1')
+  var currentBubblePage = 0
+  function switchBubblePage(p) {
+    currentBubblePage = p
+    dot0El.className = 'bubble-dot' + (p === 0 ? ' active' : '')
+    dot1El.className = 'bubble-dot' + (p === 1 ? ' active' : '')
+    if (p === 0) {
+      balanceFrame = null
+      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
+      if (lastSnapshot) apply(lastSnapshot)
+      if (window.__petBalance && window.__petBalance.showStatus) window.__petBalance.showStatus()
+    } else if (p === 1 && window.__petBalance && window.__petBalance.showBalance) {
+      window.__petBalance.showBalance()
+    }
+  }
+  dot0El.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(0) })
+  dot1El.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(1) })
+  bubbleEl.addEventListener('wheel', function (e) {
+    e.preventDefault(); e.stopPropagation()
+    switchBubblePage(currentBubblePage === 0 ? 1 : 0)
+  }, { passive: false })
   var picEl = document.createElement('img')
   picEl.style.cssText = 'position:fixed;right:24px;top:24px;width:220px;height:auto;border-radius:10px;box-shadow:0 8px 24px rgba(15,30,72,.3);display:none;cursor:pointer;'
   picEl.title = '点击关闭'
@@ -329,8 +364,6 @@
       var pick = moods.filter(function (m) { return m !== current })
       moodOverride = { mood: pick[Math.floor(Math.random() * pick.length)], until: Date.now() + 1800 }
       apply(lastSnapshot)
-      // 余额：单击宠物切换到余额+时段显示并手动刷新
-      if (window.__petBalance) window.__petBalance.click()
     }
     dragState = null
     syncCursor()
@@ -417,14 +450,12 @@
     window.__petBalance.subscribe(function (frame) {
       balanceFrame = frame
       if (frame.kind === 'balance') {
-        bubbleEl.classList.add('balance-mode')
         titleEl.textContent = (frame.label || 'DeepSeek 余额') + '  ' + frame.amount
         titleEl.style.color = ''
         detailEl.innerHTML = frame.detail + ' · <span style="color:' + (frame.color || '') + '">' + frame.period + '</span>'
         bubbleEl.style.display = 'block'
       } else if (frame.kind === 'status') {
         balanceFrame = null
-        bubbleEl.classList.remove('balance-mode')
         // 清掉状态气泡的节流缓存，强制恢复会话状态内容
         lastBubbleMood = ''
         lastBubbleText = ''

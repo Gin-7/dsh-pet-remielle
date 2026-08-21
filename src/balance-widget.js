@@ -175,6 +175,19 @@
       enterBalance()
       refresh(true)
     },
+    /** Switch to balance mode (no 5s auto-collapse) for page-based navigation. */
+    showBalance: function () {
+      if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
+      mode = 'balance'
+      emitBalance(shown)
+      refresh(false)
+    },
+    /** Switch back to status mode. */
+    showStatus: function () {
+      if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
+      mode = 'status'
+      emit({ kind: 'status' })
+    },
     subscribe: function (cb) {
       listeners.push(cb)
       return function () {
