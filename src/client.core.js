@@ -60,40 +60,16 @@ var CSS = [
   '.rm2-pet-menu-sep{height:1px;background:rgba(240,120,160,.25);margin:5px 6px;}',
   '.rm2-pet-bubble{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;min-width:170px;max-width:340px;padding:8px 12px;border-radius:10px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 6px 20px rgba(190,70,110,.20);font-size:12px;line-height:1.45;text-align:center;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
   '.rm2-pet-bubble-title{font-weight:600;color:#b03a60;}',
-  '.rm2-pet-bubble-detail{color:#c2607f;margin-top:4px;font-size:11px;display:flex;align-items:center;gap:5px;min-width:0;}',
-  '.rm2-pet-detail-text{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+  '.rm2-pet-bubble-detail{color:#c2607f;margin-top:2px;font-size:11px;}',
+  // 气泡翻页圆点
+  '.rm2-bubble-dots{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:5px;pointer-events:auto;z-index:1;}',
+  '.rm2-bubble-dot{width:7px;height:7px;border-radius:50%;background:rgba(240,120,160,.25);cursor:pointer;transition:background .2s;}',
+  '.rm2-bubble-dot.active{background:#b03a60;}',
   '.rm2-pet-bubble::after{content:\"\";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:6px solid transparent;border-top-color:rgba(240,120,160,.45);}',
   'body[data-ds-dark-theme] .rm2-pet-bubble{background:rgba(72,20,42,.96);border-color:rgba(255,150,185,.42);color:#ffd6e4;}',
   'body[data-ds-dark-theme] .rm2-pet-bubble-title{color:#ffd6e4;}',
   'body[data-ds-dark-theme] .rm2-pet-bubble-detail{color:#f0a8c0;}',
   'body[data-ds-dark-theme] .rm2-pet-bubble::after{border-top-color:rgba(255,150,185,.42);}',
-  // Stacked session status: one readable card plus one summary backboard.
-  // The backboard represents every other active session and exposes only a
-  // narrow lower edge, matching the Codex conversation-stack treatment.
-  // Fit the stack to its longest visible line instead of stretching every
-  // short status to the 360px maximum. The max width still protects the
-  // viewport when a project/task detail is long.
-  '.rm2-pet-bubbles{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:12px;width:fit-content;max-width:min(360px,calc(100vw - 24px));display:flex;flex-direction:column;align-items:center;pointer-events:none;}',
-  '.rm2-pet-bubbles .rm2-pet-bubble{position:relative;bottom:auto;left:auto;transform:none;margin:0;box-sizing:border-box;width:fit-content;min-width:150px;max-width:min(360px,calc(100vw - 24px));height:68px;min-height:68px;padding:12px 20px;border-radius:22px;text-align:left;box-shadow:0 8px 24px rgba(190,70,110,.25);transition:width .18s ease,opacity .18s ease;}',
-  '.rm2-pet-bubbles .rm2-pet-bubble::after{display:none;}',
-  '.rm2-pet-bubbles .rm2-pet-bubble{pointer-events:auto;cursor:pointer;}',
-  '.rm2-pet-bubble-header{display:flex;align-items:center;min-width:0;min-height:22px;}',
-  '.rm2-pet-bubble-title{min-width:0;flex:none;white-space:nowrap;overflow:visible;text-overflow:clip;line-height:1.35;}',
-  '.rm2-pet-bubble.title-clipped .rm2-pet-bubble-title{flex:1;overflow:hidden;text-overflow:ellipsis;}',
-  '.rm2-pet-bubble-action{display:inline-flex;flex:none;order:2;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;margin-right:0;border-radius:50%;background:#e8508a;color:#fff;font-size:15px;font-weight:700;line-height:1;}',
-  '.rm2-pet-bubble-action img{width:15px;height:15px;display:block;filter:brightness(0) saturate(100%) invert(1);}',
-  '.rm2-pet-bubble-completion{display:none;flex:none;width:12px;height:12px;margin-right:10px;border-radius:50%;background:#35c979;box-shadow:0 0 0 3px rgba(53,201,121,.18);}',
-  '.rm2-pet-bubble.completed .rm2-pet-bubble-completion{display:inline-flex;}',
-  '.rm2-pet-bubble.completed .rm2-pet-bubble-action{display:none;}',
-  '.rm2-pet-bubble.idle-placeholder{height:46px;min-height:46px;padding-top:11px;padding-bottom:11px;}',
-  '.rm2-pet-bubble-stack-count{display:none;position:absolute;right:16px;bottom:0;height:8px;align-items:center;color:#f0a8c0;font-size:9px;font-weight:700;line-height:8px;}',
-  '.rm2-pet-bubble.summary-backboard .rm2-pet-bubble-stack-count{display:flex;}',
-  '.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-title,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-action,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-completion{visibility:hidden;}',
-  '.rm2-pet-bubble.top{border-color:#b03a60;box-shadow:0 10px 28px rgba(190,70,110,.38);}',
-  '.rm2-pet-bubble.attention{border-color:#e8508a;animation:rm2-pet-attention 1.6s ease-in-out infinite;}',
-  '@keyframes rm2-pet-attention{0%,100%{box-shadow:0 0 0 0 rgba(232,80,138,.35);}50%{box-shadow:0 0 0 6px rgba(232,80,138,0);}}',
-  'body[data-ds-dark-theme] .rm2-pet-bubble.top{border-color:#ffb3c9;}',
-  'body[data-ds-dark-theme] .rm2-pet-bubble.attention{border-color:#ff6fa8;}',
   // Progress bar inside confirmation dialog
   '.rm2-pet-dl-text{color:#b03a60;font-weight:600;font-size:12px;font-family:system-ui,sans-serif;}',
   '.rm2-pet-dl-bar{width:100%;height:4px;border-radius:2px;background:rgba(240,120,160,.2);overflow:hidden;}',
@@ -135,6 +111,28 @@ var CSS = [
   '.rm2-pet-settings-field:last-child{border-bottom:none;}',
   '[data-testid="dsh-pet-remielle-settings"]:hover{border-color:var(--dsw-alias-label-dimmed);}',
   'body[data-ds-dark-theme] .rm2-pet-menu-sep{background:rgba(255,150,185,.25);}',
+  // 堆叠会话卡（状态页）
+  '.rm2-pet-bubbles{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:12px;width:fit-content;max-width:min(360px,calc(100vw - 24px));display:flex;flex-direction:column;align-items:center;pointer-events:none;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble{position:relative;bottom:auto;left:auto;transform:none;margin:0;box-sizing:border-box;width:fit-content;min-width:150px;max-width:min(360px,calc(100vw - 24px));height:68px;min-height:68px;padding:12px 20px;border-radius:22px;text-align:left;box-shadow:0 8px 24px rgba(190,70,110,.25);transition:width .18s ease,opacity .18s ease;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble::after{display:none;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble{pointer-events:auto;cursor:pointer;}',
+  '.rm2-pet-bubble-header{display:flex;align-items:center;min-width:0;min-height:22px;}',
+  '.rm2-pet-bubble-title{min-width:0;flex:none;white-space:nowrap;overflow:visible;text-overflow:clip;line-height:1.35;}',
+  '.rm2-pet-bubble.title-clipped .rm2-pet-bubble-title{flex:1;overflow:hidden;text-overflow:ellipsis;}',
+  '.rm2-pet-bubble-action{display:inline-flex;flex:none;order:2;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;margin-right:0;border-radius:50%;background:#e8508a;color:#fff;font-size:15px;font-weight:700;line-height:1;}',
+  '.rm2-pet-bubble-action img{width:15px;height:15px;display:block;filter:brightness(0) saturate(100%) invert(1);}',
+  '.rm2-pet-bubble-completion{display:none;flex:none;width:12px;height:12px;margin-right:10px;border-radius:50%;background:#35c979;box-shadow:0 0 0 3px rgba(53,201,121,.18);}',
+  '.rm2-pet-bubble.completed .rm2-pet-bubble-completion{display:inline-flex;}',
+  '.rm2-pet-bubble.completed .rm2-pet-bubble-action{display:none;}',
+  '.rm2-pet-bubble.idle-placeholder{height:46px;min-height:46px;padding-top:11px;padding-bottom:11px;}',
+  '.rm2-pet-bubble-stack-count{display:none;position:absolute;right:16px;bottom:0;height:8px;align-items:center;color:#f0a8c0;font-size:9px;font-weight:700;line-height:8px;}',
+  '.rm2-pet-bubble.summary-backboard .rm2-pet-bubble-stack-count{display:flex;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-title,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-action,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-completion{visibility:hidden;}',
+  '.rm2-pet-bubble.top{border-color:#b03a60;box-shadow:0 10px 28px rgba(190,70,110,.38);}',
+  '.rm2-pet-bubble.attention{border-color:#e8508a;animation:rm2-pet-attention 1.6s ease-in-out infinite;}',
+  '@keyframes rm2-pet-attention{0%,100%{box-shadow:0 0 0 0 rgba(232,80,138,.35);}50%{box-shadow:0 0 0 6px rgba(232,80,138,0);}}',
+  'body[data-ds-dark-theme] .rm2-pet-bubble.top{border-color:#ffb3c9;}',
+  'body[data-ds-dark-theme] .rm2-pet-bubble.attention{border-color:#ff6fa8;}',
 ].join('\n')
 
 function mk(tag, style, text) {
@@ -272,7 +270,7 @@ function patchPet(id, patch) {
 /** ---------- settings card (React) ---------- */
 
 function Field(props) {
-  return React.createElement('label', { className: 'rm2-pet-settings-field' },
+  return React.createElement('label', { className: 'rm2-pet-settings-field', style: props.fieldStyle || undefined },
     React.createElement('span', null,
       React.createElement('span', { style: { display: 'block', fontWeight: 600 } }, props.label),
       React.createElement('small', { style: { display: 'block', opacity: 0.65, marginTop: 3 } }, props.hint),
@@ -543,6 +541,9 @@ function PetsSection() {
   var config = configState[0]
   var setConfig = configState[1]
   var sliderTimers = React.useRef(new Map())
+  var helpState = React.useState(false)
+  var tokenHelpOpen = helpState[0]
+  var setTokenHelpOpen = helpState[1]
   var updState = React.useState(null)       // { latest, notes, htmlUrl } | null
   var updInfo = updState[0]
   var setUpdInfo = updState[1]
@@ -707,9 +708,80 @@ function PetsSection() {
     React.createElement(Field, { label: '响应子 Agent', hint: '默认只跟随顶层任务，避免状态过度跳动。' },
       React.createElement(Switch, { checked: v.includeSubagents === true, disabled: !config, onChange: function (val) { write('includeSubagents', val) } }),
     ),
-    React.createElement(Field, { label: '显示气泡', hint: '在宠物上方显示状态气泡（阶段/待办/进度）。' },
-      React.createElement(Switch, { checked: v.showBubble !== false, disabled: !config, onChange: function (val) { write('showBubble', val) } }),
+    // ---- 消息气泡 ----
+    React.createElement(Field, { label: '消息气泡', hint: '开启后可在宠物上方显示气泡；子项控制气泡内容（多开时可翻页）。' },
+      React.createElement(Switch, { checked: v.showBubble !== false, disabled: !config, onChange: function (val) {
+        // 总开关关闭→全部子开关关闭；总开关开启→全部子开关打开，回到状态页
+        write('showBubble', val)
+        if (!val) { write('showBubbleStatus', false); write('showBubbleUsage', false) }
+        else {
+          write('showBubbleStatus', true); write('showBubbleUsage', true)
+          // 气泡从关到开的页面重置由宠物视图的 updateBubble 处理
+        }
+      } }),
     ),
+    // 气泡子项（始终展开）
+    React.createElement('div', { style: { marginLeft: 20, display: 'grid', gap: 8 } },
+      React.createElement(Field, { label: '状态', hint: '在气泡中显示会话状态（阶段/待办/进度）' },
+        React.createElement(Switch, { checked: v.showBubbleStatus !== false, disabled: !config, onChange: function (val) {
+          write('showBubbleStatus', val)
+          if (val) write('showBubble', true)
+          if (!val && v.showBubbleUsage !== true) write('showBubble', false)
+        } }),
+      ),
+      React.createElement(Field, { label: '用量', hint: 'DeepSeek 余额与今日消耗（需配置 DEEPSEEK_API_KEY）', fieldStyle: { borderBottom: 'none' } },
+        React.createElement(Switch, { checked: v.showBubbleUsage === true, disabled: !config, onChange: function (val) {
+          write('showBubbleUsage', val)
+          if (val) write('showBubble', true)
+          if (!val && v.showBubbleStatus !== true) write('showBubble', false)
+        } }),
+      ),
+      // 用量模式（用量子项下方，分割线上方）
+      React.createElement('div', { style: { marginLeft: 16, paddingTop: 8, borderTop: '1px solid var(--border-color, rgba(0,0,0,.06))', display: 'grid', gap: 6 } },
+        React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+            React.createElement('span', { style: { fontSize: 12, opacity: v.showBubbleUsage === true ? 1 : 0.4 } }, '用量模式'),
+            // 实时令牌模式的帮助图标：圆 + 问号，点击打开获取方法弹窗
+            v.usageMode === 'token'
+              ? React.createElement('button', {
+                  type: 'button',
+                  title: '如何获取 DEEPSEEK_PLATFORM_TOKEN',
+                  onClick: function (e) { e.stopPropagation(); setTokenHelpOpen(true) },
+                  style: { width: 16, height: 16, padding: 0, borderRadius: '50%', border: '1px solid var(--border-color, #b8b8b8)', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 11, lineHeight: '14px', fontFamily: 'inherit', textAlign: 'center', opacity: v.showBubbleUsage === true ? 1 : 0.4 },
+                }, '?')
+              : null,
+          ),
+          React.createElement('select', {
+            value: v.usageMode === 'token' ? 'token' : 'ledger',
+            disabled: !config || v.showBubbleUsage !== true,
+            onChange: function (e) { write('usageMode', e.target.value) },
+            style: { padding: '4px 8px', width: 160, borderRadius: 6, border: '1px solid var(--border-color, #d8d8d8)', background: 'var(--dsw-alias-bg-layer-2, transparent)', cursor: config && v.showBubbleUsage === true ? 'pointer' : 'default', fontSize: 12, fontFamily: 'inherit', color: 'inherit', opacity: v.showBubbleUsage === true ? 1 : 0.4 },
+          },
+            React.createElement('option', { value: 'ledger' }, '小鲸鱼记账（免令牌）'),
+            React.createElement('option', { value: 'token' }, '实时·令牌（精确）')
+          ),
+        ),
+        React.createElement('p', { style: { margin: 0, opacity: v.showBubbleUsage === true ? 0.5 : 0.25, fontSize: 11 } },
+          v.usageMode === 'token'
+            ? '直连平台用量接口，精确。令牌优先用下方配置，留空则回落到 DSH 凭据服务。'
+            : '记账靠余额差值累计，有误差，免令牌。'
+        ),
+        // 令牌配置（仅 token 模式且用量开启时显示）
+        v.usageMode === 'token'
+          ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+              React.createElement('input', {
+                type: 'password',
+                value: v.platformToken || '',
+                disabled: !config || v.showBubbleUsage !== true,
+                placeholder: 'DEEPSEEK_PLATFORM_TOKEN',
+                onChange: function (e) { write('platformToken', e.target.value) },
+                style: { flex: 1, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border-color, #d8d8d8)', background: 'var(--dsw-alias-bg-layer-2, transparent)', fontSize: 12, fontFamily: 'inherit', color: 'inherit' },
+              }),
+            )
+          : null,
+      ),
+    ),
+    // ---- 用量模式已移入气泡子项 ----
   )
   var desktopTab = React.createElement('div', null,
     React.createElement(Field, { label: '桌面悬浮模式', hint: '用独立置顶窗口显示宠物（需要 Electron 运行时）。' },
@@ -795,12 +867,53 @@ function PetsSection() {
     React.createElement('h3', { style: { margin: 0, fontSize: 15 } }, '桌宠设置'),
     tabBar,
     tabContent,
+    tokenHelpOpen
+      ? React.createElement('div', {
+          style: {
+            position: 'fixed', inset: 0, zIndex: 2147483400,
+            background: 'rgba(15,20,35,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 20,
+          },
+          onClick: function () { setTokenHelpOpen(false) },
+        },
+        React.createElement('div', {
+          style: {
+            background: 'var(--dsw-alias-bg-layer-2,#fff)', border: '1px solid var(--dsw-alias-border-l2,#d8d8d8)',
+            borderRadius: 12, padding: '18px 20px', maxWidth: 440, width: '100%', maxHeight: '82vh', overflow: 'auto',
+            boxShadow: 'var(--dsw-shadow-lv3,0 24px 64px rgba(15,30,72,.28))', fontFamily: 'system-ui,sans-serif', color: 'var(--dsw-alias-label-primary,#172347)', fontSize: 13, lineHeight: 1.7,
+          },
+          onClick: function (e) { e.stopPropagation() },
+        },
+          React.createElement('h4', { style: { margin: '0 0 10px', fontSize: 14 } }, '如何获取 DEEPSEEK_PLATFORM_TOKEN'),
+          React.createElement('ol', { style: { margin: '0 0 12px', paddingLeft: 20 } },
+            React.createElement('li', null, '用浏览器登录 platform.deepseek.com。'),
+            React.createElement('li', null, '按 F12 打开开发者工具 → Application（应用程序）→ Local Storage → https://platform.deepseek.com。'),
+            React.createElement('li', null, '找到 userToken，复制它的值，粘贴到上面的输入框。'),
+          ),
+          React.createElement('p', { style: { margin: '0 0 12px', opacity: 0.6, fontSize: 12 } }, '提示：该令牌为平台登录会话凭证，可能有时效，失效后需重新获取；请勿外传，建议定期重新登录平台以轮换令牌。'),
+          React.createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: 4 } },
+            React.createElement('button', {
+              type: 'button',
+              style: { padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border-color, #d8d8d8)', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 },
+              onClick: function () { setTokenHelpOpen(false) },
+            }, '关闭'),
+          ),
+        ),
+      )
+      : null,
   )
 }
 
 /** ---------- floating pet (plain DOM) ---------- */
 
 function mountPet(ctx) {
+  // 余额控制器：幂等加载共享客户端脚本
+  if (!window.__petBalance && !document.querySelector('script[src*="balance-widget.js"]')) {
+    var balanceScript = document.createElement('script')
+    balanceScript.src = '/plugins/dsh-pet-remielle/balance-widget.js'
+    balanceScript.async = true
+    document.head.appendChild(balanceScript)
+  }
   var root = mk('div', 'position:fixed;right:20px;bottom:20px;z-index:2147483000;pointer-events:auto;user-select:none;')
   root.setAttribute('data-rm2-pet-root', '')
   var dock = mk('div', 'position:relative;display:inline-block;cursor:grab;touch-action:none;')
@@ -808,10 +921,55 @@ function mountPet(ctx) {
   var img = mk('img', 'width:180px;height:auto;pointer-events:none;display:none;')
   img.alt = '桌宠'
   img.draggable = false
-  // Stacked status bubbles: one per active session, top = highest rank
-  // (attention-needing first, then the current conversation, then priority).
+  var bubble = mk('div', 'display:none;')
+  bubble.className = 'rm2-pet-bubble'
+  var bubbleTitle = mk('div', '')
+  bubbleTitle.className = 'rm2-pet-bubble-title'
+  var bubbleDetail = mk('div', '')
+  bubbleDetail.className = 'rm2-pet-bubble-detail'
+  bubble.appendChild(bubbleTitle)
+  bubble.appendChild(bubbleDetail)
+  // 堆叠会话卡（状态页）：每会话一张可读卡 + 一张 +N 背板卡
   var bubbleStack = mk('div', 'display:none;')
   bubbleStack.className = 'rm2-pet-bubbles'
+  // 翻页圆点
+  var bubbleDots = mk('div', '', '')
+  bubbleDots.className = 'rm2-bubble-dots'
+  var bubbleDot0 = mk('div', '', '')
+  bubbleDot0.className = 'rm2-bubble-dot active'
+  bubbleDot0.title = '状态'
+  var bubbleDot1 = mk('div', '', '')
+  bubbleDot1.className = 'rm2-bubble-dot'
+  bubbleDot1.title = '余额'
+  bubbleDots.appendChild(bubbleDot0)
+  bubbleDots.appendChild(bubbleDot1)
+  bubble.appendChild(bubbleDots)
+  var currentBubblePage = 0
+  function switchBubblePage(p) {
+    currentBubblePage = p
+    bubbleDot0.className = 'rm2-bubble-dot' + (p === 0 ? ' active' : '')
+    bubbleDot1.className = 'rm2-bubble-dot' + (p === 1 ? ' active' : '')
+    if (p === 0) {
+      balanceFrame = null
+      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
+      if (lastSnapshot) updateBubble(lastSnapshot)
+      if (window.__petBalance && window.__petBalance.showStatus) window.__petBalance.showStatus()
+    } else if (p === 1 && window.__petBalance && window.__petBalance.showBalance) {
+      window.__petBalance.showBalance()
+    }
+  }
+  bubbleDot0.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(0) })
+  bubbleDot1.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(1) })
+  bubble.addEventListener('wheel', function (e) {
+    e.preventDefault(); e.stopPropagation()
+    // 仅双开时翻页（单开时气泡 pointer-events:none，通常不会触发，这里双重保险）
+    if (lastSnapshot) {
+      var so = lastSnapshot.showBubble !== false && lastSnapshot.showBubbleStatus !== false
+      var uo = lastSnapshot.showBubble !== false && lastSnapshot.showBubbleUsage === true
+      if (!(so && uo)) return
+    }
+    switchBubblePage(currentBubblePage === 0 ? 1 : 0)
+  }, { passive: false })
   // Confirmation dialog
   var confirmOverlay = mk('div')
   confirmOverlay.className = 'rm2-pet-confirm-overlay'
@@ -877,6 +1035,7 @@ function mountPet(ctx) {
   styleEl.setAttribute('data-rm2-pet-css', '')
 
   dock.appendChild(img)
+  dock.appendChild(bubble)
   dock.appendChild(bubbleStack)
   root.appendChild(dock)
   document.body.appendChild(picEl)
@@ -889,6 +1048,8 @@ function mountPet(ctx) {
   var displayedMood = null
   var currentPetId = DEFAULT_PET_ID
   var lastSnapshot = null
+  var balanceFrame = null
+  var balanceRequested = false
   var manualOverride = null
   var paused = false
   var hidden = false
@@ -908,11 +1069,16 @@ function mountPet(ctx) {
     dock.style.cursor = lockedNow ? 'default' : 'grab'
   }
 
-  /** ---- stacked session status ----
-   *  Order: attention-needing sessions (waiting on the human / errors) on
-   *  top, then the session the user currently has open, then the rest by
-   *  state priority and recency. One summary backboard represents every
-   *  additional session; the pet body follows the top bubble's mood. */
+  /** Status bubble above the pet: message + detail (project · progress · stage).
+   *  The title changes at most once per BUBBLE_TITLE_MS while the mood stays put
+   *  (so think 04 / streaming 01 doesn't flip on every chunk, but still refreshes
+   *  occasionally), and updates immediately when the mood/phase changes. */
+  var BUBBLE_TITLE_MS = 2000
+  var lastBubbleMood = ''
+  var lastBubbleText = ''
+  var lastBubbleTitleAt = 0
+  var lastBubbleDetail = ''
+  var prevBubbleVisible = false
   var MAX_BUBBLES = 2
   // Same-mood titles refresh at most once per interval (upstream 0.3.1 lock),
   // so think/working copy does not flip on every chunk. Mood / waiting / error
@@ -1306,6 +1472,69 @@ function mountPet(ctx) {
       })
     })
   }
+  function updateBubble(snapshot) {
+    if (!snapshot) return
+    // 气泡从无到有（总开关从关到开）时，回到状态页
+    var bubbleEnabled = snapshot.showBubble !== false && (snapshot.showBubbleStatus !== false || snapshot.showBubbleUsage === true)
+    if (bubbleEnabled && !prevBubbleVisible && currentBubblePage !== 0) {
+      currentBubblePage = 0
+      balanceFrame = null
+      balanceRequested = false
+      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
+    }
+    prevBubbleVisible = bubbleEnabled
+    // 子开关判定
+    var statusOn = snapshot.showBubble !== false && snapshot.showBubbleStatus !== false
+    var usageOn = snapshot.showBubble !== false && snapshot.showBubbleUsage === true
+    var bothOn = statusOn && usageOn
+    var anyOn = statusOn || usageOn
+    // 强制页面归属：只开用量→余额页；只开状态→状态页
+    var pageBefore = currentBubblePage
+    if (!statusOn && usageOn && currentBubblePage === 0) { currentBubblePage = 1 }
+    if (statusOn && !usageOn) { currentBubblePage = 0 }
+    if (statusOn && usageOn && currentBubblePage > 1) currentBubblePage = 0
+    // 页面发生强制切换时，清掉文本节流缓存，避免旧页面内容（如余额）残留
+    if (currentBubblePage !== pageBefore) {
+      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
+      if (currentBubblePage === 0) balanceFrame = null
+    }
+    // 进入余额页且尚无余额数据时，触发一次拉取（延迟执行，避免同步重入 updateBubble）
+    if (currentBubblePage === 1 && !(balanceFrame && balanceFrame.kind === 'balance') && window.__petBalance && !balanceRequested) {
+      balanceRequested = true
+      window.setTimeout(function () { if (window.__petBalance) window.__petBalance.showBalance() }, 0)
+    }
+    if (currentBubblePage === 0) balanceRequested = false
+    // 双开时气泡可交互（接收滚轮翻页），否则透传给宠物
+    bubble.style.pointerEvents = bothOn && snapshot.showBubble !== false ? 'auto' : 'none'
+    // 圆点：仅双开时显示，且高亮当前页
+    bubbleDots.style.display = bothOn ? '' : 'none'
+    if (bubbleDot0 && bubbleDot1) {
+      bubbleDot0.className = 'rm2-bubble-dot' + (currentBubblePage === 0 ? ' active' : '')
+      bubbleDot1.className = 'rm2-bubble-dot' + (currentBubblePage === 1 ? ' active' : '')
+    }
+    var cur = currentBubblePage
+    var show = anyOn && (cur === 0 ? statusOn : usageOn)
+    if (cur === 0) {
+      // 状态页：显示堆叠会话卡（每会话一张 + +N 背板）
+      show = show && statusOn
+      bubbleStack.style.display = show ? 'flex' : 'none'
+      if (show) updateBubbles(snapshot)
+      // 单气泡仅保留圆点（隐藏状态内容），供翻页；双开时才显示圆点
+      bubble.style.display = bothOn ? 'block' : 'none'
+      bubbleTitle.textContent = ''
+      bubbleDetail.textContent = ''
+    } else if (cur === 1) {
+      // 余额页：隐藏堆叠卡，渲染 balanceFrame 数据
+      bubbleStack.style.display = 'none'
+      show = show && !!balanceFrame && balanceFrame.kind === 'balance'
+      bubble.style.display = show ? 'block' : 'none'
+      if (show) {
+        bubbleTitle.textContent = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
+        bubbleTitle.style.color = ''
+        bubbleDetail.innerHTML = (balanceFrame.detail || '') + ' · <span style="color:' + (balanceFrame.color || '#888') + '">' + (balanceFrame.period || '') + '</span>'
+      }
+    }
+  }
 
   /** After a pulse overlay expires the host falls back to the durable state; schedule one refresh. */
   function schedulePulseFallback(snapshot) {
@@ -1353,6 +1582,15 @@ function mountPet(ctx) {
       return
     }
     lastSnapshot = snapshot
+    // 余额控制器：初始化/同步用量模式
+    if (window.__petBalance) {
+      if (!window.__petBalanceInited) {
+        window.__petBalanceInited = true
+        window.__petBalance.init(snapshot.usageMode || 'ledger')
+      } else if (snapshot.usageMode) {
+        window.__petBalance.setUsageMode(snapshot.usageMode)
+      }
+    }
     // The desktop pet window is showing; keep the page pet hidden to avoid
     // two pets on screen. Restores automatically when the window goes away.
     if (snapshot.desktopActive === true) {
@@ -1377,21 +1615,19 @@ function mountPet(ctx) {
       currentPetId = snapshot.petId
       displayedMood = null
     }
-    updateBubbles(snapshot)
-    // Agent 回复完成时短暂"得意中"（仅触发一次，避免重复）——以堆叠顶部会话为准
-    var topState = lastTopEntry ? lastTopEntry.state : snapshot.state
-    var topPhase = lastTopEntry ? lastTopEntry.phase : snapshot.phase
-    if (topState === 'IDLE' && topPhase === 'turn-end' && !manualOverride && !lastTurnEndShown) {
+    updateBubble(snapshot)
+    // Agent 回复完成时短暂"得意中"（仅触发一次，避免重复）
+    if (snapshot.state === 'IDLE' && snapshot.phase === 'turn-end' && !manualOverride && !lastTurnEndShown) {
       lastTurnEndShown = true
       manualOverride = { mood: '03', until: Date.now() + 2000 }
     }
-    if (topState !== 'IDLE') lastTurnEndShown = false
-    var enabled = snapshot.enabled !== false
-    if (!enabled) {
-      setHidden(true)
-      return
-    }
-    if (hidden) setHidden(false)
+    if (snapshot.state !== 'IDLE') lastTurnEndShown = false
+    var wantHidden = snapshot.enabled === false || snapshot.hidden === true
+    if (wantHidden && !hidden) setHidden(true)
+    else if (!wantHidden && hidden) setHidden(false)
+    if (wantHidden) return
+    if (snapshot.paused === true && !paused) setPaused(true)
+    else if (snapshot.paused !== true && paused) setPaused(false)
     sync()
     schedulePulseFallback(snapshot)
   }
@@ -1676,6 +1912,31 @@ function mountPet(ctx) {
     sync()
   })
 
+  // 余额控制器：把显示帧渲染进自带气泡（脚本异步加载，重试直到就绪）
+  function whenPetBalance(cb) {
+    if (window.__petBalance) { cb(); return }
+    var tries = 0
+    var timer = window.setInterval(function () {
+      tries++
+      if (window.__petBalance) {
+        window.clearInterval(timer)
+        cb()
+      } else if (tries > 60) {
+        window.clearInterval(timer)
+      }
+    }, 100)
+  }
+  whenPetBalance(function () {
+    window.__petBalance.subscribe(function (frame) {
+      // 只存数据，不直接渲染气泡；气泡渲染统一由 updateBubble 根据 currentBubblePage 决定
+      balanceFrame = frame
+      // 延迟渲染，避免与快照驱动的 updateBubble 重入竞争
+      if (currentBubblePage === 1 && lastSnapshot) {
+        window.setTimeout(function () { if (currentBubblePage === 1 && lastSnapshot) updateBubble(lastSnapshot) }, 0)
+      }
+    })
+  })
+
   // Double-click: play a drawing sticker loop and pop a random artwork.
   dock.addEventListener('dblclick', function () {
     if (!lastSnapshot || lastSnapshot.pics === 0) return
@@ -1765,7 +2026,10 @@ function mountPet(ctx) {
     }))
     menu.appendChild(makeToggleRow('显示气泡', lastSnapshot ? lastSnapshot.bubble !== false : true, function () {
       var next = !(lastSnapshot ? lastSnapshot.bubble !== false : true)
+      // 与设置中的总开关逻辑一致：关闭→全部子开关关闭；开启→全部子开关打开
       void patchConfig('showBubble', next)
+      if (!next) { void patchConfig('showBubbleStatus', false); void patchConfig('showBubbleUsage', false) }
+      else { void patchConfig('showBubbleStatus', true); void patchConfig('showBubbleUsage', true) }
       if (lastSnapshot) lastSnapshot = { ...lastSnapshot, bubble: next }
       buildMenuContent()
     }))
@@ -1827,7 +2091,6 @@ function mountPet(ctx) {
 
   ctx.effect(function () { return function () {
     if (intervalId) window.clearInterval(intervalId)
-    for (var held of bubbleEls.values()) clearBubbleTitleTimer(held)
     document.removeEventListener('pointerdown', outsideDown, true)
     styleEl.remove()
     root.remove()
@@ -1861,6 +2124,6 @@ function apply(ctx) {
 
 module.exports = {
   name: 'dsh-pet-remielle-client',
-  inject: ['slots', 'sessions'],
+  inject: ['slots'],
   apply: apply,
 }
