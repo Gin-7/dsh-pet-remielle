@@ -814,6 +814,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           }),
         }),
         'dsh-pet-remielle: completion notification acknowledgement',
+      )
+      httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: BALANCE_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return
           try {

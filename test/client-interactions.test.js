@@ -358,3 +358,4 @@ test('expired reminder for the current conversation disappears immediately', asy
   assert.ok(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')))
   assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务已完成'), false)
 })
+

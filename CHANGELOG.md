@@ -30,6 +30,20 @@
 - 新增 `src/balance.js`（宿主余额服务：拉取 / 缓存 / 重试 / 记账 / 峰谷定价）与 `src/balance-widget.js`（客户端余额控制器，无 DOM，只存数据）。
 - 宿主注入 `credentials`；状态快照新增 `showBubbleStatus` / `showBubbleUsage` / `usageMode` / `platformToken` / `paused` / `hidden`；新增 `/balance` 与 `/balance-widget.js` 端点。
 
+### 本轮（PR 就绪前）补充
+#### Features
+- 气泡切换改为**单个圆点**（位于框内最左侧、与框底对比色），点击在状态/余额间切换；对话卡最小宽度可调（默认 `BUBBLE_MIN_W = 205`），标题在阈值内变化时方框宽度保持稳定。
+
+#### Fixes
+- 修复余额端点 404：`index.js` 中 completion-ack 与 balance 两个 `httpCtx.effect` 被误写成一个（四参数），导致 balance 端点从未注册。
+- 完成会话**保留鲸鱼图标**（此前完成后被隐藏）；并同步完成卡宽度测量计入鲸鱼宽度，避免宽度被低估。
+- 余额气泡复用对话卡工作态的 68px 高度、标题行高 22px、去掉气泡尾三角，右侧内边距与对话卡一致；宽度由真实渲染字体测量、精确贴合内容。
+- 余额取数失败时在气泡内显示错误，不再误判为余额 0。
+
+#### Architecture
+- 客户端测量节点提升为模块级懒创建（避免重复挂载）。
+- 统一两种方框（堆叠对话卡 / 余额气泡）的宽度计算（共享 `bubbleRowWidth`：最宽行 + 内边距，min/max 截断）、高度改用 border-box 68px 与对话卡一致、简化 `overflow` 覆盖链。
+
 ## [0.3.1] — 2026-08-19
 
 基于 0.3.0（PR 作者版本）之上的增量迭代，涵盖最近几轮的完整功能与修复：
