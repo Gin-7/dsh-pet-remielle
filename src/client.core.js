@@ -2124,6 +2124,6 @@ function apply(ctx) {
 
 module.exports = {
   name: 'dsh-pet-remielle-client',
-  inject: ['slots'],
+  inject: ['slots', 'sessions'],
   apply: apply,
 }
