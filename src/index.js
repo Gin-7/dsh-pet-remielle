@@ -45,6 +45,7 @@ export const inject = ['sessions']
 export const CONFIG_ENDPOINT = '/plugins/dsh-pet-remielle/config'
 export const STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
 export const STREAM_ENDPOINT = '/plugins/dsh-pet-remielle/stream'
+export const COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
 export const PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 export const ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 export const PET_VIEW_ENDPOINT = '/plugins/dsh-pet-remielle/pet-view'
@@ -180,6 +181,26 @@ export function createConfigHandler(settings) {
   }
 }
 
+export function createCompletionAckHandler({ acknowledge, broadcast = () => {} }) {
+  return async (req, res) => {
+    if (!localOnly(req, res)) return
+    if (req.method !== 'POST') {
+      jsonResponse(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    try {
+      const body = await readJsonBody(req)
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+      if (!sessionId) throw new Error('sessionId must be a non-empty string')
+      acknowledge(sessionId)
+      broadcast()
+      jsonResponse(res, 200, { ok: true })
+    } catch (error) {
+      jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+}
+
 /**
  * Scan assets/pets/ for pet directories and their GIF files.
  * @param root - the absolute assets/pets directory.
@@ -302,10 +323,12 @@ export function createAssetsHandler(petsRoot) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates, getCompletions }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
   const activePetOf = typeof getActivePet === 'function' ? getActivePet : () => undefined
+  const statesOf = typeof getStates === 'function' ? getStates : () => []
+  const completionsOf = typeof getCompletions === 'function' ? getCompletions : () => []
   return () => {
     const config = publicConfig(getConfig())
     const now = Date.now()
@@ -313,6 +336,74 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
     const base = getLatest()
     const activePulse = pulse && pulse.until > now ? pulse : undefined
     const source = activePulse ?? base
+    // One entry per tracked session for the stacked-bubble view. The active
+    // PULSE overlay (success / error flash) overrides its own session's entry
+    // so the flash lands on the right bubble, not on the primary.
+    const stateEntries = statesOf()
+    let pulseMatched = false
+    const sessions = stateEntries.map((entry) => {
+      if (activePulse && activePulse.sessionId === entry.sessionId) {
+        pulseMatched = true
+        return {
+          ...entry,
+          state: activePulse.state,
+          mood: activePulse.mood ?? entry.mood,
+          phase: activePulse.phase ?? entry.phase,
+          message: activePulse.message ?? entry.message,
+          detail: activePulse.detail ?? entry.detail,
+          approval: entry.approval === true,
+          completed: activePulse.state === PetState.SUCCESS,
+          pulseUntil: activePulse.until,
+        }
+      }
+      return entry
+    })
+    // Completed sessions are absent from reducer.states(). Add the transient
+    // pulse card while it is live; persistent reminders are merged below.
+    if (activePulse && activePulse.sessionId && !pulseMatched) {
+      sessions.push({
+        sessionId: activePulse.sessionId,
+        state: activePulse.state,
+        mood: activePulse.mood ?? '06',
+        phase: activePulse.phase ?? 'pulse',
+        message: activePulse.message ?? '',
+        detail: activePulse.detail ?? 'DSH',
+        project: activePulse.project,
+        task: activePulse.task,
+        progress: activePulse.progress,
+        attention: activePulse.state === PetState.WAITING || activePulse.state === PetState.ERROR,
+        approval: false,
+        completed: activePulse.state === PetState.SUCCESS,
+        updatedAt: now,
+        pulseUntil: activePulse.until,
+      })
+    }
+    for (const completion of completionsOf()) {
+      const activePulseIndex = sessions.findIndex((entry) => (
+        entry.sessionId === completion.sessionId
+        && entry.state === PetState.SUCCESS
+        && entry.pulseUntil > now
+      ))
+      if (activePulseIndex >= 0) {
+        sessions[activePulseIndex] = {
+          ...sessions[activePulseIndex],
+          targetSessionId: completion.sessionId,
+          completionNotification: true,
+        }
+        continue
+      }
+      sessions.push({
+        ...completion,
+        sessionId: `completion:${completion.sessionId}`,
+        targetSessionId: completion.sessionId,
+        state: PetState.SUCCESS,
+        mood: completion.mood ?? '03',
+        completed: true,
+        completionNotification: true,
+        attention: false,
+        approval: false,
+      })
+    }
     return {
       ok: true,
       enabled: config.enabled === true,
@@ -335,6 +426,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       task: base?.task ?? undefined,
       progress: base?.progress ?? undefined,
       pulseUntil: activePulse ? activePulse.until : 0,
+      sessions,
       ts: now,
     }
   }
@@ -433,10 +525,25 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     detail: 'DSH · 等待下一次任务',
   })
   let pulse = null
+  // Completed turns stay visible until the user opens their conversation.
+  const completionQueue = new Map()
 
   const onMessage = (message) => {
     if (message.kind === PetMessageKind.PULSE) {
       pulse = { ...message, until: Date.now() + (message.ttlMs ?? 3000) }
+      if (message.state === PetState.SUCCESS && message.sessionId) {
+        completionQueue.set(message.sessionId, {
+          sessionId: message.sessionId,
+          message: message.message ?? '任务已完成',
+          detail: message.detail ?? '任务已完成，点击查看结果',
+          project: message.project,
+          task: message.task,
+          progress: message.progress,
+          phase: 'turn-end',
+          updatedAt: Date.now(),
+          completedAt: Date.now(),
+        })
+      }
       // The durable state beneath the overlay: after the pulse expires the
       // pet falls back to what the reducer remembered at pulse time.
       latest = {
@@ -496,6 +603,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getPetId: () => registry.activePetId,
     getDesktopActive: () => desktopActive,
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
+    getStates: () => reducer.states(),
+    getCompletions: () => [...completionQueue.values()],
   })
 
   const hub = createStreamHub({ serve: serveState })
@@ -646,6 +755,17 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           jsonResponse(res, 200, serveState())
         } }),
         'dsh-pet-remielle: local state endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: COMPLETION_ACK_ENDPOINT,
+          handler: createCompletionAckHandler({
+            acknowledge: (sessionId) => completionQueue.delete(sessionId),
+            broadcast: () => hub.broadcast(),
+          }),
+        }),
+        'dsh-pet-remielle: completion notification acknowledgement',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: STREAM_ENDPOINT, handler: async (req, res) => {

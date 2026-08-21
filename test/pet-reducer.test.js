@@ -73,6 +73,15 @@ test('tool/call -> WORKING with sticker 02 and activity', () => {
   assert.equal(state.activity, 'searching')
 })
 
+test('mid-turn attachment handles results for registered tools', () => {
+  const reducer = new PetReducer()
+  const sess = session()
+  collect(reducer, sess, [event('tool/call', { callId: 'c1', name: 'read' }, 2)])
+  assert.equal(reducer.states()[0].state, PetState.WORKING)
+  collect(reducer, sess, [event('tool/result', { callId: 'c1' }, 3)])
+  assert.equal(reducer.states()[0].state, PetState.THINKING)
+})
+
 test('tool/result returns to THINKING, then streaming sticker (01) returns', () => {
   const reducer = new PetReducer()
   const messages = collect(reducer, session(), [
@@ -158,6 +167,9 @@ test('turn/end completed -> SUCCESS pulse with IDLE resume', () => {
   // The host falls back to these after the overlay expires.
   assert.equal(pulse.resumeState, PetState.IDLE)
   assert.equal(pulse.resumeMood, '06')
+  // Completed turns are not retained in the persistent card deck. The host
+  // adds the SUCCESS card back only until the pulse TTL expires.
+  assert.deepEqual(reducer.states(), [])
 })
 
 test('turn/end aborted -> IDLE (已停止)', () => {
@@ -168,6 +180,40 @@ test('turn/end aborted -> IDLE (已停止)', () => {
   ])
   assert.equal(state.state, PetState.IDLE)
   assert.equal(state.phase, 'turn-end')
+  assert.deepEqual(reducer.states(), [])
+})
+
+test('states() omits multiple settled turns while retaining active work', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('completed'), [
+    event('turn/start'),
+    event('turn/end', { reason: { kind: 'completed' } }, 2),
+  ])
+  collect(reducer, session('stopped'), [
+    event('turn/start', {}, 3),
+    event('turn/end', { reason: { kind: 'aborted' } }, 4),
+  ])
+  collect(reducer, session('active'), [
+    event('turn/start', {}, 5),
+    event('tool/call', { callId: 'x', name: 'read' }, 6),
+  ])
+  assert.deepEqual(reducer.states().map((entry) => entry.sessionId), ['active'])
+})
+
+test('background completion emits SUCCESS while another session needs attention', () => {
+  const reducer = new PetReducer()
+  const waiting = session('waiting')
+  const background = session('background')
+  collect(reducer, waiting, [
+    event('turn/start'),
+    event('tool/call', { callId: 'q', name: 'ask_user_question' }, 2),
+  ])
+  collect(reducer, background, [event('turn/start', {}, 3)])
+  const messages = collect(reducer, background, [
+    event('turn/end', { reason: { kind: 'completed' } }, 4),
+  ])
+  assert.equal(reducer.states().find((entry) => entry.sessionId === 'waiting').state, PetState.WAITING)
+  assert.ok(messages.some((message) => message.kind === PetMessageKind.PULSE && message.sessionId === 'background' && message.state === PetState.SUCCESS))
 })
 
 test('multi-session priority: WAITING beats WORKING beats THINKING', () => {
@@ -298,36 +344,155 @@ test('agent completes, then the review wake returns the pet to the chat session'
 
 test('ask_user_question tool/call -> WAITING sticker 05, result restores', () => {
   const reducer = new PetReducer()
-  const messages = collect(reducer, session(), [
+  const sess = session()
+  const messages = collect(reducer, sess, [
     event('turn/start'),
     event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 2),
-    event('tool/result', { callId: 'q1' }, 3),
   ])
-  const states = messages.filter((m) => m.kind === PetMessageKind.STATE)
-  const waiting = states[1]
+  const waiting = messages.filter((m) => m.kind === PetMessageKind.STATE)[1]
   assert.equal(waiting.state, PetState.WAITING)
   assert.equal(waiting.mood, '05')
   assert.equal(waiting.phase, 'ask')
+  assert.equal(reducer.states()[0].approval, false)
+  const tail = collect(reducer, sess, [event('tool/result', { callId: 'q1' }, 3)])
   // After the answer returns, the pet goes back to THINKING.
-  assert.equal(states.at(-1).state, PetState.THINKING)
+  assert.equal(tail.filter((m) => m.kind === PetMessageKind.STATE).at(-1).state, PetState.THINKING)
 })
 
 test('approval/asked -> WAITING, approval/decided restores WORKING', () => {
   const reducer = new PetReducer()
-  const messages = collect(reducer, session(), [
+  const sess = session()
+  const messages = collect(reducer, sess, [
     event('turn/start'),
     event('tool/call', { callId: 'c', name: 'bash' }, 2),
     event('approval/asked', { id: 'a1', toolName: 'bash' }, 3),
-    event('approval/decided', { id: 'a1', outcome: 'allow' }, 4),
-    event('tool/result', { callId: 'c' }, 5),
   ])
   const states = messages.filter((m) => m.kind === PetMessageKind.STATE)
   const waiting = states.find((m) => m.phase === 'approval')
   assert.equal(waiting.state, PetState.WAITING)
   assert.equal(waiting.mood, '05')
+  assert.equal(reducer.states()[0].approval, true)
+  const tail = collect(reducer, sess, [
+    event('approval/decided', { id: 'a1', outcome: 'allow' }, 4),
+    event('tool/result', { callId: 'c' }, 5),
+  ])
   // approval/decided restores WORKING (the tool is still running)…
-  assert.equal(states[3].state, PetState.WORKING)
+  const tailStates = tail.filter((m) => m.kind === PetMessageKind.STATE)
+  assert.equal(tailStates[0].state, PetState.WORKING)
   // …then tool/result returns to THINKING.
-  assert.equal(states.at(-1).state, PetState.THINKING)
+  assert.equal(tailStates.at(-1).state, PetState.THINKING)
+})
+
+test('concurrent question and approval waits retain their independent actions', () => {
+  const reducer = new PetReducer()
+  const sess = session()
+  collect(reducer, sess, [
+    event('turn/start'),
+    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 2),
+    event('approval/asked', { id: 'a1', toolName: 'bash' }, 3),
+  ])
+  let state = reducer.states()[0]
+  assert.equal(state.phase, 'approval')
+  assert.equal(state.approval, true)
+
+  collect(reducer, sess, [event('approval/decided', { id: 'a1', outcome: 'allowed-once' }, 4)])
+  state = reducer.states()[0]
+  assert.equal(state.state, PetState.WAITING)
+  assert.equal(state.phase, 'ask')
+  assert.equal(state.approval, false)
+
+  collect(reducer, sess, [event('tool/result', { callId: 'q1' }, 5)])
+  state = reducer.states()[0]
+  assert.equal(state.state, PetState.THINKING)
+})
+
+test('late interaction results do not resurrect a completed turn', () => {
+  const reducer = new PetReducer()
+  const sess = session()
+  collect(reducer, sess, [
+    event('turn/start'),
+    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 2),
+    event('approval/asked', { id: 'a1', toolName: 'bash' }, 3),
+    event('turn/end', { reason: { kind: 'completed' } }, 4),
+  ])
+  assert.deepEqual(reducer.states(), [])
+  collect(reducer, sess, [
+    event('tool/result', { callId: 'q1' }, 5),
+    event('approval/decided', { id: 'a1', outcome: 'allowed-once' }, 6),
+  ])
+  assert.deepEqual(reducer.states(), [])
+})
+
+test('states() is empty with no sessions', () => {
+  const reducer = new PetReducer()
+  assert.deepEqual(reducer.states(), [])
+})
+
+test('states() returns one entry per session with mood/message/detail', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('s1'), [
+    event('turn/start'),
+    event('assistant/message', {}, 2),
+  ])
+  const states = reducer.states()
+  assert.equal(states.length, 1)
+  assert.equal(states[0].sessionId, 's1')
+  assert.equal(states[0].state, PetState.THINKING)
+  assert.equal(states[0].mood, '01')
+  assert.ok(states[0].detail)
+  assert.equal(states[0].attention, false)
+})
+
+test('states() ranks attention-needing sessions on top', () => {
+  const reducer = new PetReducer()
+  // s1 is streaming (THINKING), s2 waits on the human (WAITING via ask).
+  collect(reducer, session('s1'), [
+    event('turn/start', {}, 1),
+    event('assistant/message', {}, 2),
+  ])
+  collect(reducer, session('s2'), [
+    event('turn/start', {}, 3),
+    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 4),
+  ])
+  const states = reducer.states()
+  assert.equal(states.length, 2)
+  // WAITING (s2) must come first even though s1 was updated later.
+  assert.equal(states[0].sessionId, 's2')
+  assert.equal(states[0].state, PetState.WAITING)
+  assert.equal(states[0].attention, true)
+  assert.equal(states[1].sessionId, 's1')
+  assert.equal(states[1].state, PetState.THINKING)
+  assert.equal(states[1].attention, false)
+})
+
+test('states() marks ERROR as attention and sorts before WORKING', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('s1'), [
+    event('turn/start'),
+    event('tool/call', { callId: 'c1', name: 'bash' }, 2),
+  ])
+  collect(reducer, session('s2'), [
+    event('turn/start', {}, 3),
+    event('assistant/message', {}, 4),
+    event('turn/end', { reason: { kind: 'max-tokens' } }, 5),
+  ])
+  const states = reducer.states()
+  assert.equal(states.length, 2)
+  assert.equal(states[0].sessionId, 's2')
+  assert.equal(states[0].state, PetState.ERROR)
+  assert.equal(states[0].attention, true)
+  assert.equal(states[1].sessionId, 's1')
+  assert.equal(states[1].state, PetState.WORKING)
+})
+
+test('disposeSession removes the session from states()', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('s1'), [event('turn/start')])
+  collect(reducer, session('s2'), [event('turn/start', {}, 2)])
+  assert.equal(reducer.states().length, 2)
+  reducer.disposeSession(session('s1'))
+  const states = reducer.states()
+  assert.equal(states.length, 1)
+  assert.equal(states[0].sessionId, 's2')
 })
 
