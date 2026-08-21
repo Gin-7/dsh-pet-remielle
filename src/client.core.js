@@ -1356,7 +1356,8 @@ function mountPet(ctx) {
       return
     }
     applyBubbleTitle(el, entry)
-    el.detail.style.display = detail ? 'flex' : 'none'
+    // 详情行为单行文本，用 block 使 overflow/ellipsis 生效（display:flex 会让 text-overflow 失效）
+    el.detail.style.display = detail ? 'block' : 'none'
     if (detail !== el.lastDetail) {
       el.lastDetail = detail
       el.detailText.textContent = detail.replace(/^\s*[·•]\s*/, '· ')
