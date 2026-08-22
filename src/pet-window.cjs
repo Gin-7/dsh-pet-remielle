@@ -156,7 +156,7 @@ app.whenReady().then(() => {
     // 比例按轴独立实测；抓取点太靠边（除数过小）时该轴退回 1。
     const sx = clientX > 4 && Math.abs(physical.x - dipX) > 1 ? clamp(physical.x / dipX) : 1
     const sy = clientY > 4 && Math.abs(physical.y - dipY) > 1 ? clamp(physical.y / dipY) : 1
-    drag = { ox: clientX, oy: clientY, sx: sx, sy: sy }
+    drag = { ox: clientX, oy: clientY, sx: sx, sy: sy, tx: NaN, ty: NaN }
     debugLog(`drag-start client=${clientX},${clientY} pos=${x},${y} cursor=${physical.x},${physical.y} scale=${sx.toFixed(3)},${sy.toFixed(3)} dsf=${screen.getPrimaryDisplay().scaleFactor}`)
   })
   ipcMain.on('drag-move', () => {
@@ -164,11 +164,15 @@ app.whenReady().then(() => {
     const pt = screen.getCursorScreenPoint()
     const nx = Math.round(pt.x / drag.sx - drag.ox)
     const ny = Math.round(pt.y / drag.sy - drag.oy)
-    const [x, y] = win.getPosition()
-    if (nx !== x || ny !== y) {
-      debugLog(`drag-move cursor=${pt.x},${pt.y} ${x},${y} -> ${nx},${ny}`)
-      win.setPosition(nx, ny)
-    }
+    // 关键：以「目标是否变化」为去重依据，而不是 getPosition() 读回值。
+    // 非整数缩放（如 110%）下 DIP→物理→DIP 回读存在截断误差，读回值会
+    // 永远比目标差 1px；若据此重试，每次合成 mousemove 都会把窗口向右下
+    // 再推 1 物理像素，表现为按住不动时窗口持续漂移。
+    if (nx === drag.tx && ny === drag.ty) return
+    drag.tx = nx
+    drag.ty = ny
+    debugLog(`drag-move cursor=${pt.x},${pt.y} -> ${nx},${ny}`)
+    win.setPosition(nx, ny)
   })
   ipcMain.on('drag-end', () => {
     debugLog('drag-end')
