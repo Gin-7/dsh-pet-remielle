@@ -386,12 +386,10 @@ export class PetReducer {
     this.#update(record, next, nextPayload)
     if (!event.data?.error) return this.#render()
 
+    // 与成功路径对称：后台工具报错也发脉冲提示，不再被全局的
+    // WAITING/ERROR 锚点整体吞掉（锚点状态由脉冲的 resume* 字段恢复）
     const selection = this.#select()
-    if (selection.record.state === PetState.WAITING || selection.record.state === PetState.ERROR) {
-      return this.#render(selection)
-    }
-    this.#remember(selection)
-    return [createMessage(PetMessageKind.PULSE, {
+    const pulse = createMessage(PetMessageKind.PULSE, {
       sessionId: record.id,
       sourceSeq: event.seq,
       state: PetState.ERROR,
@@ -404,7 +402,12 @@ export class PetReducer {
       message: statusCopy('toolError', event.seq),
       detail: detailFor(record),
       errorCode: event.data.error.code,
-    })]
+    })
+    if ([PetState.WAITING, PetState.ERROR].includes(selection.record.state)) {
+      return [...this.#render(selection), pulse]
+    }
+    this.#remember(selection)
+    return [pulse]
   }
 
   #todo(record, event) {
@@ -453,6 +456,18 @@ export class PetReducer {
     }
 
     if (kind === 'aborted') {
+      this.#update(record, PetState.IDLE, {
+        phase: 'turn-end',
+        stage: '已停止',
+        message: statusCopy('stopped', event.seq),
+      })
+      return this.#render()
+    }
+
+    if (kind === 'disposed') {
+      // 会话被销毁/回收（dsh-agent-loop 以 cancel({kind:'disposed'}) 终止轮次）：
+      // 静默回待机，不产出误导性“需要处理”错误卡；紧随其后的 session/disposed
+      // 会移除记录，这里只负责事件窗口内的过渡状态。
       this.#update(record, PetState.IDLE, {
         phase: 'turn-end',
         stage: '已停止',

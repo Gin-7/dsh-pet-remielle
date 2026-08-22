@@ -87,6 +87,9 @@
     .menu-item .tick { color: #ffb3c9; }
     .menu-item .mute { color: #f0a8c0; }
     .menu-sep { background: rgba(255, 150, 185, .25); }
+    /* 深色菜单上的下拉框：压过内联浅色样式，保证可读 */
+    .menu select { color: #ffd6e4 !important; background: rgba(255, 150, 185, .12) !important; }
+    .menu select option { color: #8a2f52; background: #fff0f5; }
   }
   /* Right-click menu — pink palette, matching the status bubble and the
      in-page pet menu (both sides use the same hardcoded pink values). */
@@ -199,6 +202,12 @@
       el.addEventListener(petSwallowTypes[i], function (e) { e.stopPropagation() })
     }
   })
+  // 右键菜单区域同样吞掉交互事件：连点菜单行不再误触画画、菜单上滚轮不再缩放
+  var menuEl = document.getElementById('menu')
+  var menuSwallowTypes = ['pointerdown', 'mousedown', 'click', 'dblclick', 'wheel']
+  for (var mi = 0; mi < menuSwallowTypes.length; mi++) {
+    menuEl.addEventListener(menuSwallowTypes[mi], function (e) { e.stopPropagation() })
+  }
   var picEl = document.createElement('img')
   picEl.style.cssText = 'position:fixed;right:24px;top:24px;width:220px;height:auto;border-radius:10px;box-shadow:0 8px 24px rgba(15,30,72,.3);display:none;cursor:pointer;'
   picEl.title = '点击关闭'
@@ -235,7 +244,6 @@
   var menuOpen = false
   var lockedNow = false
   var moodOverride = null
-  var menuEl = document.getElementById('menu')
 
   // --- click-through: transparent margins must not block the desktop ---
   // Windows does not forward mouse-moves onto a click-through window when the
@@ -459,7 +467,7 @@
   window.addEventListener('mouseup', function () {
     if (dragState && !dragState.moved) {
       // plain click: switch mood, same as the in-page pet
-      var moods = ['01', '02', '03', '04', '05', '06', '07']
+      var moods = ['01', '02', '03', '04', '05', '06']
       var current = lastSnapshot ? (lastSnapshot.mood || '06') : '06'
       var pick = moods.filter(function (m) { return m !== current })
       moodOverride = { mood: pick[Math.floor(Math.random() * pick.length)], until: Date.now() + 1800 }
@@ -520,15 +528,37 @@
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sessionId: sessionId, approve: true }),
-    }).catch(function () {})
+    })
+      .then(function (r) { return r.ok ? r.json() : null })
+      .then(function (data) {
+        // delivered=false：没有网页客户端在线接收审批广播，“允许一次”没有生效
+        if (data && data.delivered === false) {
+          console.warn('[dsh-pet-remielle] 允许一次未生效：没有网页客户端在线接收审批动作')
+        }
+      })
+      .catch(function () {})
   }
-  function acknowledgeCompletion(sessionId) {
+  // 与网页端一致：去重 + 有限退避重试，网络抖动时绿点不至于消不掉
+  var completionAckPending = new Set()
+  function acknowledgeCompletion(sessionId, attempt) {
     if (!sessionId) return
+    var retry = attempt || 0
+    if (retry === 0 && completionAckPending.has(sessionId)) return
+    completionAckPending.add(sessionId)
     fetch(COMPLETION_ACK_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sessionId: sessionId, clearPulse: true }),
-    }).catch(function () {})
+    }).then(function (response) {
+      if (!response.ok) throw new Error('completion acknowledgement failed')
+      completionAckPending.delete(sessionId)
+    }).catch(function () {
+      if (retry < 2) {
+        window.setTimeout(function () { acknowledgeCompletion(sessionId, retry + 1) }, 250 * (retry + 1))
+      } else {
+        completionAckPending.delete(sessionId)
+      }
+    })
   }
   function ensureBubbleEl(sessionId) {
     var existing = bubbleEls.get(sessionId)
@@ -764,6 +794,8 @@
     if (!snapshot || snapshot.kind) return
     lastSnapshot = snapshot
     if (window.__petBalance) {
+      // 用量子开关关闭时停掉 60s 轮询（与网页端一致）
+      window.__petBalance.setEnabled(snapshot.showBubble !== false && snapshot.showBubbleUsage === true)
       if (!window.__petBalanceInited) {
         window.__petBalanceInited = true
         window.__petBalance.init(snapshot.usageMode || 'ledger')
@@ -773,11 +805,14 @@
     }
     lockedNow = snapshot.locked === true
     syncCursor()
-    // 禁用桌宠或隐藏桌宠：隐藏宠物与气泡
+    // 禁用桌宠或隐藏桌宠：隐藏宠物与气泡，并清掉主进程残留的命中矩形与菜单——
+    // 否则透明窗会在原区域继续拦截桌面点击（菜单开着时还会卡死 forceInteractive）
     if (snapshot.enabled === false || snapshot.hidden === true) {
       imgEl.style.display = 'none'
       bubbleEl.style.display = 'none'
       bubbleStack.style.display = 'none'
+      if (menuOpen) closeMenu()
+      else { setForceInteractive(false); reportHitRects() }
       return
     }
     imgEl.style.display = 'block'
@@ -854,6 +889,7 @@
     }
     applyTransform(mood, snapshot)
     imgEl.style.opacity = String(snapshot.opacity ?? 1)
+    schedulePulseFallback(snapshot)
     reportHitRects()
   }
 
@@ -872,6 +908,18 @@
   }
   setInterval(poll, 5000)
   poll()
+
+  // pulse 到期后 +60ms 定向刷新（与网页端一致）：等待/完成等闪现态准时回落，
+  // 不必等下一个 5s 轮询周期
+  var pulseFallbackTimer = null
+  function schedulePulseFallback(snapshot) {
+    if (!snapshot.pulseUntil || snapshot.pulseUntil <= Date.now()) return
+    if (pulseFallbackTimer) window.clearTimeout(pulseFallbackTimer)
+    pulseFallbackTimer = window.setTimeout(function () {
+      pulseFallbackTimer = null
+      poll()
+    }, snapshot.pulseUntil - Date.now() + 60)
+  }
 
   // 余额控制器：把显示帧渲染进自带气泡
   if (window.__petBalance) {

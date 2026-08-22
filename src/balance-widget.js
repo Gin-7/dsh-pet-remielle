@@ -33,13 +33,17 @@
   var animId = null
   var mode = 'status' // 'status' | 'balance' | 'random'
   var bubbleTimer = null
+  var pollTimer = null
+  var polling = true
   var listeners = []
 
   // ---- helpers ----
   function pickOne(arr) { return arr[Math.floor(Math.random() * arr.length)] }
   function fmt(balance, currency) {
+    // 未知余额显示 “--”，绝不把 null/未取到 显示成 ¥0.00（金额敏感，避免误导“余额耗尽”）
+    if (balance === null || balance === undefined || !isFinite(Number(balance))) return '--'
     var num = Number(balance)
-    var fixed = isFinite(num) ? num.toFixed(2) : '--'
+    var fixed = num.toFixed(2)
     currency = currency || 'CNY'
     return currency === 'CNY' ? '¥ ' + fixed : fixed + ' ' + currency
   }
@@ -179,6 +183,17 @@
       usageMode = next
       refresh(false)
     },
+    /** 用量子开关关闭时停掉 60s 轮询，开启时恢复（立即拉一次）。 */
+    setEnabled: function (on) {
+      var next = on === true
+      if (next === polling) return
+      polling = next
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+      if (polling) {
+        refresh(false)
+        pollTimer = setInterval(function () { refresh(false) }, REFRESH_MS)
+      }
+    },
     /** Pet single-click: manual refresh + switch the bubble to balance/time period. */
     click: function () {
       enterBalance()
@@ -206,5 +221,5 @@
     fmt: fmt,
   }
 
-  setInterval(function () { refresh(false) }, REFRESH_MS)
+  pollTimer = setInterval(function () { refresh(false) }, REFRESH_MS)
 })()

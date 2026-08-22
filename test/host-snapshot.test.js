@@ -53,6 +53,9 @@ test('snapshot carries config fields for the client', () => {
   assert.equal(snapshot.opacity, 0.8)
   assert.equal(snapshot.locked, true)
   assert.equal(snapshot.bubble, true)
+  // 客户端统一读 showBubble 别名；顶层 updatedAt 供 idle 占位卡使用
+  assert.equal(snapshot.showBubble, true)
+  assert.equal(typeof snapshot.updatedAt, 'number')
   assert.equal(snapshot.desktopActive, false)
   assert.equal(snapshot.desktopMode, true)
 })
@@ -322,19 +325,30 @@ test('persistent completions remain in sessions after the pulse expires', () => 
   assert.equal(snapshot.sessions[0].completionNotification, true)
 })
 
-test('desktop session open notifies the browser client to select a conversation', async () => {
+test('desktop session open notifies the browser client and reports delivery', async () => {
   const notified = []
   const handler = createSessionOpenHandler({
-    notify: (payload) => notified.push(payload),
+    notify: (payload) => { notified.push(payload); return 1 },
   })
   const res = responseRecorder()
-  await handler(request('POST', { sessionId: 's1', approve: true, completed: true }), res)
+  await handler(request('POST', { sessionId: 's1', approve: true }), res)
   assert.equal(res.status, 200)
   assert.equal(notified.length, 1)
   assert.equal(notified[0].kind, 'session-action')
   assert.equal(notified[0].sessionId, 's1')
   assert.equal(notified[0].approve, true)
-  assert.equal(notified[0].completed, true)
+  const body = JSON.parse(res.body)
+  assert.equal(body.ok, true)
+  assert.equal(body.delivered, true)
+
+  // 没有网页客户端订阅时（notify 返回 0）：仍 200，但 delivered=false
+  const silentHandler = createSessionOpenHandler({ notify: () => 0 })
+  const silentRes = responseRecorder()
+  await silentHandler(request('POST', { sessionId: 's2', approve: true }), silentRes)
+  assert.equal(silentRes.status, 200)
+  const silentBody = JSON.parse(silentRes.body)
+  assert.equal(silentBody.ok, true)
+  assert.equal(silentBody.delivered, false)
 })
 
 test('desktop session open rejects missing session ids and non-POST methods', async () => {

@@ -233,14 +233,15 @@ export function createSessionOpenHandler({ notify }) {
       const body = await readJsonBody(req)
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
       if (!sessionId) throw new Error('sessionId must be a non-empty string')
-      notify({
+      // delivered=false：当前没有任何网页客户端订阅 SSE，桌面“允许一次”的
+      // 广播无人接收——调用方可以此区分成功与静默丢失。
+      const delivered = notify({
         protocolVersion: 1,
         kind: 'session-action',
         sessionId,
         approve: body.approve === true,
-        completed: body.completed === true,
-      })
-      jsonResponse(res, 200, { ok: true })
+      }) > 0
+      jsonResponse(res, 200, { ok: true, delivered })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
     }
@@ -463,6 +464,8 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       opacity: config.opacity,
       locked: config.locked === true,
       bubble: config.showBubble !== false,
+      // 客户端统一读 showBubble（与配置字段同名）；bubble 为旧字段别名，保留兼容
+      showBubble: config.showBubble !== false,
       showBubbleStatus: config.showBubbleStatus !== false,
       showBubbleUsage: config.showBubbleUsage === true,
       usageMode: config.usageMode ?? 'ledger',
@@ -485,6 +488,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       progress: base?.progress ?? undefined,
       pulseUntil: activePulse ? activePulse.until : 0,
       sessions,
+      updatedAt: now,
       ts: now,
     }
   }
@@ -535,7 +539,16 @@ export function createStreamHub({ serve }) {
     },
     /** Push an arbitrary message (e.g. download progress) to every client. */
     notify(payload) {
-      for (const res of [...clients]) send(res, payload)
+      let delivered = 0
+      for (const res of [...clients]) {
+        try {
+          res.write(`data: ${JSON.stringify(payload)}\n\n`)
+          delivered++
+        } catch {
+          clients.delete(res)
+        }
+      }
+      return delivered
     },
     get size() {
       return clients.size
@@ -694,13 +707,27 @@ function mount(ctx, config = {}, eventCtx = ctx) {
 
   // Observe every DSH session. Loader entries may live inside a scoped
   // composition, so use the unscoped root bus and dispose explicitly.
+  // 完成提醒的清理不依赖 reducer 的“选中渲染”：会话重新开工或被销毁时，
+  // 直接在这里清队列——否则存在更高优先级锚点遮蔽时，旧完成卡会在中止轮次后复活；
+  // one-shot 子 Agent 完成即销毁的场景下绿点也会永久残留。
+  const completionSessionIdOf = (session) => {
+    const id = String(session?.header?.id ?? session?.id ?? '')
+    return id || null
+  }
+  const dropCompletion = (session) => {
+    const id = completionSessionIdOf(session)
+    if (id && completionQueue.delete(id)) hub.broadcast()
+  }
   const offEvent = eventCtx.on('session/event', (session, event) => {
+    const eventType = String(event?.type ?? '')
+    if (eventType === 'turn/start' || eventType === 'tool/call') dropCompletion(session)
     for (const message of reducer.handle(session, event)) {
       onMessage(message)
       hub.broadcast()
     }
   }, { global: true })
   const offDisposed = eventCtx.on('session/disposed', (session) => {
+    dropCompletion(session)
     for (const message of reducer.disposeSession(session)) {
       onMessage(message)
       hub.broadcast()
