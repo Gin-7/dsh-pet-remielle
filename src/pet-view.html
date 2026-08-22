@@ -937,30 +937,46 @@
   // Renders off-screen and streams frames to a desktop-top-right window (via
   // petBridge) so it never covers the pet bubble; falls back to an in-window
   // canvas if no bridge is available.
-  var drawingActive = false
+  // 无画画锁：连续双击先 stopDraw 清掉上一轮（动画帧/定时器/画布），立即开始新一轮。
+  var drawSeq = 0
+  var drawRafId = 0
+  var drawAfterTimer = 0
+  var drawHideTimer = 0
+  var drawCv = null
+  function stopDraw() {
+    if (drawRafId) { window.cancelAnimationFrame(drawRafId); drawRafId = 0 }
+    if (drawAfterTimer) { window.clearTimeout(drawAfterTimer); drawAfterTimer = 0 }
+    if (drawHideTimer) { window.clearTimeout(drawHideTimer); drawHideTimer = 0 }
+    if (drawCv && drawCv.parentNode) drawCv.parentNode.removeChild(drawCv)
+    drawCv = null
+    // Electron 作品小窗：立即清掉上一幅的画面并复位淡出状态，
+    // 否则新一轮首帧推送前会闪现旧画（淡出中重开还会让新画不可见）
+    if (window.petBridge && window.petBridge.artworkClear) window.petBridge.artworkClear()
+  }
   function playDraw() {
-    if (drawingActive) return
     if (!lastSnapshot || !lastSnapshot.pics) return
+    stopDraw()
+    var seq = ++drawSeq
     var PIC_DRAW_MS = 6000 // 绘制时长 == 显示“绘制中(01)”的时长
     moodOverride = { mood: '01', until: Date.now() + PIC_DRAW_MS }
     apply(lastSnapshot)
-    drawingActive = true
-    window.setTimeout(function () { drawingActive = false }, PIC_DRAW_MS + 3500)
     var n = Math.floor(Math.random() * lastSnapshot.pics) + 1
     var src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(lastSnapshot.petId || 'remielle') + '/pics/' + n + '.png'
     var img = new Image()
     img.onload = function () {
-      runBrushReveal(img, img.naturalWidth || 220, img.naturalHeight || 220)
+      if (seq !== drawSeq) return // 迟到的旧图加载：新一轮已开始，丢弃
+      runBrushReveal(seq, img, img.naturalWidth || 220, img.naturalHeight || 220)
     }
     img.src = src
   }
 
-  function runBrushReveal(img, W, H) {
+  function runBrushReveal(seq, img, W, H) {
     var useElectron = !!(window.petBridge && window.petBridge.artworkOpen && window.petBridge.artworkSet)
     // 显示尺寸（约 240px 宽，控制高度上限，保证 PNG 帧不至于过大）
     var dispW = 240
     var dispH = Math.max(60, Math.min(420, Math.round(240 * H / W)))
     var cv = document.createElement('canvas')
+    drawCv = cv
     cv.width = dispW; cv.height = dispH
     var g = cv.getContext('2d')
     g.clearRect(0, 0, dispW, dispH)
@@ -995,6 +1011,7 @@
       return { ax: ax, ay: ay, bx: bx, by: by }
     }
     function frame(ts) {
+      if (seq !== drawSeq) return // 双重保险：过期的动画循环直接退出
       if (t0 === null) t0 = ts
       var p = Math.min(1, (ts - t0) / T)
       if (p >= 1) {
@@ -1002,16 +1019,16 @@
         g.globalCompositeOperation = 'source-over'
         g.drawImage(img, 0, 0, W, H, 0, 0, dispW, dispH)
         pushFrame(ts)
-        // 绘制完成：切“得意中(03)”，保持片刻后 0.8s 淡出再关闭
+        // 绘制完成：切“得意中(03)”，保持片刻后 0.8s 淡出再关闭（计时均可被下一轮取消）
         moodOverride = { mood: '03', until: Date.now() + 2200 }
         apply(lastSnapshot)
-        setTimeout(function () {
+        drawAfterTimer = window.setTimeout(function () {
           if (useElectron) window.petBridge.artworkFade()
           else if (cv.parentNode) {
             cv.style.transition = 'opacity 0.8s ease-out'
             cv.style.opacity = '0'
           }
-          setTimeout(function () {
+          drawHideTimer = window.setTimeout(function () {
             if (useElectron) window.petBridge.artworkClose()
             else if (cv.parentNode) document.body.removeChild(cv)
           }, 800)
@@ -1041,9 +1058,9 @@
         g.restore()
       }
       pushFrame(ts)
-      window.requestAnimationFrame(frame)
+      drawRafId = window.requestAnimationFrame(frame)
     }
-    window.requestAnimationFrame(frame)
+    drawRafId = window.requestAnimationFrame(frame)
   }
   window.addEventListener('dblclick', playDraw)
 

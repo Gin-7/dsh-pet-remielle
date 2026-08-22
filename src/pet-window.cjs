@@ -190,6 +190,17 @@ app.whenReady().then(() => {
     artWin.on('closed', () => { artWin = null; artPending = null; artLoaded = false })
   })
   ipcMain.on('artwork-set', (_event, dataUrl) => artSet(String(dataUrl)))
+  // 连续双击重开：清空画面并复位淡出状态。若在上一幅的得意停留/淡出过程中
+  // 重开，img 的 src 还挂着旧图、opacity 可能已被置 0——不清理的话，新一轮
+  // 加载完成前会闪现旧画，甚至新画推帧后也因 opacity=0 而不可见。
+  const ART_BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+  ipcMain.on('artwork-clear', () => {
+    artPending = null
+    if (!artWin || artWin.isDestroyed() || !artLoaded) return
+    artWin.webContents.executeJavaScript(
+      `const i=document.getElementById('art');i.style.transition='none';i.style.opacity='1';i.src=${JSON.stringify(ART_BLANK)}`
+    ).catch(() => {})
+  })
   ipcMain.on('artwork-fade', () => {
     if (!artWin || artWin.isDestroyed() || !artLoaded) return
     artWin.webContents.executeJavaScript(

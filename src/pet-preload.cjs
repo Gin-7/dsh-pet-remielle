@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('petBridge', {
   // 绘画作品：独立窗口显示在桌面右上角（不遮气泡）
   artworkOpen: (w, h) => ipcRenderer.send('artwork-open', Number(w) || 240, Number(h) || 240),
   artworkSet: (dataUrl) => ipcRenderer.send('artwork-set', String(dataUrl)),
+  artworkClear: () => ipcRenderer.send('artwork-clear'),
   artworkFade: () => ipcRenderer.send('artwork-fade'),
   artworkClose: () => ipcRenderer.send('artwork-close'),
 })
