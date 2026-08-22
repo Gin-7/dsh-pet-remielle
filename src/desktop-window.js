@@ -198,14 +198,26 @@ export class DesktopWindow {
     return child
   }
 
+  /** Stop the pet window and resolve once its process has exited (immediately
+   *  when it was not running). Callers that must release file locks before
+   *  replacing plugin files (self-update) await the returned promise. */
   stop(reason = 'stopped') {
     const child = this.child
     this.child = undefined
-    if (!child) return
-    try {
-      child.kill()
-    } catch (error) {
-      this.logger.warn?.(`dsh-pet-remielle: pet window kill failed (${reason}): ${String(error)}`)
-    }
+    if (!child || child.exitCode !== null) return Promise.resolve()
+    return new Promise((resolve) => {
+      // 兜底定时：万一 kill 失败且 exit 事件不来，也不能把更新流程卡死
+      const fallback = setTimeout(resolve, 5000)
+      if (typeof fallback.unref === 'function') fallback.unref()
+      child.once('exit', () => {
+        clearTimeout(fallback)
+        resolve()
+      })
+      try {
+        child.kill()
+      } catch (error) {
+        this.logger.warn?.(`dsh-pet-remielle: pet window kill failed (${reason}): ${String(error)}`)
+      }
+    })
   }
 }

@@ -6,8 +6,11 @@
  *                                             release/tag (direct, then local
  *                                             HTTP proxies / Steam++-style pins)
  *   POST /plugins/dsh-pet-remielle/update  -> run the update (git pull for a
- *                                             linked checkout, pnpm update for a
- *                                             registry install) and return output
+ *                                             linked checkout, pnpm update --latest
+ *                                             for a registry install) and return
+ *                                             output; stops the desktop pet window
+ *                                             first so its electron.exe does not
+ *                                             lock the package directory
  *   GET  /plugins/dsh-pet-remielle/info    -> install mode, versions, command
  *
  * All routes only accept local-loopback requests (CSRF guard).
@@ -275,7 +278,7 @@ export function infoHandler(_req, res) {
     : info.mode === 'link' && info.repoDir
       ? `cd /d "${info.repoDir}" && git pull`
       : info.profileDir
-        ? `cd /d "${info.profileDir}" && pnpm update ${PKG}`
+        ? `cd /d "${info.profileDir}" && pnpm update --latest ${PKG}`
         : ''
   json(res, 200, {
     pkg: PKG,
@@ -317,14 +320,35 @@ export async function checkHandler(req, res) {
   json(res, 200, { ok: true, ...remote, needsCleanReinstall: needsCleanReinstallFor(resolveInstall().version) })
 }
 
+// ---- 注入点（宿主注册路由时设置，测试可覆盖）----
+// - stopDesktopWindow：更新前停掉桌面宠物窗并等待其进程退出。桌宠窗的
+//   electron.exe 就住在插件包目录里（vendor/electron-win32-x64），进程不退出时
+//   Windows 会锁住文件——pnpm/git 替换包内容直接 EPERM。未注入（单测/无桌面窗）则跳过。
+// - run / resolveInstall：测试注入假实现用。
+const hooks = { stopDesktopWindow: null, run, resolveInstall }
+export function setSelfUpdateHooks(next = {}) {
+  if ('stopDesktopWindow' in next) {
+    hooks.stopDesktopWindow = typeof next.stopDesktopWindow === 'function' ? next.stopDesktopWindow : null
+  }
+  if ('run' in next) hooks.run = typeof next.run === 'function' ? next.run : run
+  if ('resolveInstall' in next) {
+    hooks.resolveInstall = typeof next.resolveInstall === 'function' ? next.resolveInstall : resolveInstall
+  }
+}
+
+async function quiesceDesktopWindow() {
+  if (typeof hooks.stopDesktopWindow !== 'function') return
+  try { await hooks.stopDesktopWindow() } catch { /* 停不掉也继续尝试更新 */ }
+}
+
 export async function updateHandler(req, res) {
   if (!localHostOk(req)) {
     json(res, 403, { ok: false, output: 'forbidden: update route is local-only' })
     return
   }
-  const info = resolveInstall()
+  const info = hooks.resolveInstall()
   // 仅版本 < 0.3.0（包名已变更）需彻底卸载重装；>= 0.3.0 的 link 与 registry 安装
-  // 都支持一键增量更新（link→git pull，registry→pnpm update）。
+  // 都支持一键增量更新（link→git pull，registry→pnpm update --latest）。
   if (needsCleanReinstallFor(info.version)) {
     json(res, 500, {
       ok: false,
@@ -333,11 +357,16 @@ export async function updateHandler(req, res) {
     })
     return
   }
+  // 先停掉桌面宠物窗并等待其退出：electron.exe 运行中会锁住插件目录内的文件，
+  // 否则 pnpm/git 替换包内容时报 EPERM（link 模式的 git pull 同理）
+  await quiesceDesktopWindow()
   let result
   if (info.mode === 'link' && info.repoDir) {
-    result = await run('git', ['-C', info.repoDir, 'pull'], info.repoDir)
+    result = await hooks.run('git', ['-C', info.repoDir, 'pull'], info.repoDir)
   } else if (info.profileDir && existsSync(info.profileDir)) {
-    result = await run('pnpm', ['update', PKG], info.profileDir)
+    // --latest：跨出 package.json 里可能被钉死的精确版本号（如 "0.3.3"）。
+    // 普通 pnpm update 只在声明范围内升级，精确锁会永远原地重装旧版却报成功。
+    result = await hooks.run('pnpm', ['update', '--latest', PKG], info.profileDir)
   } else {
     json(res, 500, { ok: false, output: 'unknown install shape' })
     return

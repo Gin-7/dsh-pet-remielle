@@ -25,7 +25,7 @@ import { DesktopWindow } from './desktop-window.js'
 import { ensureElectronRuntime } from './electron-fetch.mjs'
 import {
   CHECK_ENDPOINT, UPDATE_ENDPOINT, INFO_ENDPOINT,
-  checkHandler, updateHandler, infoHandler,
+  checkHandler, updateHandler, infoHandler, setSelfUpdateHooks,
 } from './self-update.js'
 import {
   DEFAULT_PET_ID,
@@ -989,6 +989,15 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: pet sticker assets',
       )
       // ---- self-update routes (version check + one-click update) ----
+      // 一键更新会替换插件目录内的文件：先停掉桌宠窗并等进程退出——
+      // electron.exe 从 vendor/ 目录内运行时会锁住文件，导致 pnpm/git EPERM
+      setSelfUpdateHooks({
+        stopDesktopWindow: async (reason = 'self-update') => {
+          const w = desktop
+          await w?.stop(reason)
+          if (w && desktopActive) { desktopActive = false; hub.broadcast() }
+        },
+      })
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: CHECK_ENDPOINT, handler: checkHandler }),
         'dsh-pet-remielle: version check endpoint',
