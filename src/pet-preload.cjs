@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('petBridge', {
   setClickThrough: (on) => ipcRenderer.send('set-click-through', Boolean(on)),
   setForceInteractive: (on) => ipcRenderer.send('force-interactive', Boolean(on)),
   setHitRects: (rects) => ipcRenderer.send('hit-rects', rects),
-  dragStart: () => ipcRenderer.send('drag-start'),
+  dragStart: (clientX, clientY) => ipcRenderer.send('drag-start', Number(clientX) || 0, Number(clientY) || 0),
   dragMove: () => ipcRenderer.send('drag-move'),
   dragEnd: () => ipcRenderer.send('drag-end'),
   getPosition: () => ipcRenderer.invoke('get-position'),

@@ -130,20 +130,30 @@ app.whenReady().then(() => {
 
   // JS-driven dragging from the pet image: closed-loop absolute positioning.
   // The renderer only signals drag lifecycle; the main process keeps the
-  // window pinned at (cursor - grab offset) using its own screen APIs, so
-  // renderer screenX/screenY DPI scaling mismatches can never accumulate.
+  // window pinned at (cursor - grab offset). Some Electron/Windows builds
+  // return PHYSICAL pixels from getCursorScreenPoint() while bounds APIs are
+  // DIP; the ratio is measured at drag start from the known on-page grab
+  // point (cursorDip ≈ windowPos + clientX/Y), so either convention works.
   let drag = null
-  ipcMain.on('drag-start', () => {
-    const pt = screen.getCursorScreenPoint()
+  ipcMain.on('drag-start', (_event, clientX, clientY) => {
+    clientX = Number(clientX) || 0
+    clientY = Number(clientY) || 0
     const [x, y] = win.getPosition()
-    drag = { ox: pt.x - x, oy: pt.y - y }
+    const physical = screen.getCursorScreenPoint()
+    const dipX = x + clientX
+    const dipY = y + clientY
+    const clamp = (v) => Math.min(4, Math.max(0.5, v))
+    // 比例按轴独立实测；抓取点太靠边（除数过小）时该轴退回 1。
+    const sx = clientX > 4 && Math.abs(physical.x - dipX) > 1 ? clamp(physical.x / dipX) : 1
+    const sy = clientY > 4 && Math.abs(physical.y - dipY) > 1 ? clamp(physical.y / dipY) : 1
+    drag = { ox: clientX, oy: clientY, sx: sx, sy: sy }
   })
   ipcMain.on('drag-move', () => {
     if (!drag) return
     const pt = screen.getCursorScreenPoint()
+    const nx = Math.round(pt.x / drag.sx - drag.ox)
+    const ny = Math.round(pt.y / drag.sy - drag.oy)
     const [x, y] = win.getPosition()
-    const nx = Math.round(pt.x - drag.ox)
-    const ny = Math.round(pt.y - drag.oy)
     if (nx !== x || ny !== y) win.setPosition(nx, ny)
   })
   ipcMain.on('drag-end', () => {

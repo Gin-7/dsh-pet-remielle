@@ -453,7 +453,7 @@
     dragState = { x: e.screenX, y: e.screenY, moved: false }
     imgEl.style.cursor = 'grabbing'
     setForceInteractive(true)
-    if (window.petBridge && window.petBridge.dragStart) window.petBridge.dragStart()
+    if (window.petBridge && window.petBridge.dragStart) window.petBridge.dragStart(e.clientX, e.clientY)
   })
   window.addEventListener('mousemove', function (e) {
     if (!dragState) return
