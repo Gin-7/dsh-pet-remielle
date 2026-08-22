@@ -180,8 +180,8 @@ app.whenReady().then(() => {
     if (now - lastMoveLog < 150) return
     lastMoveLog = now
     if (!win || win.isDestroyed()) return
-    const [x, y] = win.getContentBounds()
-    debugLog(`window-move -> ${Math.round(x)},${Math.round(y)} dragging=${Boolean(drag)}`)
+    const [x, y] = win.getPosition()
+    debugLog(`window-move -> ${x},${y} dragging=${Boolean(drag)}`)
   })
 
   // Return current window position for persistence.
