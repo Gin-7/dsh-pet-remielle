@@ -1210,29 +1210,33 @@ function mountPet(ctx) {
       window.dispatchEvent(new Event('storage'))
     } catch (e) { /* storage may be unavailable in an embedded shell */ }
   }
-  function approveSession(sessionId) {
-    openSession(sessionId)
-    // The public sessions face intentionally exposes selection, not an unsafe
-    // global approval verb. Reuse the mounted native ApprovalPanel button only
-    // after the requested session is current; this preserves its authenticated
-    // PendingApproval.answer path and never answers a question prompt.
-    if (!ctx || !ctx.sessions || typeof ctx.sessions.open !== 'function') return
-    var attempts = 40
-    var tryClick = function () {
-      var current = sessionListSnapshot()
-      if (current !== sessionId) {
-        if (attempts-- > 0) window.setTimeout(tryClick, 50)
-        return
-      }
-      var panel = document.querySelector('[data-approval-key]')
-      var buttons = panel ? panel.querySelectorAll('button') : []
-      for (var i = 0; i < buttons.length; i++) {
-        var label = String(buttons[i].textContent || '').trim()
-        if (/^(允许一次|allow once)$/i.test(label)) {
-          buttons[i].click()
-          return
+  function controlLabel(node) {
+    if (!node) return ''
+    var aria = typeof node.getAttribute === 'function' ? (node.getAttribute('aria-label') || '') : ''
+    return String(node.innerText || node.textContent || aria || '').replace(/\s+/g, ' ').trim()
+  }
+  function clickNativeAllowOnce() {
+    var panels = document.querySelectorAll('[data-approval-key]')
+    for (var p = 0; p < panels.length; p++) {
+      var nodes = panels[p].querySelectorAll('button, [role="button"]')
+      for (var i = 0; i < nodes.length; i++) {
+        if (/(允许一次|allow once)/i.test(controlLabel(nodes[i]))) {
+          nodes[i].click()
+          return true
         }
       }
+    }
+    return false
+  }
+  function approveSession(sessionId) {
+    // Open the conversation so ApprovalPanel mounts, then click native 「允许一次」.
+    if (!sessionId || !ctx || !ctx.sessions || typeof ctx.sessions.open !== 'function') return
+    openSession(sessionId)
+    var attempts = 80
+    var tryClick = function () {
+      var current = sessionListSnapshot()
+      if (current === sessionId && clickNativeAllowOnce()) return
+      if (current !== sessionId) openSession(sessionId)
       if (attempts-- > 0) window.setTimeout(tryClick, 50)
     }
     window.setTimeout(tryClick, 50)

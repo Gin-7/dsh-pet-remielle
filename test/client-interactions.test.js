@@ -79,6 +79,25 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
 
   const body = element('body')
   const head = element('head')
+  const allowClicks = []
+  const allowBtn = {
+    textContent: ' 允许一次 ',
+    innerText: ' 允许一次 ',
+    getAttribute() { return '' },
+    click() { allowClicks.push('allow') },
+  }
+  const rejectBtn = {
+    textContent: '拒绝',
+    innerText: '拒绝',
+    getAttribute() { return '' },
+    click() { allowClicks.push('reject') },
+  }
+  const approvalPanel = {
+    querySelectorAll(sel) {
+      if (String(sel).includes('button')) return [rejectBtn, allowBtn]
+      return []
+    },
+  }
   const document = {
     body,
     head,
@@ -86,7 +105,8 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     createElement: (tag) => element(tag),
     addEventListener() {},
     removeEventListener() {},
-    querySelector() { return null },
+    querySelector(sel) { return sel === '[data-approval-key]' ? approvalPanel : null },
+    querySelectorAll(sel) { return sel === '[data-approval-key]' ? [approvalPanel] : [] },
   }
   class EventSourceStub {
     constructor() { stream = this }
@@ -159,7 +179,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     const queued = timers.splice(0)
     for (const listener of queued) listener()
   }
-  return { card, click, elements, fetches, opened, select, send, styleWrites, flushTitleTimers }
+  return { allowClicks, card, click, elements, fetches, opened, select, send, styleWrites, flushTitleTimers }
 }
 
 const base = {
@@ -371,6 +391,8 @@ test('desktop session-action approve opens the conversation for the native allow
   harness.send({ ...base, desktopActive: true, sessions: [] })
   harness.send({ kind: 'session-action', sessionId: 'desk-2', approve: true })
   assert.deepEqual(harness.opened, ['desk-2'])
+  harness.flushTitleTimers()
+  assert.deepEqual(harness.allowClicks, ['allow'])
 })
 
 test('same session live work hides its own completion reminder', () => {
