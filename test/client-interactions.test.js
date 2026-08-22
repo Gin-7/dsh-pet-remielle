@@ -4,7 +4,7 @@ import { test } from 'node:test'
 
 const CLIENT = new URL('../lib/client.js', import.meta.url)
 
-function createHarness(initialCurrent = 'other', autoSelect = true) {
+function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = []) {
   const elements = []
   const fetches = []
   const opened = []
@@ -125,7 +125,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true) {
   }
   const sessions = {
     list: {
-      getSnapshot: () => ({ current }),
+      getSnapshot: () => ({ current, byId: snapshotItems }),
       subscribe(listener) { sessionListener = listener; return () => {} },
     },
     open(sessionId) {
@@ -357,5 +357,31 @@ test('expired reminder for the current conversation disappears immediately', asy
   await Promise.resolve()
   assert.ok(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')))
   assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务已完成'), false)
+})
+
+test('desktop session-action still opens the conversation while the page pet is hidden', () => {
+  const harness = createHarness()
+  harness.send({ ...base, desktopActive: true, sessions: [] })
+  harness.send({ kind: 'session-action', sessionId: 'desk-1', completed: true })
+  assert.deepEqual(harness.opened, ['desk-1'])
+})
+
+test('desktop session-action approve opens the conversation for the native allow-once button', () => {
+  const harness = createHarness()
+  harness.send({ ...base, desktopActive: true, sessions: [] })
+  harness.send({ kind: 'session-action', sessionId: 'desk-2', approve: true })
+  assert.deepEqual(harness.opened, ['desk-2'])
+})
+
+test('sidebar green-dot session (completed) is surfaced as a clickable completion card', () => {
+  const harness = createHarness('current', true, {
+    ws2: { id: 'ws2', title: '插件图标遮挡配色问题', completed: true, cwd: 'C:\\xx\\.dsh', updatedAt: 5 },
+    ws1: { id: 'ws1', title: '还在运行', running: true, completed: false, updatedAt: 4 },
+  })
+  harness.send({ ...base, sessions: [] })
+  const card = harness.card('插件图标遮挡配色问题')
+  assert.ok(card, 'missing sidebar completed completion card')
+  card.listeners.get('click')[0]({ preventDefault() {}, stopPropagation() {} })
+  assert.ok(harness.opened.includes('ws2'), 'clicking should open the completed session')
 })
 

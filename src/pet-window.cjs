@@ -32,8 +32,8 @@ if (!url) {
 
 app.whenReady().then(() => {
   const win = new BrowserWindow({
-    width: 380,
-    height: 430,
+    width: 400,
+    height: 520,
     transparent: true,
     frame: false,
     alwaysOnTop: true,

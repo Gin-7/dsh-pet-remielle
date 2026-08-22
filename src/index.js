@@ -47,6 +47,7 @@ export const CONFIG_ENDPOINT = '/plugins/dsh-pet-remielle/config'
 export const STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
 export const STREAM_ENDPOINT = '/plugins/dsh-pet-remielle/stream'
 export const COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
+export const SESSION_OPEN_ENDPOINT = '/plugins/dsh-pet-remielle/session/open'
 export const PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 export const ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 export const PET_VIEW_ENDPOINT = '/plugins/dsh-pet-remielle/pet-view'
@@ -208,6 +209,31 @@ export function createCompletionAckHandler({ acknowledge, broadcast = () => {} }
       if (!sessionId) throw new Error('sessionId must be a non-empty string')
       acknowledge(sessionId)
       broadcast()
+      jsonResponse(res, 200, { ok: true })
+    } catch (error) {
+      jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+}
+
+export function createSessionOpenHandler({ notify }) {
+  return async (req, res) => {
+    if (!localOnly(req, res)) return
+    if (req.method !== 'POST') {
+      jsonResponse(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    try {
+      const body = await readJsonBody(req)
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+      if (!sessionId) throw new Error('sessionId must be a non-empty string')
+      notify({
+        protocolVersion: 1,
+        kind: 'session-action',
+        sessionId,
+        approve: body.approve === true,
+        completed: body.completed === true,
+      })
       jsonResponse(res, 200, { ok: true })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -814,6 +840,16 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           }),
         }),
         'dsh-pet-remielle: completion notification acknowledgement',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: SESSION_OPEN_ENDPOINT,
+          handler: createSessionOpenHandler({
+            notify: (payload) => hub.notify(payload),
+          }),
+        }),
+        'dsh-pet-remielle: desktop session open/approve bridge',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: BALANCE_ENDPOINT, handler: async (req, res) => {

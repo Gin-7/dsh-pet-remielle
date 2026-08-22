@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createCompletionAckHandler, createStateSnapshot } from '../src/index.js'
+import { createCompletionAckHandler, createSessionOpenHandler, createStateSnapshot } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -292,4 +292,29 @@ test('persistent completions remain in sessions after the pulse expires', () => 
   assert.equal(snapshot.sessions[0].state, PetState.SUCCESS)
   assert.equal(snapshot.sessions[0].completed, true)
   assert.equal(snapshot.sessions[0].completionNotification, true)
+})
+
+test('desktop session open notifies the browser client to select a conversation', async () => {
+  const notified = []
+  const handler = createSessionOpenHandler({
+    notify: (payload) => notified.push(payload),
+  })
+  const res = responseRecorder()
+  await handler(request('POST', { sessionId: 's1', approve: true, completed: true }), res)
+  assert.equal(res.status, 200)
+  assert.equal(notified.length, 1)
+  assert.equal(notified[0].kind, 'session-action')
+  assert.equal(notified[0].sessionId, 's1')
+  assert.equal(notified[0].approve, true)
+  assert.equal(notified[0].completed, true)
+})
+
+test('desktop session open rejects missing session ids and non-POST methods', async () => {
+  const handler = createSessionOpenHandler({ notify: () => assert.fail('must not notify') })
+  const missing = responseRecorder()
+  await handler(request('POST', {}), missing)
+  assert.equal(missing.status, 400)
+  const wrongMethod = responseRecorder()
+  await handler(request('GET'), wrongMethod)
+  assert.equal(wrongMethod.status, 405)
 })
