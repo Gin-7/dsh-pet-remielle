@@ -128,11 +128,26 @@ app.whenReady().then(() => {
     syncIgnore()
   })
 
-  // JS-driven dragging from the pet image: move the window by deltas.
-  ipcMain.on('move-window', (_event, dx, dy) => {
-    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
+  // JS-driven dragging from the pet image: closed-loop absolute positioning.
+  // The renderer only signals drag lifecycle; the main process keeps the
+  // window pinned at (cursor - grab offset) using its own screen APIs, so
+  // renderer screenX/screenY DPI scaling mismatches can never accumulate.
+  let drag = null
+  ipcMain.on('drag-start', () => {
+    const pt = screen.getCursorScreenPoint()
     const [x, y] = win.getPosition()
-    win.setPosition(Math.round(x + dx), Math.round(y + dy))
+    drag = { ox: pt.x - x, oy: pt.y - y }
+  })
+  ipcMain.on('drag-move', () => {
+    if (!drag) return
+    const pt = screen.getCursorScreenPoint()
+    const [x, y] = win.getPosition()
+    const nx = Math.round(pt.x - drag.ox)
+    const ny = Math.round(pt.y - drag.oy)
+    if (nx !== x || ny !== y) win.setPosition(nx, ny)
+  })
+  ipcMain.on('drag-end', () => {
+    drag = null
   })
 
   // Return current window position for persistence.

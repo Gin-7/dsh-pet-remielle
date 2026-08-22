@@ -453,6 +453,7 @@
     dragState = { x: e.screenX, y: e.screenY, moved: false }
     imgEl.style.cursor = 'grabbing'
     setForceInteractive(true)
+    if (window.petBridge && window.petBridge.dragStart) window.petBridge.dragStart()
   })
   window.addEventListener('mousemove', function (e) {
     if (!dragState) return
@@ -460,12 +461,14 @@
     var dx = e.screenX - dragState.x
     var dy = e.screenY - dragState.y
     if (Math.abs(dx) + Math.abs(dy) > 6) dragState.moved = true
-    if (window.petBridge) {
-      window.petBridge.moveWindow(dx, dy)
-    }
+    // 拖动采用主进程闭环绝对定位（光标 - 抓取偏移）：渲染层 screenX 在
+    // Windows 显示缩放 ≠ 100% 时与 Electron 坐标存在换算差，增量式移动
+    // 会累积成 pet 相对鼠标的持续漂移；这里只负责通知主进程重新对齐。
+    if (window.petBridge && window.petBridge.dragMove) window.petBridge.dragMove()
     dragState = { x: e.screenX, y: e.screenY, moved: dragState.moved }
   })
   window.addEventListener('mouseup', function () {
+    if (window.petBridge && window.petBridge.dragEnd) window.petBridge.dragEnd()
     if (dragState && !dragState.moved) {
       // plain click: switch mood, same as the in-page pet
       var moods = ['01', '02', '03', '04', '05', '06']
