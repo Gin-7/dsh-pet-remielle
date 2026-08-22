@@ -112,8 +112,8 @@ var CSS = [
   '[data-testid="dsh-pet-remielle-settings"]:hover{border-color:var(--dsw-alias-label-dimmed);}',
   'body[data-ds-dark-theme] .rm2-pet-menu-sep{background:rgba(255,150,185,.25);}',
   // 堆叠会话卡（状态页）
-  '.rm2-pet-bubbles{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:12px;width:fit-content;max-width:min(360px,calc(100vw - 24px));display:flex;flex-direction:column;align-items:center;pointer-events:none;}',
-  '.rm2-pet-bubbles .rm2-pet-bubble{position:relative;bottom:auto;left:auto;transform:none;margin:0;box-sizing:border-box;width:fit-content;min-width:150px;max-width:min(360px,calc(100vw - 24px));height:68px;min-height:68px;padding:12px 20px 12px 30px;border-radius:22px;text-align:left;box-shadow:0 8px 24px rgba(190,70,110,.25);transition:width .18s ease,opacity .18s ease;}',
+  '.rm2-pet-bubbles{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:12px;width:fit-content;max-width:min(330px,calc(100vw - 24px));display:flex;flex-direction:column;align-items:center;pointer-events:none;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble{position:relative;bottom:auto;left:auto;transform:none;margin:0;box-sizing:border-box;width:fit-content;min-width:150px;max-width:min(330px,calc(100vw - 24px));height:68px;min-height:68px;padding:12px 20px 12px 30px;border-radius:22px;text-align:left;box-shadow:0 8px 24px rgba(190,70,110,.25);transition:width .18s ease,opacity .18s ease;}',
   '.rm2-pet-bubbles .rm2-pet-bubble::after{display:none;}',
   '.rm2-pet-bubbles .rm2-pet-bubble{pointer-events:auto;cursor:pointer;}',
   '.rm2-pet-bubble-header{display:flex;align-items:center;min-width:0;min-height:22px;}',
@@ -135,9 +135,9 @@ var CSS = [
   // 单气泡（余额页）允许圆点露出到边框外；堆叠卡恢复裁剪，不影响省略号
   // 堆叠卡需要裁剪超长内容（保留省略号），单气泡（余额）不裁剪
   '.rm2-pet-bubbles .rm2-pet-bubble{overflow:hidden;}',
-  // 余额气泡复用对话卡工作态：border-box 同 68px 高度、max-width 与对话卡一致(360)、去掉气泡尾三角。
+  // 余额气泡复用对话卡工作态：border-box 同 68px 高度、max-width 与对话卡一致(330)、去掉气泡尾三角。
   // 标题行高 22px 对齐对话卡的 header(min-height 22px)。
-  '.rm2-bubble-balance{box-sizing:border-box;height:68px;min-height:68px;max-width:360px;}',
+  '.rm2-bubble-balance{box-sizing:border-box;height:68px;min-height:68px;max-width:330px;}',
   '.rm2-bubble-balance .rm2-pet-bubble-title{line-height:22px;min-width:0;overflow:hidden;text-overflow:ellipsis;}',
   '.rm2-bubble-balance::after{display:none;}',
 ].join('\n')
@@ -972,12 +972,12 @@ function mountPet(ctx) {
   bubbleDots.appendChild(bubbleDot)
   bubble.appendChild(bubbleDots)
   // 气泡框最小宽度：把标题在常见长度内的宽度变化"吸收"掉，避免方框频繁抖动
-  var BUBBLE_MIN_W = 205
+  var BUBBLE_MIN_W = 208
   // 两种方框（堆叠对话卡 / 余额气泡）共用同一宽度规则：取"最宽一行" + 内边距(50)，
-  // 下限 BUBBLE_MIN_W、上限 min(360, 视口-24)。返回含内边距的总宽。
+  // 下限 BUBBLE_MIN_W、上限 min(330, 视口-24)。返回含内边距的总宽。
   function bubbleRowWidth(textW) {
     var vw = Math.max(150, (window.innerWidth || 1280) - 24)
-    return Math.min(360, vw, Math.max(BUBBLE_MIN_W, textW + 50))
+    return Math.min(330, vw, Math.max(BUBBLE_MIN_W, textW + 50))
   }
   var currentBubblePage = 0
   function switchBubblePage(p) {
@@ -1086,6 +1086,7 @@ function mountPet(ctx) {
   var manualOverride = null
   var paused = false
   var hidden = false
+  var pendingDesktopHide = false
   var lockedNow = false
   var positionRestored = false
   var lastTurnEndShown = false
@@ -1209,29 +1210,33 @@ function mountPet(ctx) {
       window.dispatchEvent(new Event('storage'))
     } catch (e) { /* storage may be unavailable in an embedded shell */ }
   }
-  function approveSession(sessionId) {
-    openSession(sessionId)
-    // The public sessions face intentionally exposes selection, not an unsafe
-    // global approval verb. Reuse the mounted native ApprovalPanel button only
-    // after the requested session is current; this preserves its authenticated
-    // PendingApproval.answer path and never answers a question prompt.
-    if (!ctx || !ctx.sessions || typeof ctx.sessions.open !== 'function') return
-    var attempts = 40
-    var tryClick = function () {
-      var current = sessionListSnapshot()
-      if (current !== sessionId) {
-        if (attempts-- > 0) window.setTimeout(tryClick, 50)
-        return
-      }
-      var panel = document.querySelector('[data-approval-key]')
-      var buttons = panel ? panel.querySelectorAll('button') : []
-      for (var i = 0; i < buttons.length; i++) {
-        var label = String(buttons[i].textContent || '').trim()
-        if (/^(允许一次|allow once)$/i.test(label)) {
-          buttons[i].click()
-          return
+  function controlLabel(node) {
+    if (!node) return ''
+    var aria = typeof node.getAttribute === 'function' ? (node.getAttribute('aria-label') || '') : ''
+    return String(node.innerText || node.textContent || aria || '').replace(/\s+/g, ' ').trim()
+  }
+  function clickNativeAllowOnce() {
+    var panels = document.querySelectorAll('[data-approval-key]')
+    for (var p = 0; p < panels.length; p++) {
+      var nodes = panels[p].querySelectorAll('button, [role="button"]')
+      for (var i = 0; i < nodes.length; i++) {
+        if (/(允许一次|allow once)/i.test(controlLabel(nodes[i]))) {
+          nodes[i].click()
+          return true
         }
       }
+    }
+    return false
+  }
+  function approveSession(sessionId) {
+    // Open the conversation so ApprovalPanel mounts, then click native 「允许一次」.
+    if (!sessionId || !ctx || !ctx.sessions || typeof ctx.sessions.open !== 'function') return
+    openSession(sessionId)
+    var attempts = 80
+    var tryClick = function () {
+      var current = sessionListSnapshot()
+      if (current === sessionId && clickNativeAllowOnce()) return
+      if (current !== sessionId) openSession(sessionId)
       if (attempts-- > 0) window.setTimeout(tryClick, 50)
     }
     window.setTimeout(tryClick, 50)
@@ -1418,6 +1423,49 @@ function mountPet(ctx) {
       }
       return null
     }).filter(Boolean)
+    // 兜底：插件完成提醒只认 SUCCESS，而 DSH 侧边栏绿点（SessionSummary.completed）涵盖任意"运行结束"
+    // （含被中断/停止/异常终止）的会话。这里从 sessions.list.getSnapshot().byId 补入这些"侧边栏有绿点、
+    // 但 host 未生成完成卡"的会话；existingIds 去重避免与 host 已生成的 completion:<id> 重复。
+    try {
+      if (ctx && ctx.sessions && ctx.sessions.list && typeof ctx.sessions.list.getSnapshot === 'function') {
+        var listSnap = ctx.sessions.list.getSnapshot()
+        var byId = (listSnap && typeof listSnap.byId === 'object') ? listSnap.byId : null
+        var existingIds = new Set()
+        for (var ei = 0; ei < sessions.length; ei++) existingIds.add(sessions[ei].sessionId)
+        if (byId) {
+          for (var sid in byId) {
+            if (!Object.prototype.hasOwnProperty.call(byId, sid)) continue
+            var item = byId[sid]
+            if (!item || item.completed !== true) continue
+            if (existingIds.has(sid) || existingIds.has('completion:' + sid)) continue
+            if (item.running === true || sid === currentSessionId) continue
+            sessions.push({
+              sessionId: 'completion:' + sid,
+              targetSessionId: sid,
+              state: 'SUCCESS',
+              completed: true,
+              completionNotification: true,
+              message: item.displayTitle || item.title || '任务已完成',
+              detail: (item.cwd && String(item.cwd).split(/[\\/]/).filter(Boolean).pop())
+                ? '已完成 · ' + String(item.cwd).split(/[\\/]/).filter(Boolean).pop()
+                : '已完成',
+              mood: '03',
+              updatedAt: item.updatedAt || Date.now(),
+            })
+            existingIds.add('completion:' + sid)
+          }
+        }
+      }
+    } catch (e) { /* sessions.list 偶发异常不阻断堆叠渲染 */ }
+    var liveTargets = new Set()
+    for (var li = 0; li < sessions.length; li++) {
+      if (!completionOf(sessions[li])) liveTargets.add(targetSessionOf(sessions[li]))
+    }
+    if (liveTargets.size > 0) {
+      sessions = sessions.filter(function (entry) {
+        return !completionOf(entry) || !liveTargets.has(targetSessionOf(entry))
+      })
+    }
     if (sessions.length === 0 && snapshot.enabled !== false) {
       sessions = [{
         sessionId: '__pet_idle__',
@@ -1461,7 +1509,7 @@ function mountPet(ctx) {
       var actionWidth = 30
       var completionWidth = completionOf(entry) ? 22 : 0
       bubbleEl.naturalHeaderWidth = titleWidth + actionWidth + completionWidth
-      // 宽度由两行中最宽的一行决定（标题行 或 详情行，取更宽者 + 内边距）；上限由下文 min(360,viewport) 截断，
+      // 宽度由两行中最宽的一行决定（标题行 或 详情行，取更宽者 + 内边距）；上限由下文 min(330,viewport) 截断，
       // 只有超出该上限时才由详情行的省略号截断，符合「最宽行决定宽度 + 最大宽度限制」的设计。
       var detailW = bubbleEl.detail.scrollWidth || bubbleEl.detail.offsetWidth || 0
       if (i === 0) measuredWidth = Math.max(bubbleEl.naturalHeaderWidth, detailW)
@@ -1599,7 +1647,10 @@ function mountPet(ctx) {
   /** Single entry point for both polling and the SSE stream. */
   function applySnapshot(snapshot) {
     if (!snapshot) return
-    // Download progress messages — update the confirmation dialog in-place.
+    if (snapshot.kind === 'session-action') {
+      if (snapshot.sessionId && snapshot.approve) approveSession(snapshot.sessionId)
+      return
+    }
     if (snapshot.kind === 'download') {
       if (snapshot.phase === 'confirm') {
         confirmOverlay.style.display = 'flex'
@@ -1632,6 +1683,7 @@ function mountPet(ctx) {
       }
       return
     }
+    var wasDesktopMode = lastSnapshot && lastSnapshot.desktopMode === true
     lastSnapshot = snapshot
     // 余额控制器：初始化/同步用量模式
     if (window.__petBalance) {
@@ -1645,6 +1697,16 @@ function mountPet(ctx) {
     // The desktop pet window is showing; keep the page pet hidden to avoid
     // two pets on screen. Restores automatically when the window goes away.
     if (snapshot.desktopActive === true) {
+      pendingDesktopHide = false
+      if (root.style.display !== 'none') {
+        root.style.display = 'none'
+        closeMenu()
+      }
+      return
+    }
+    if (snapshot.desktopMode === true && !wasDesktopMode) pendingDesktopHide = true
+    if (snapshot.desktopMode !== true) pendingDesktopHide = false
+    if (pendingDesktopHide) {
       if (root.style.display !== 'none') {
         root.style.display = 'none'
         closeMenu()
@@ -2090,6 +2152,15 @@ function mountPet(ctx) {
       var target = lastSnapshot ? !(lastSnapshot.desktopMode === true) : false
       void patchConfig('desktopMode', target)
       if (lastSnapshot) lastSnapshot = { ...lastSnapshot, desktopMode: target }
+      if (target) {
+        pendingDesktopHide = true
+        if (root.style.display !== 'none') {
+          root.style.display = 'none'
+          closeMenu()
+        }
+      } else {
+        pendingDesktopHide = false
+      }
       buildMenuContent()
     }))
     menu.appendChild(makeActionRow('重置位置', function () { resetPos(); closeMenu() }))

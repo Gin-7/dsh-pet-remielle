@@ -83,7 +83,42 @@ function progressOf(todos) {
   }
 }
 
+function clipLine(text, max = 80) {
+  const value = String(text ?? '').replace(/\s+/gu, ' ').trim()
+  if (!value) return ''
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value
+}
+
+function parseToolArgs(raw) {
+  if (raw && typeof raw === 'object') return raw
+  try { return JSON.parse(String(raw ?? '')) } catch { return null }
+}
+
+function approvalReason(reason) {
+  const value = String(reason ?? '').replace(/\s+/gu, ' ').trim()
+  if (!value) return ''
+  const match = value.match(/^escalate sandbox to \S+:\s*(.+)$/iu)
+  return match ? match[1].trim() : value
+}
+
+function approvalContent(toolName, reason, argsRaw) {
+  const why = clipLine(approvalReason(reason))
+  if (why) return why
+  const args = parseToolArgs(argsRaw)
+  if (args && typeof args.justification === 'string' && args.justification.trim()) return clipLine(args.justification)
+  if (args && typeof args.command === 'string' && args.command.trim()) return clipLine(args.command)
+  if (args && typeof args.description === 'string' && args.description.trim()) return clipLine(args.description)
+  return clipLine(toolName) || '等待确认'
+}
+
 function detailFor(record, stage = record.payload.stage) {
+  const approval = record.waits?.find((wait) => wait.kind === 'approval')
+  if (approval) {
+    const parts = []
+    if (record.project) parts.push(record.project)
+    parts.push(approval.payload.preview || approval.payload.toolName || '等待确认')
+    return parts.join(' · ')
+  }
   const parts = []
   if (record.project) parts.push(record.project)
   if (record.progress?.total) parts.push(`已完成 ${record.progress.completed}/${record.progress.total} 步`)
@@ -202,7 +237,7 @@ export class PetReducer {
       case 'tool/call': {
         const callId = String(event.data?.callId ?? `seq-${String(event.seq ?? 'unknown')}`)
         const name = String(event.data?.name ?? 'tool')
-        record.openTools.set(callId, name)
+        record.openTools.set(callId, { name, args: event.data?.arguments })
         // Asking the human a question is a "waiting" state, not "摸鱼中".
         if (name === 'ask_user_question') {
           record.askTools.add(callId)
@@ -239,6 +274,14 @@ export class PetReducer {
         // Waiting for the human to confirm/deny a tool approval.
         const toolName = String(event.data?.toolName ?? 'tool')
         const approvalId = String(event.data?.id ?? `seq-${String(event.seq ?? 'unknown')}`)
+        const callId = event.data?.callId ? String(event.data.callId) : ''
+        let argsRaw
+        if (callId && record.openTools.has(callId)) argsRaw = record.openTools.get(callId).args
+        else {
+          for (const entry of record.openTools.values()) {
+            if (entry.name === toolName) { argsRaw = entry.args; break }
+          }
+        }
         this.#enterWait(record, {
           kind: 'approval',
           id: approvalId,
@@ -246,6 +289,7 @@ export class PetReducer {
             phase: 'approval',
             stage: '等待确认',
             toolName,
+            preview: approvalContent(toolName, event.data?.reason, argsRaw),
             message: statusCopy('waiting', event.seq),
           },
         })
@@ -330,13 +374,13 @@ export class PetReducer {
     const nextPayload = {
       phase: 'tool-result',
       activity: next === PetState.WORKING
-        ? toolActivity(record.openTools.values().next().value)
+        ? toolActivity(record.openTools.values().next().value?.name)
         : undefined,
       stage: next === PetState.WORKING
-        ? activityStage(toolActivity(record.openTools.values().next().value))
+        ? activityStage(toolActivity(record.openTools.values().next().value?.name))
         : '整理阶段',
       message: next === PetState.WORKING
-        ? activityCopy(toolActivity(record.openTools.values().next().value), event.seq)
+        ? activityCopy(toolActivity(record.openTools.values().next().value?.name), event.seq)
         : statusCopy('result', event.seq),
     }
     this.#update(record, next, nextPayload)
@@ -570,6 +614,7 @@ export class PetReducer {
       record.payload.phase ?? '',
       record.payload.activity ?? '',
       record.payload.toolName ?? '',
+      record.payload.preview ?? '',
       record.payload.message ?? '',
       record.project ?? '',
       record.task ?? '',

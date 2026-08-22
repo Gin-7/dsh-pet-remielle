@@ -12,42 +12,74 @@
     font-family: system-ui, sans-serif;
   }
   .pet { position: relative; display: flex; flex-direction: column; align-items: center; }
-  .bubble {
+  .rm2-pet-bubbles {
+    position: relative;
+    margin-bottom: 12px;
+    width: fit-content;
+    max-width: min(330px, calc(100vw - 24px));
     display: none;
-    margin-bottom: 10px; padding: 8px 12px;
-    min-width: 170px; max-width: 340px;
-    border-radius: 10px;
+    flex-direction: column;
+    align-items: center;
+    pointer-events: none;
+  }
+  .rm2-pet-bubble {
+    display: none;
+    position: relative;
+    margin-bottom: 10px;
+    box-sizing: border-box;
+    min-width: 150px;
+    max-width: min(330px, calc(100vw - 24px));
+    padding: 12px 20px 12px 30px;
+    border-radius: 22px;
     background: #fff0f5;
     border: 1px solid rgba(240, 120, 160, .45);
     box-shadow: 0 6px 20px rgba(190, 70, 110, .20);
-    font-size: 12px; line-height: 1.45; text-align: center;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 12px;
+    line-height: 1.45;
+    text-align: left;
+    white-space: nowrap;
   }
-  .bubble::after {
-    content: ""; position: absolute; top: 100%; left: 50%;
-    transform: translateX(-50%);
-    border: 6px solid transparent; border-top-color: rgba(240, 120, 160, .45);
+  .rm2-pet-bubbles .rm2-pet-bubble {
+    margin: 0;
+    width: fit-content;
+    height: 68px;
+    min-height: 68px;
+    box-shadow: 0 8px 24px rgba(190, 70, 110, .25);
+    pointer-events: auto;
+    cursor: pointer;
+    overflow: hidden;
+    transition: width .18s ease, opacity .18s ease;
   }
-  .bubble-title { font-weight: 600; color: #b03a60; }
-  .bubble-detail { color: #c2607f; margin-top: 2px; font-size: 11px; }
-  /* 气泡翻页圆点 */
-  .bubble-dots { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 5px; pointer-events: auto; z-index: 1; }
-  .bubble-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(240,120,160,.25); cursor: pointer; transition: background .2s; }
-  .bubble-dot.active { background: #b03a60; }
-  /* 气泡翻页圆点 */
-  .bubble-dots { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 5px; pointer-events: auto; z-index: 1; }
-  .bubble-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(240,120,160,.25); cursor: pointer; transition: background .2s; }
-  .bubble-dot.active { background: #b03a60; }
-  /* 气泡翻页圆点 */
-  .bubble-dots { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 5px; pointer-events: auto; z-index: 1; }
-  .bubble-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(240,120,160,.25); cursor: pointer; transition: background .2s; }
-  .bubble-dot.active { background: #b03a60; }
+  .rm2-pet-bubble-title { font-weight: 600; color: #b03a60; min-width: 0; flex: none; white-space: nowrap; overflow: visible; text-overflow: clip; line-height: 1.35; }
+  .rm2-pet-bubble-detail { color: #c2607f; margin-top: 2px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .rm2-pet-bubble-header { display: flex; align-items: center; min-width: 0; min-height: 22px; }
+  .rm2-pet-bubble.title-clipped .rm2-pet-bubble-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .rm2-pet-bubble-action { display: inline-flex; flex: none; order: 2; align-items: center; justify-content: center; width: 22px; height: 22px; margin-left: 8px; margin-right: 0; border-radius: 50%; background: #e8508a; color: #fff; font-size: 15px; font-weight: 700; line-height: 1; }
+  .rm2-pet-bubble-action img { width: 15px; height: 15px; display: block; filter: brightness(0) saturate(100%) invert(1); }
+  .rm2-pet-bubble-completion { display: none; flex: none; width: 12px; height: 12px; margin-right: 10px; border-radius: 50%; background: #35c979; box-shadow: 0 0 0 3px rgba(53,201,121,.18); }
+  .rm2-pet-bubble.completed .rm2-pet-bubble-completion { display: inline-flex; }
+  .rm2-pet-bubble.idle-placeholder { height: 46px; min-height: 46px; padding-top: 11px; padding-bottom: 11px; }
+  .rm2-pet-bubble-stack-count { display: none; position: absolute; right: 16px; bottom: 0; height: 8px; align-items: center; color: #f0a8c0; font-size: 9px; font-weight: 700; line-height: 8px; }
+  .rm2-pet-bubble.summary-backboard .rm2-pet-bubble-stack-count { display: flex; }
+  .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-title,
+  .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,
+  .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-action,
+  .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-completion { visibility: hidden; }
+  .rm2-pet-bubble.top { border-color: #b03a60; box-shadow: 0 10px 28px rgba(190, 70, 110, .38); }
+  .rm2-pet-bubble.attention { border-color: #e8508a; animation: rm2-pet-attention 1.6s ease-in-out infinite; }
+  @keyframes rm2-pet-attention { 0%,100% { box-shadow: 0 0 0 0 rgba(232,80,138,.35); } 50% { box-shadow: 0 0 0 6px rgba(232,80,138,0); } }
+  .rm2-bubble-dots { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 120; }
+  .rm2-bubble-dot { width: 10px; height: 10px; border-radius: 50%; background: #e8508a; cursor: pointer; box-shadow: 0 0 0 2px rgba(255,255,255,.65); transition: transform .18s, background .18s; }
+  .rm2-bubble-dot:hover { transform: scale(1.25); }
+  .rm2-bubble-balance { box-sizing: border-box; height: 68px; min-height: 68px; max-width: 330px; }
+  .rm2-bubble-balance .rm2-pet-bubble-title { line-height: 22px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   img { width: 180px; height: auto; display: block; }
   @media (prefers-color-scheme: dark) {
-    .bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
-    .bubble::after { border-top-color: rgba(255, 150, 185, .42); }
-    .bubble-title { color: #ffd6e4; }
-    .bubble-detail { color: #f0a8c0; }
+    .rm2-pet-bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
+    .rm2-pet-bubble-title { color: #ffd6e4; }
+    .rm2-pet-bubble-detail { color: #f0a8c0; }
+    .rm2-pet-bubble.top { border-color: #ffb3c9; }
+    .rm2-pet-bubble.attention { border-color: #ff6fa8; }
     .menu { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
     .menu-item:hover { background: rgba(255, 150, 185, .16); }
     .menu-item .tick { color: #ffb3c9; }
@@ -80,12 +112,12 @@
   <script src="/plugins/dsh-pet-remielle/balance-widget.js"></script>
   <div class="menu" id="menu"></div>
   <div class="pet">
-    <div class="bubble" id="bubble" style="position:relative;">
-      <div class="bubble-title" id="title"></div>
-      <div class="bubble-detail" id="detail"></div>
-      <div class="bubble-dots">
-        <div class="bubble-dot active" id="dot0" title="状态"></div>
-        <div class="bubble-dot" id="dot1" title="余额"></div>
+    <div class="rm2-pet-bubbles" id="bubbleStack"></div>
+    <div class="rm2-pet-bubble top" id="bubble" style="position:relative;">
+      <div class="rm2-pet-bubble-title" id="title"></div>
+      <div class="rm2-pet-bubble-detail" id="detail"></div>
+      <div class="rm2-bubble-dots" id="bubbleDots">
+        <div class="rm2-bubble-dot" id="bubbleDot" title="切到余额"></div>
       </div>
     </div>
     <img id="pet" alt="蕾米埃尔" draggable="false">
@@ -95,15 +127,47 @@
   var titleEl = document.getElementById('title')
   var detailEl = document.getElementById('detail')
   var imgEl = document.getElementById('pet')
-  var dot0El = document.getElementById('dot0')
-  var dot1El = document.getElementById('dot1')
+  var bubbleStack = document.getElementById('bubbleStack')
+  var bubbleDots = document.getElementById('bubbleDots')
+  var bubbleDot = document.getElementById('bubbleDot')
   var currentBubblePage = 0
   var prevBubbleVisible = false
   var balanceRequested = false
+  var SESSION_OPEN_ENDPOINT = '/plugins/dsh-pet-remielle/session/open'
+  var COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
+  var BUBBLE_MIN_W = 208
+  var MAX_BUBBLES = 2
+  var currentSessionId = undefined
+  var lastTopEntry = null
+  var bubbleEls = new Map()
+  var __petMeasureEl = null
+  function ensureMeasureEl() {
+    if (!__petMeasureEl) {
+      __petMeasureEl = document.createElement('span')
+      __petMeasureEl.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;'
+      document.body.appendChild(__petMeasureEl)
+    }
+    return __petMeasureEl
+  }
+  function measureTextW(srcEl, text) {
+    var el = ensureMeasureEl()
+    if (window.getComputedStyle && srcEl) {
+      var cs = window.getComputedStyle(srcEl)
+      el.style.fontFamily = cs.fontFamily
+      el.style.fontSize = cs.fontSize
+      el.style.fontWeight = cs.fontWeight
+      el.style.letterSpacing = cs.letterSpacing
+    }
+    el.textContent = text || ''
+    return el.offsetWidth || 0
+  }
+  function bubbleRowWidth(textW) {
+    var vw = Math.max(150, (window.innerWidth || 1280) - 24)
+    return Math.min(330, vw, Math.max(BUBBLE_MIN_W, textW + 50))
+  }
   function switchBubblePage(p) {
     currentBubblePage = p
-    dot0El.className = 'bubble-dot' + (p === 0 ? ' active' : '')
-    dot1El.className = 'bubble-dot' + (p === 1 ? ' active' : '')
+    bubbleDot.title = p === 0 ? '切到余额' : '切到状态'
     if (p === 0) {
       balanceFrame = null
       lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
@@ -113,12 +177,18 @@
       window.__petBalance.showBalance()
     }
   }
-  dot0El.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(0) })
-  dot1El.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(1) })
-  bubbleEl.addEventListener('wheel', function (e) {
+  function onBubbleWheel(e) {
     e.preventDefault(); e.stopPropagation()
+    if (lastSnapshot) {
+      var so = lastSnapshot.showBubble !== false && lastSnapshot.showBubbleStatus !== false
+      var uo = lastSnapshot.showBubble !== false && lastSnapshot.showBubbleUsage === true
+      if (!(so && uo)) return
+    }
     switchBubblePage(currentBubblePage === 0 ? 1 : 0)
-  }, { passive: false })
+  }
+  bubbleDot.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(currentBubblePage === 0 ? 1 : 0) })
+  bubbleEl.addEventListener('wheel', onBubbleWheel, { passive: false })
+  bubbleStack.addEventListener('wheel', onBubbleWheel, { passive: false })
   var picEl = document.createElement('img')
   picEl.style.cssText = 'position:fixed;right:24px;top:24px;width:220px;height:auto;border-radius:10px;box-shadow:0 8px 24px rgba(15,30,72,.3);display:none;cursor:pointer;'
   picEl.title = '点击关闭'
@@ -150,38 +220,47 @@
   var BUBBLE_TITLE_MS = 2000
   var lastBubbleMood = ''
   var lastBubbleText = ''
-  var lastBubbleTitleAt = 0
   var lastBubbleDetail = ''
-  var clickThrough = false
   var dragState = null
   var menuOpen = false
   var lockedNow = false
   var moodOverride = null
   var menuEl = document.getElementById('menu')
 
-  // --- click-through: transparent window margins must not block the desktop ---
-  // The pet image (and a popped artwork) is interactive; everything else lets
-  // the cursor pass through to whatever is behind the window. The main process
-  // forwards mouse moves while pass-through is on, so hovering back onto the
-  // pet flips it off again.
+  // --- click-through: transparent margins must not block the desktop ---
+  // Windows does not forward mouse-moves onto a click-through window when the
+  // wallpaper is behind it, so the main process polls the cursor against these
+  // rects instead of trusting renderer mousemove.
+  function reportHitRects() {
+    if (!window.petBridge || !window.petBridge.setHitRects) return
+    var rects = []
+    function add(el) {
+      if (!el) return
+      var r = el.getBoundingClientRect()
+      if (r.width < 1 || r.height < 1) return
+      rects.push({ x: r.left - 4, y: r.top - 4, w: r.width + 8, h: r.height + 8 })
+    }
+    add(imgEl)
+    add(bubbleStack)
+    add(bubbleEl)
+    if (menuOpen) add(menuEl)
+    if (picEl && picEl.style.display !== 'none') add(picEl)
+    window.petBridge.setHitRects(rects)
+  }
+  function setForceInteractive(on) {
+    if (window.petBridge && window.petBridge.setForceInteractive) window.petBridge.setForceInteractive(on)
+  }
   function hitInteractive(e) {
     var el = document.elementFromPoint(e.clientX, e.clientY)
     if (!el || !el.closest) return false
-    // pet image, artwork popup, status/balance bubble, or the right-click
-    // menu — anything else passes through
-    return Boolean(el.closest('img') || el.closest('#menu') || el.closest('.bubble'))
+    return Boolean(el.closest('img') || el.closest('#menu') || el.closest('.rm2-pet-bubble') || el.closest('.rm2-pet-bubbles'))
   }
   function syncClickThrough(e) {
-    if (dragState) return // keep the window interactive while dragging
-    if (menuOpen) {
-      if (!clickThrough) { clickThrough = true; if (window.petBridge) window.petBridge.setClickThrough(false) }
-      return
-    }
-    var on = !hitInteractive(e)
-    if (on === clickThrough) return
-    clickThrough = on
-    if (window.petBridge) window.petBridge.setClickThrough(on)
+    if (dragState || menuOpen) return
+    if (window.petBridge) window.petBridge.setClickThrough(!hitInteractive(e))
   }
+  imgEl.addEventListener('load', reportHitRects)
+  window.addEventListener('resize', reportHitRects)
   window.addEventListener('mousemove', syncClickThrough, { passive: true })
 
   // --- right-click menu (same shape as the in-page pet) ---
@@ -310,9 +389,7 @@
   function openMenuAt() {
     buildMenu()
     menuEl.style.display = 'block'
-    // 菜单打开时强制窗口可交互（关闭点击穿透），否则外部点击会落到桌面
-    clickThrough = false
-    if (window.petBridge) window.petBridge.setClickThrough(false)
+    setForceInteractive(true)
     var mw = menuEl.offsetWidth
     var mh = menuEl.offsetHeight
     var W = window.innerWidth || 380
@@ -332,10 +409,13 @@
     menuEl.style.left = left + 'px'
     menuEl.style.top = top + 'px'
     menuOpen = true
+    reportHitRects()
   }
   function closeMenu() {
     menuOpen = false
     menuEl.style.display = 'none'
+    setForceInteractive(false)
+    reportHitRects()
   }
   document.addEventListener('pointerdown', function (e) {
     if (menuOpen && !menuEl.contains(e.target)) closeMenu()
@@ -353,10 +433,11 @@
     if (e.button !== 0 || lockedNow) return
     dragState = { x: e.screenX, y: e.screenY, moved: false }
     imgEl.style.cursor = 'grabbing'
+    setForceInteractive(true)
   })
   window.addEventListener('mousemove', function (e) {
     if (!dragState) return
-    if (!(e.buttons & 1)) { dragState = null; syncCursor(); return } // mouse released outside
+    if (!(e.buttons & 1)) { dragState = null; if (!menuOpen) setForceInteractive(false); syncCursor(); return }
     var dx = e.screenX - dragState.x
     var dy = e.screenY - dragState.y
     if (Math.abs(dx) + Math.abs(dy) > 6) dragState.moved = true
@@ -375,8 +456,293 @@
       apply(lastSnapshot)
     }
     dragState = null
+    if (!menuOpen) setForceInteractive(false)
     syncCursor()
   })
+
+  function mk(tag, style, text) {
+    var n = document.createElement(tag)
+    if (style) n.style.cssText = style
+    if (text !== undefined) n.textContent = text
+    return n
+  }
+  function stateRank(state) {
+    switch (state) {
+      case 'WAITING': return 60
+      case 'ERROR': return 50
+      case 'SUCCESS': return 70
+      case 'WORKING': return 30
+      case 'THINKING': return 20
+      case 'DISCONNECTED': return -1
+      default: return 0
+    }
+  }
+  function attentionOf(entry) {
+    return entry.attention === true || entry.state === 'WAITING' || entry.state === 'ERROR'
+  }
+  function completionOf(entry) {
+    return entry.completionNotification === true
+  }
+  function targetSessionOf(entry) {
+    return entry.targetSessionId || entry.sessionId
+  }
+  function approvalOf(entry) {
+    return entry.approval === true
+  }
+  function orderSessions(sessions) {
+    return sessions.slice().sort(function (a, b) {
+      var aDone = completionOf(a) ? 1 : 0
+      var bDone = completionOf(b) ? 1 : 0
+      if (aDone !== bDone) return bDone - aDone
+      var aAtt = attentionOf(a) ? 1 : 0
+      var bAtt = attentionOf(b) ? 1 : 0
+      if (aAtt !== bAtt) return bAtt - aAtt
+      var aCur = a.sessionId === currentSessionId ? 1 : 0
+      var bCur = b.sessionId === currentSessionId ? 1 : 0
+      if (aCur !== bCur) return bCur - aCur
+      var priority = stateRank(b.state) - stateRank(a.state)
+      return priority || (b.updatedAt || 0) - (a.updatedAt || 0)
+    })
+  }
+  function approveSession(sessionId) {
+    if (!sessionId) return
+    fetch(SESSION_OPEN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: sessionId, approve: true }),
+    }).catch(function () {})
+  }
+  function acknowledgeCompletion(sessionId) {
+    if (!sessionId) return
+    fetch(COMPLETION_ACK_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: sessionId, clearPulse: true }),
+    }).catch(function () {})
+  }
+  function ensureBubbleEl(sessionId) {
+    var existing = bubbleEls.get(sessionId)
+    if (existing) return existing
+    var node = mk('div', 'display:none;')
+    node.className = 'rm2-pet-bubble'
+    node.setAttribute('role', 'button')
+    node.tabIndex = 0
+    var header = mk('div', '')
+    header.className = 'rm2-pet-bubble-header'
+    var completion = mk('span', '')
+    completion.className = 'rm2-pet-bubble-completion'
+    header.appendChild(completion)
+    var action = mk('span', '', '')
+    action.className = 'rm2-pet-bubble-action'
+    action.setAttribute('aria-label', '蕾米埃尔桌宠')
+    var brandImg = document.createElement('img')
+    brandImg.src = '/favicon.svg'
+    brandImg.alt = ''
+    action.appendChild(brandImg)
+    var title = mk('div', '')
+    title.className = 'rm2-pet-bubble-title'
+    header.appendChild(title)
+    header.appendChild(action)
+    var detail = mk('div', '')
+    detail.className = 'rm2-pet-bubble-detail'
+    var detailText = document.createElement('span')
+    detailText.className = 'rm2-pet-detail-text'
+    detail.appendChild(detailText)
+    var stackCount = document.createElement('span')
+    stackCount.className = 'rm2-pet-bubble-stack-count'
+    node.appendChild(header)
+    node.appendChild(detail)
+    node.appendChild(stackCount)
+    var el = { node: node, header: header, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
+    var activate = function (event) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (el.completed) acknowledgeCompletion(el.targetSessionId)
+    }
+    action.addEventListener('click', function (event) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (el.canApprove) approveSession(el.targetSessionId)
+      else if (el.completed) acknowledgeCompletion(el.targetSessionId)
+    })
+    node.addEventListener('pointerdown', function (event) { event.stopPropagation() })
+    node.addEventListener('click', activate)
+    node.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') activate(event)
+    })
+    bubbleStack.appendChild(node)
+    bubbleEls.set(sessionId, el)
+    return el
+  }
+  function clearBubbleTitleTimer(el) {
+    if (el && el.titleTimer) {
+      window.clearTimeout(el.titleTimer)
+      el.titleTimer = 0
+    }
+  }
+  function commitBubbleTitle(el, text, mood) {
+    clearBubbleTitleTimer(el)
+    el.titleMood = mood
+    el.titleChangedAt = Date.now()
+    el.pendingTitle = ''
+    el.pendingMood = ''
+    if (text !== el.lastText) {
+      el.lastText = text
+      el.title.textContent = text
+    }
+  }
+  function applyBubbleTitle(el, entry) {
+    var text = entry.message || ''
+    var mood = entry.mood || ''
+    var state = entry.state || ''
+    var immediate = !text
+      || state === 'WAITING' || state === 'ERROR' || state === 'SUCCESS'
+      || entry.attention === true
+      || entry.completionNotification === true
+      || entry.idlePlaceholder === true
+    if (!el.titleChangedAt) {
+      commitBubbleTitle(el, text, mood)
+      return
+    }
+    var moodChanged = mood !== el.titleMood
+    var elapsed = Date.now() - el.titleChangedAt
+    if (immediate || moodChanged || elapsed >= BUBBLE_TITLE_MS) {
+      commitBubbleTitle(el, text, mood)
+      return
+    }
+    if (text === el.lastText) {
+      el.pendingTitle = ''
+      clearBubbleTitleTimer(el)
+      return
+    }
+    el.pendingTitle = text
+    el.pendingMood = mood
+    if (!el.titleTimer) {
+      el.titleTimer = window.setTimeout(function () {
+        el.titleTimer = 0
+        if (el.pendingTitle && el.pendingTitle !== el.lastText) {
+          commitBubbleTitle(el, el.pendingTitle, el.pendingMood || el.titleMood)
+        }
+      }, Math.max(16, BUBBLE_TITLE_MS - elapsed))
+    }
+  }
+  function renderBubble(el, entry, index) {
+    var text = entry.message || ''
+    var detail = entry.detail || ''
+    if (!text && !detail) {
+      commitBubbleTitle(el, '', entry.mood || '')
+      el.node.style.display = 'none'
+      return
+    }
+    applyBubbleTitle(el, entry)
+    el.detail.style.display = detail ? 'block' : 'none'
+    if (detail !== el.lastDetail) {
+      el.lastDetail = detail
+      el.detailText.textContent = detail.replace(/^\s*[·•]\s*/, '· ')
+    }
+    var attention = attentionOf(entry)
+    var approval = approvalOf(entry)
+    var completed = completionOf(entry)
+    el.targetSessionId = targetSessionOf(entry)
+    el.canApprove = approval
+    el.completed = completed
+    var actionNotif = approval || (attention && !completed)
+    if (actionNotif) {
+      var glyph = approval ? '✓' : entry.phase === 'ask' ? '?' : '!'
+      if (el.action.textContent !== glyph) el.action.textContent = glyph
+      el.action.setAttribute('aria-label', approval ? '允许一次，点击直接确认' : '需要处理')
+    } else if (el.action.firstChild !== el.brandImg) {
+      el.action.textContent = ''
+      el.action.appendChild(el.brandImg)
+      el.action.setAttribute('aria-label', completed ? '任务已完成，点击消除提醒' : '蕾米埃尔桌宠')
+    }
+    el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
+    el.node.className = 'rm2-pet-bubble' + (index === 0 ? ' top' : '') + (attention ? ' attention' : '') + (approval ? ' approval' : '') + (completed ? ' completed' : '') + (entry.idlePlaceholder ? ' idle-placeholder' : '') + (entry.summaryCount ? ' summary-backboard' : '')
+    el.node.setAttribute('aria-disabled', entry.idlePlaceholder ? 'true' : 'false')
+    el.node.style.cursor = (entry.idlePlaceholder || (!approval && !completed)) ? 'default' : 'pointer'
+    el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
+    el.node.title = approval ? '允许一次：点击圆形勾号直接确认' : completed ? '任务已完成：点击消除完成提醒' : attention ? '需要处理' : ''
+    el.node.style.zIndex = String(100 - index)
+    el.node.style.order = String(index)
+    el.node.style.marginTop = index === 0 ? '0px' : '-60px'
+    el.node.style.width = '100%'
+    el.node.style.opacity = index === 0 ? '1' : String(Math.max(0.46, 0.82 - index * 0.1))
+    el.node.style.display = 'block'
+  }
+  function updateBubbles(snapshot) {
+    if (!snapshot) return
+    var sessions = Array.isArray(snapshot.sessions)
+      ? snapshot.sessions
+      : [snapshot]
+    sessions = sessions.filter(function (entry) {
+      return entry && entry.state !== 'IDLE' && entry.state !== 'DISCONNECTED'
+    })
+    if (sessions.length === 0 && snapshot.enabled !== false) {
+      sessions = [{
+        sessionId: '__pet_idle__',
+        state: 'IDLE',
+        mood: snapshot.mood || '06',
+        message: snapshot.message || '蕾米埃尔待命中',
+        detail: '',
+        phase: 'idle',
+        updatedAt: snapshot.updatedAt || 0,
+        idlePlaceholder: true,
+      }]
+    }
+    var ordered = orderSessions(sessions)
+    lastTopEntry = ordered[0] || null
+    if (lastTopEntry && lastTopEntry.mood) snapshot.mood = lastTopEntry.mood
+    var visibleEntries = ordered.slice(0, MAX_BUBBLES)
+    if (visibleEntries.length > 1) {
+      visibleEntries[1] = Object.assign({}, visibleEntries[1], { summaryCount: ordered.length - 1 })
+    }
+    var count = visibleEntries.length
+    var seen = new Set()
+    var measuredWidth = 150
+    bubbleStack.style.width = 'fit-content'
+    for (var i = 0; i < count; i++) {
+      var entry = visibleEntries[i]
+      seen.add(entry.sessionId)
+      var stackedEl = ensureBubbleEl(entry.sessionId)
+      if (stackedEl.node.parentNode !== bubbleStack) bubbleStack.appendChild(stackedEl.node)
+      renderBubble(stackedEl, entry, i)
+      stackedEl.node.style.minWidth = '150px'
+      stackedEl.node.style.width = 'max-content'
+      stackedEl.node.style.maxWidth = 'none'
+      stackedEl.node.classList.remove('title-clipped')
+      var titleWidth = stackedEl.title.scrollWidth || stackedEl.title.offsetWidth || 0
+      var actionWidth = 30
+      var completionWidth = completionOf(entry) ? 22 : 0
+      stackedEl.naturalHeaderWidth = titleWidth + actionWidth + completionWidth
+      var detailW = stackedEl.detail.scrollWidth || stackedEl.detail.offsetWidth || 0
+      if (i === 0) measuredWidth = Math.max(stackedEl.naturalHeaderWidth, detailW)
+      stackedEl.node.style.maxWidth = ''
+      stackedEl.node.style.width = '100%'
+    }
+    var deckWidth = bubbleRowWidth(measuredWidth)
+    var deckWidthPx = deckWidth + 'px'
+    if (bubbleStack.style.width !== deckWidthPx) bubbleStack.style.width = deckWidthPx
+    for (var j = 0; j < count; j++) {
+      var renderEntry = visibleEntries[j]
+      var renderEl = bubbleEls.get(renderEntry.sessionId)
+      renderBubble(renderEl, renderEntry, j)
+      renderEl.node.classList.toggle('title-clipped', renderEl.naturalHeaderWidth > Math.max(0, deckWidth - 50))
+    }
+    for (var key of bubbleEls.keys()) {
+      if (!seen.has(key)) {
+        var gone = bubbleEls.get(key)
+        clearBubbleTitleTimer(gone)
+        if (gone && gone.node && gone.node.remove) gone.node.remove()
+        bubbleEls.delete(key)
+      }
+    }
+    if (bubbleDots && ordered[0] && bubbleEls.get(ordered[0].sessionId)) {
+      var topNode = bubbleEls.get(ordered[0].sessionId).node
+      if (bubbleDots.parentNode !== topNode) topNode.appendChild(bubbleDots)
+    }
+    bubbleStack.style.display = snapshot.bubble !== false && count > 0 ? 'flex' : 'none'
+    if (count === 0) bubbleStack.style.width = ''
+  }
 
   function applyTransform(mood, snapshot) {
     var scale = snapshot.scale || 1
@@ -385,7 +751,7 @@
   }
 
   function apply(snapshot) {
-    if (!snapshot) return
+    if (!snapshot || snapshot.kind) return
     lastSnapshot = snapshot
     if (window.__petBalance) {
       if (!window.__petBalanceInited) {
@@ -401,18 +767,11 @@
     if (snapshot.enabled === false || snapshot.hidden === true) {
       imgEl.style.display = 'none'
       bubbleEl.style.display = 'none'
+      bubbleStack.style.display = 'none'
       return
     }
     imgEl.style.display = 'block'
     setPetPaused(snapshot.paused === true)
-    var mood = moodOverride && moodOverride.until > Date.now() ? moodOverride.mood : (snapshot.mood || '06')
-    var src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(snapshot.petId || 'remielle') + '/' + mood + '.gif'
-    if (!petPaused && imgEl.dataset.mood !== mood) {
-      imgEl.src = src
-      imgEl.dataset.mood = mood
-    }
-    applyTransform(mood, snapshot)
-    imgEl.style.opacity = String(snapshot.opacity ?? 1)
     // 翻页逻辑：双开时 currentBubblePage 决定显示哪个子项；单开时强制显示开启的子项
     var statusOn = snapshot.showBubble !== false && snapshot.showBubbleStatus !== false
     var usageOn = snapshot.showBubble !== false && snapshot.showBubbleUsage === true
@@ -432,53 +791,56 @@
     if (!statusOn && usageOn && currentBubblePage === 0) { currentBubblePage = 1 }
     if (statusOn && !usageOn) { currentBubblePage = 0 }
     if (statusOn && usageOn && currentBubblePage > 1) currentBubblePage = 0
-    // 页面发生强制切换时，清掉文本节流缓存，避免旧页面内容（如余额）残留
     if (currentBubblePage !== pageBefore) {
       lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
       if (currentBubblePage === 0) balanceFrame = null
     }
-    // 进入余额页且尚无余额数据时，触发一次拉取（延迟执行，避免同步重入）
     if (currentBubblePage === 1 && !(balanceFrame && balanceFrame.kind === 'balance') && window.__petBalance && !balanceRequested) {
       balanceRequested = true
       window.setTimeout(function () { if (window.__petBalance) window.__petBalance.showBalance() }, 0)
     }
     if (currentBubblePage === 0) balanceRequested = false
-    // 圆点：双开时显示并高亮当前页
-    var dotsEl = dot0El ? dot0El.parentNode : null
-    if (dotsEl) dotsEl.style.display = bothOn ? '' : 'none'
-    if (dot0El && dot1El) {
-      dot0El.className = 'bubble-dot' + (currentBubblePage === 0 ? ' active' : '')
-      dot1El.className = 'bubble-dot' + (currentBubblePage === 1 ? ' active' : '')
-    }
+    bubbleEl.style.pointerEvents = bothOn && snapshot.showBubble !== false ? 'auto' : 'none'
+    bubbleDots.style.display = bothOn ? '' : 'none'
+    bubbleDot.title = currentBubblePage === 0 ? '切到余额' : '切到状态'
     var cur = currentBubblePage
     var show = anyOn && (cur === 0 ? statusOn : usageOn)
     if (cur === 0) {
-      // 状态页
-      show = show && Boolean(snapshot.detail)
-      if (show) {
-        var now = Date.now()
-        var moodChanged = snapshot.mood !== lastBubbleMood
-        if (moodChanged || (snapshot.message !== lastBubbleText && now - lastBubbleTitleAt >= BUBBLE_TITLE_MS)) {
-          lastBubbleTitleAt = now
-          lastBubbleMood = snapshot.mood
-          lastBubbleText = snapshot.message || ''
-          titleEl.textContent = snapshot.message || ''
-        }
-        if (snapshot.detail !== lastBubbleDetail) {
-          lastBubbleDetail = snapshot.detail || ''
-          detailEl.textContent = snapshot.detail || ''
-        }
-      }
+      show = show && statusOn
+      bubbleStack.style.display = show ? 'flex' : 'none'
+      if (show) updateBubbles(snapshot)
+      bubbleEl.style.display = 'none'
+      bubbleEl.classList.remove('rm2-bubble-balance')
+      titleEl.textContent = ''
+      detailEl.textContent = ''
     } else if (cur === 1) {
-      // 余额页
+      bubbleStack.style.display = 'none'
+      if (bubbleDots.parentNode !== bubbleEl) bubbleEl.appendChild(bubbleDots)
+      bubbleEl.classList.add('rm2-bubble-balance')
       show = show && !!balanceFrame && balanceFrame.kind === 'balance'
+      bubbleEl.style.display = (show || bothOn) ? 'block' : 'none'
       if (show) {
         titleEl.textContent = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
         titleEl.style.color = ''
         detailEl.innerHTML = (balanceFrame.detail || '') + ' · <span style="color:' + (balanceFrame.color || '#888') + '">' + (balanceFrame.period || '') + '</span>'
+        var titleText = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
+        var detailText = (balanceFrame.detail || '') + ' · ' + (balanceFrame.period || '')
+        var maxTextW = Math.max(measureTextW(titleEl, titleText), measureTextW(detailEl, detailText))
+        bubbleEl.style.width = bubbleRowWidth(maxTextW) + 'px'
+      } else {
+        titleEl.textContent = '余额加载中…'
+        detailEl.textContent = ''
       }
     }
-    bubbleEl.style.display = show ? 'block' : 'none'
+    var mood = moodOverride && moodOverride.until > Date.now() ? moodOverride.mood : (snapshot.mood || '06')
+    var src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(snapshot.petId || 'remielle') + '/' + mood + '.gif'
+    if (!petPaused && imgEl.dataset.mood !== mood) {
+      imgEl.src = src
+      imgEl.dataset.mood = mood
+    }
+    applyTransform(mood, snapshot)
+    imgEl.style.opacity = String(snapshot.opacity ?? 1)
+    reportHitRects()
   }
 
   var source

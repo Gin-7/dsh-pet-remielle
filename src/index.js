@@ -47,6 +47,7 @@ export const CONFIG_ENDPOINT = '/plugins/dsh-pet-remielle/config'
 export const STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
 export const STREAM_ENDPOINT = '/plugins/dsh-pet-remielle/stream'
 export const COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
+export const SESSION_OPEN_ENDPOINT = '/plugins/dsh-pet-remielle/session/open'
 export const PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 export const ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 export const PET_VIEW_ENDPOINT = '/plugins/dsh-pet-remielle/pet-view'
@@ -195,6 +196,12 @@ export function createConfigHandler(settings) {
   }
 }
 
+export function applyCompletionAck(completionQueue, pulse, sessionId, { clearPulse = false } = {}) {
+  completionQueue.delete(sessionId)
+  if (clearPulse && pulse?.sessionId === sessionId && pulse.state === PetState.SUCCESS) return null
+  return pulse
+}
+
 export function createCompletionAckHandler({ acknowledge, broadcast = () => {} }) {
   return async (req, res) => {
     if (!localOnly(req, res)) return
@@ -206,8 +213,33 @@ export function createCompletionAckHandler({ acknowledge, broadcast = () => {} }
       const body = await readJsonBody(req)
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
       if (!sessionId) throw new Error('sessionId must be a non-empty string')
-      acknowledge(sessionId)
+      acknowledge(sessionId, { clearPulse: body.clearPulse === true })
       broadcast()
+      jsonResponse(res, 200, { ok: true })
+    } catch (error) {
+      jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+}
+
+export function createSessionOpenHandler({ notify }) {
+  return async (req, res) => {
+    if (!localOnly(req, res)) return
+    if (req.method !== 'POST') {
+      jsonResponse(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    try {
+      const body = await readJsonBody(req)
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+      if (!sessionId) throw new Error('sessionId must be a non-empty string')
+      notify({
+        protocolVersion: 1,
+        kind: 'session-action',
+        sessionId,
+        approve: body.approve === true,
+        completed: body.completed === true,
+      })
       jsonResponse(res, 200, { ok: true })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -393,16 +425,15 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       })
     }
     for (const completion of completionsOf()) {
-      const activePulseIndex = sessions.findIndex((entry) => (
-        entry.sessionId === completion.sessionId
-        && entry.state === PetState.SUCCESS
-        && entry.pulseUntil > now
-      ))
-      if (activePulseIndex >= 0) {
-        sessions[activePulseIndex] = {
-          ...sessions[activePulseIndex],
-          targetSessionId: completion.sessionId,
-          completionNotification: true,
+      const liveIndex = sessions.findIndex((entry) => entry.sessionId === completion.sessionId)
+      if (liveIndex >= 0) {
+        const live = sessions[liveIndex]
+        if (live.state === PetState.SUCCESS && live.pulseUntil > now) {
+          sessions[liveIndex] = {
+            ...live,
+            targetSessionId: completion.sessionId,
+            completionNotification: true,
+          }
         }
         continue
       }
@@ -571,7 +602,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         completionQueue.set(message.sessionId, {
           sessionId: message.sessionId,
           message: message.message ?? '任务已完成',
-          detail: message.detail ?? '任务已完成，点击查看结果',
+          detail: message.detail ?? '任务已完成',
           project: message.project,
           task: message.task,
           progress: message.progress,
@@ -605,6 +636,13 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     }
     if (message.kind === PetMessageKind.STATE) {
       latest = message
+      if (
+        message.sessionId
+        && message.state !== PetState.IDLE
+        && message.state !== PetState.DISCONNECTED
+      ) {
+        completionQueue.delete(message.sessionId)
+      }
     }
   }
 
@@ -809,11 +847,23 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           kind: 'exact',
           path: COMPLETION_ACK_ENDPOINT,
           handler: createCompletionAckHandler({
-            acknowledge: (sessionId) => completionQueue.delete(sessionId),
+            acknowledge: (sessionId, opts) => {
+              pulse = applyCompletionAck(completionQueue, pulse, sessionId, opts)
+            },
             broadcast: () => hub.broadcast(),
           }),
         }),
         'dsh-pet-remielle: completion notification acknowledgement',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: SESSION_OPEN_ENDPOINT,
+          handler: createSessionOpenHandler({
+            notify: (payload) => hub.notify(payload),
+          }),
+        }),
+        'dsh-pet-remielle: desktop session open/approve bridge',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: BALANCE_ENDPOINT, handler: async (req, res) => {

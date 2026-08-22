@@ -4,7 +4,7 @@ import { test } from 'node:test'
 
 const CLIENT = new URL('../lib/client.js', import.meta.url)
 
-function createHarness(initialCurrent = 'other', autoSelect = true) {
+function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = []) {
   const elements = []
   const fetches = []
   const opened = []
@@ -79,6 +79,25 @@ function createHarness(initialCurrent = 'other', autoSelect = true) {
 
   const body = element('body')
   const head = element('head')
+  const allowClicks = []
+  const allowBtn = {
+    textContent: ' 允许一次 ',
+    innerText: ' 允许一次 ',
+    getAttribute() { return '' },
+    click() { allowClicks.push('allow') },
+  }
+  const rejectBtn = {
+    textContent: '拒绝',
+    innerText: '拒绝',
+    getAttribute() { return '' },
+    click() { allowClicks.push('reject') },
+  }
+  const approvalPanel = {
+    querySelectorAll(sel) {
+      if (String(sel).includes('button')) return [rejectBtn, allowBtn]
+      return []
+    },
+  }
   const document = {
     body,
     head,
@@ -86,7 +105,8 @@ function createHarness(initialCurrent = 'other', autoSelect = true) {
     createElement: (tag) => element(tag),
     addEventListener() {},
     removeEventListener() {},
-    querySelector() { return null },
+    querySelector(sel) { return sel === '[data-approval-key]' ? approvalPanel : null },
+    querySelectorAll(sel) { return sel === '[data-approval-key]' ? [approvalPanel] : [] },
   }
   class EventSourceStub {
     constructor() { stream = this }
@@ -125,7 +145,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true) {
   }
   const sessions = {
     list: {
-      getSnapshot: () => ({ current }),
+      getSnapshot: () => ({ current, byId: snapshotItems }),
       subscribe(listener) { sessionListener = listener; return () => {} },
     },
     open(sessionId) {
@@ -159,7 +179,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true) {
     const queued = timers.splice(0)
     for (const listener of queued) listener()
   }
-  return { card, click, elements, fetches, opened, select, send, styleWrites, flushTitleTimers }
+  return { allowClicks, card, click, elements, fetches, opened, select, send, styleWrites, flushTitleTimers }
 }
 
 const base = {
@@ -357,5 +377,57 @@ test('expired reminder for the current conversation disappears immediately', asy
   await Promise.resolve()
   assert.ok(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')))
   assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务已完成'), false)
+})
+
+test('desktop session-action without approve does not open the conversation', () => {
+  const harness = createHarness()
+  harness.send({ ...base, desktopActive: true, sessions: [] })
+  harness.send({ kind: 'session-action', sessionId: 'desk-1', completed: true })
+  assert.deepEqual(harness.opened, [])
+})
+
+test('desktop session-action approve opens the conversation for the native allow-once button', () => {
+  const harness = createHarness()
+  harness.send({ ...base, desktopActive: true, sessions: [] })
+  harness.send({ kind: 'session-action', sessionId: 'desk-2', approve: true })
+  assert.deepEqual(harness.opened, ['desk-2'])
+  harness.flushTitleTimers()
+  assert.deepEqual(harness.allowClicks, ['allow'])
+})
+
+test('same session live work hides its own completion reminder', () => {
+  const harness = createHarness('s1', true, {
+    s1: { id: 's1', title: '将PR迁移到桌面悬浮模式', running: true, completed: true, updatedAt: 9 },
+  })
+  harness.send({
+    ...base,
+    sessions: [
+      { sessionId: 's1', state: 'WORKING', message: '正在继续处理任务呢', detail: 'dsh-pet-remielle · 执行阶段', updatedAt: 9 },
+      {
+        sessionId: 'completion:s1',
+        targetSessionId: 's1',
+        state: 'SUCCESS',
+        message: '这一轮顺利完成哦',
+        detail: 'dsh-pet-remielle · 本轮已完成',
+        completed: true,
+        completionNotification: true,
+        updatedAt: 8,
+      },
+    ],
+  })
+  harness.card('正在继续处理任务呢')
+  assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '这一轮顺利完成哦'), false)
+})
+
+test('sidebar green-dot session (completed) is surfaced as a clickable completion card', () => {
+  const harness = createHarness('current', true, {
+    ws2: { id: 'ws2', displayTitle: '插件图标遮挡配色问题', completed: true, cwd: 'C:\\xx\\.dsh', updatedAt: 5 },
+    ws1: { id: 'ws1', title: '还在运行', running: true, completed: false, updatedAt: 4 },
+  })
+  harness.send({ ...base, sessions: [] })
+  const card = harness.card('插件图标遮挡配色问题')
+  assert.ok(card, 'missing sidebar completed completion card')
+  card.listeners.get('click')[0]({ preventDefault() {}, stopPropagation() {} })
+  assert.ok(harness.opened.includes('ws2'), 'clicking should open the completed session')
 })
 

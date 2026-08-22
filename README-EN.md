@@ -26,9 +26,9 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | Configuration | schemastery persistence + settings card |
 | Multi-session priority | Unread completions > waiting/errors > current session > state priority > recency |
 | Live push | SSE stream (auto-reconnect + polling fallback) |
-| Status bubble | Adaptive two-layer in-page deck: top status card + `+N` summary backboard; message + detail (project · completed x/y · phase) |
-| Session actions | `✓` allows once; `?` / `!` open the matching session; completed reminders use a left green dot |
-| Completion reminders | Background completions persist until that session is opened; the current session has no unread dot (current Host lifetime only) |
+| Status bubble | Adaptive two-layer deck on both the in-page pet and the desktop window: top status card + `+N` summary backboard; message + detail (project · completed x/y · phase) |
+| Session actions | Web: card / `?` / `!` open the session, `✓` allows once; desktop: no navigation, `✓` still allows once |
+| Completion reminders | Persist until handled: web returns to idle after opening that session; desktop click dismisses the green dot and idles immediately. The current session has no unread dot (current Host lifetime only) |
 | Balance | Single-click the pet to show DeepSeek balance + time period (60s auto-refresh, rolling-number animation, stale fallback on network blips), auto-returns to the status bubble after 5s |
 | Today usage | Two modes: ledger (default, token-free, balance-delta) / real-time token (platform usage API + peak/off-peak pricing, exact) |
 | Desktop float | Bundled Electron transparent always-on-top window (opt-in) |
@@ -125,6 +125,7 @@ dsh plugin --profile web add dsh-pet-remielle
 `desktopMode` is off by default. When enabled, a **transparent, always-on-top, frameless** Electron window displays the pet.
 
 - Window supports dragging (position remembered), scroll-wheel zoom, double-click drawing, right-click menu.
+- Status/balance bubbles match the web pet: stacked session cards and a single toggle dot. Desktop card clicks do not navigate; a completed-card click only clears the reminder and returns to idle. `✓` still clicks Allow once. The in-page pet still opens the conversation.
 - Double-click drawing: artwork appears in a **desktop top-right** independent window, brush-reveal along the diagonal, then "Pleased → fade-out".
 - Right-click menu: switch to web mode, lock, bubble toggle, size, drawing, etc.
 - Closing/switching returns to the in-page pet automatically; window closes when DSH host exits.
