@@ -491,6 +491,33 @@ test('deck order puts approval above ask above completion', () => {
   assert.deepEqual(titles, ['等待确认', '等待回答'])
 })
 
+test('same-tier streaming sessions keep the top card stable (no width flapping)', () => {
+  const harness = createHarness()
+  const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
+  // 视觉顺序由 style.order 决定（DOM 顺序不变），因此断言卡片节点的 order 值。
+  const rankOf = (t) => {
+    const node = harness.card(t)
+    let last = Infinity
+    for (const w of harness.styleWrites) {
+      if (w.element === node && w.key === 'order') last = Number(w.value)
+    }
+    return last
+  }
+  harness.send({ ...base, sessions: [mk('w1', 10), mk('w2', 5)] })
+  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'w1 starts on top')
+  // w2 的 chunk 刷出更大的 updatedAt，但两者完全同级：顶层保持 w1，宽度不再抖动。
+  harness.send({ ...base, sessions: [mk('w1', 10), mk('w2', 20)] })
+  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'hysteresis keeps w1 on top')
+  harness.send({ ...base, sessions: [mk('w1', 40), mk('w2', 30)] })
+  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'hysteresis still keeps w1 on top')
+  // 层级变化（approval）不受滞回影响，照常上位。
+  harness.send({
+    ...base,
+    sessions: [mk('w1', 50), { sessionId: 'w2', state: 'WAITING', phase: 'approval', message: '等待确认', approval: true, attention: true, updatedAt: 60 }],
+  })
+  assert.ok(rankOf('等待确认') < rankOf('w1 的消息'), 'tier change overrides hysteresis')
+})
+
 test('desktop bubble click (session-action without approve) opens its conversation only', () => {
   const harness = createHarness()
   harness.send({ kind: 'session-action', sessionId: 'desk-9', approve: false })
