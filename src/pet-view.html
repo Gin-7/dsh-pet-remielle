@@ -134,6 +134,7 @@
   var prevBubbleVisible = false
   var balanceRequested = false
   var SESSION_OPEN_ENDPOINT = '/plugins/dsh-pet-remielle/session/open'
+  var COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
   var BUBBLE_MIN_W = 208
   var MAX_BUBBLES = 2
   var currentSessionId = undefined
@@ -511,6 +512,14 @@
       body: JSON.stringify({ sessionId: sessionId, approve: true }),
     }).catch(function () {})
   }
+  function acknowledgeCompletion(sessionId) {
+    if (!sessionId) return
+    fetch(COMPLETION_ACK_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: sessionId }),
+    }).catch(function () {})
+  }
   function ensureBubbleEl(sessionId) {
     var existing = bubbleEls.get(sessionId)
     if (existing) return existing
@@ -548,11 +557,13 @@
     var activate = function (event) {
       event.preventDefault()
       event.stopPropagation()
+      if (el.completed) acknowledgeCompletion(el.targetSessionId)
     }
     action.addEventListener('click', function (event) {
       event.preventDefault()
       event.stopPropagation()
       if (el.canApprove) approveSession(el.targetSessionId)
+      else if (el.completed) acknowledgeCompletion(el.targetSessionId)
     })
     node.addEventListener('pointerdown', function (event) { event.stopPropagation() })
     node.addEventListener('click', activate)
@@ -639,18 +650,18 @@
     if (actionNotif) {
       var glyph = approval ? '✓' : entry.phase === 'ask' ? '?' : '!'
       if (el.action.textContent !== glyph) el.action.textContent = glyph
-      el.action.setAttribute('aria-label', approval ? '允许一次，点击直接确认' : completed ? '任务已完成，点击查看' : '需要处理，点击跳转')
+      el.action.setAttribute('aria-label', approval ? '允许一次，点击直接确认' : '需要处理')
     } else if (el.action.firstChild !== el.brandImg) {
       el.action.textContent = ''
       el.action.appendChild(el.brandImg)
-      el.action.setAttribute('aria-label', '蕾米埃尔桌宠')
+      el.action.setAttribute('aria-label', completed ? '任务已完成，点击消除提醒' : '蕾米埃尔桌宠')
     }
     el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
     el.node.className = 'rm2-pet-bubble' + (index === 0 ? ' top' : '') + (attention ? ' attention' : '') + (approval ? ' approval' : '') + (completed ? ' completed' : '') + (entry.idlePlaceholder ? ' idle-placeholder' : '') + (entry.summaryCount ? ' summary-backboard' : '')
     el.node.setAttribute('aria-disabled', entry.idlePlaceholder ? 'true' : 'false')
-    el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
+    el.node.style.cursor = (entry.idlePlaceholder || (!approval && !completed)) ? 'default' : 'pointer'
     el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
-    el.node.title = approval ? '允许一次：点击圆形勾号直接确认' : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
+    el.node.title = approval ? '允许一次：点击圆形勾号直接确认' : completed ? '任务已完成：点击消除完成提醒' : attention ? '需要处理' : ''
     el.node.style.zIndex = String(100 - index)
     el.node.style.order = String(index)
     el.node.style.marginTop = index === 0 ? '0px' : '-60px'
