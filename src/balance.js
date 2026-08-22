@@ -48,7 +48,7 @@ export function normalizeUsageMode(m) {
  * @param {string} [options.dshHome]
  * @param {(m: string) => void} [options.log]
  */
-export function createBalanceService({ resolveCredential, dshHome, log }) {
+export function createBalanceService({ resolveCredential, getPlatformToken, dshHome, log }) {
   const DSH_HOME = dshHome || process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
   const logger = log || (() => {})
 
@@ -117,14 +117,19 @@ export function createBalanceService({ resolveCredential, dshHome, log }) {
   }
 
   async function fetchUsage() {
-    let cred
-    try {
-      cred = await resolveCredential('DEEPSEEK_PLATFORM_TOKEN')
-    } catch (err) {
-      return { error: 'platform cred resolve failed' }
+    // 优先用配置里的 platformToken（main 设置页填写），回落到 DSH 凭据服务
+    let token = ''
+    try { token = String((typeof getPlatformToken === 'function' ? getPlatformToken() : '') || '').replace(/^Bearer\s+/i, '') } catch { /* ignore */ }
+    if (!token) {
+      let cred
+      try {
+        cred = await resolveCredential('DEEPSEEK_PLATFORM_TOKEN')
+      } catch (err) {
+        return { error: 'platform cred resolve failed' }
+      }
+      if (!cred) return { error: 'no platform token' }
+      token = String(cred.value).replace(/^Bearer\s+/i, '')
     }
-    if (!cred) return { error: 'no platform token' }
-    const token = String(cred.value).replace(/^Bearer\s+/i, '')
     try {
       const now = new Date()
       const tz = -now.getTimezoneOffset() * 60

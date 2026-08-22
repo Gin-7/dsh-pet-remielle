@@ -83,7 +83,42 @@ function progressOf(todos) {
   }
 }
 
+function clipLine(text, max = 80) {
+  const value = String(text ?? '').replace(/\s+/gu, ' ').trim()
+  if (!value) return ''
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value
+}
+
+function parseToolArgs(raw) {
+  if (raw && typeof raw === 'object') return raw
+  try { return JSON.parse(String(raw ?? '')) } catch { return null }
+}
+
+function approvalReason(reason) {
+  const value = String(reason ?? '').replace(/\s+/gu, ' ').trim()
+  if (!value) return ''
+  const match = value.match(/^escalate sandbox to \S+:\s*(.+)$/iu)
+  return match ? match[1].trim() : value
+}
+
+function approvalContent(toolName, reason, argsRaw) {
+  const why = clipLine(approvalReason(reason))
+  if (why) return why
+  const args = parseToolArgs(argsRaw)
+  if (args && typeof args.justification === 'string' && args.justification.trim()) return clipLine(args.justification)
+  if (args && typeof args.command === 'string' && args.command.trim()) return clipLine(args.command)
+  if (args && typeof args.description === 'string' && args.description.trim()) return clipLine(args.description)
+  return clipLine(toolName) || '等待确认'
+}
+
 function detailFor(record, stage = record.payload.stage) {
+  const approval = record.waits?.find((wait) => wait.kind === 'approval')
+  if (approval) {
+    const parts = []
+    if (record.project) parts.push(record.project)
+    parts.push(approval.payload.preview || approval.payload.toolName || '等待确认')
+    return parts.join(' · ')
+  }
   const parts = []
   if (record.project) parts.push(record.project)
   if (record.progress?.total) parts.push(`已完成 ${record.progress.completed}/${record.progress.total} 步`)
@@ -140,6 +175,10 @@ export class PetReducer {
       case 'turn/start':
         record.turnActive = true
         record.openTools.clear()
+        record.askTools.clear()
+        record.waits.length = 0
+        record.savedState = undefined
+        record.savedPayload = undefined
         record.task = undefined
         record.progress = undefined
         this.#update(record, PetState.THINKING, {
@@ -198,15 +237,19 @@ export class PetReducer {
       case 'tool/call': {
         const callId = String(event.data?.callId ?? `seq-${String(event.seq ?? 'unknown')}`)
         const name = String(event.data?.name ?? 'tool')
-        record.openTools.set(callId, name)
+        record.openTools.set(callId, { name, args: event.data?.arguments })
         // Asking the human a question is a "waiting" state, not "摸鱼中".
         if (name === 'ask_user_question') {
           record.askTools.add(callId)
           this.#enterWait(record, {
-            phase: 'ask',
-            stage: '等待回答',
-            toolName: name,
-            message: statusCopy('waiting', event.seq),
+            kind: 'ask',
+            id: callId,
+            payload: {
+              phase: 'ask',
+              stage: '等待回答',
+              toolName: name,
+              message: statusCopy('waiting', event.seq),
+            },
           })
           return this.#render()
         }
@@ -230,18 +273,32 @@ export class PetReducer {
       case 'approval/asked': {
         // Waiting for the human to confirm/deny a tool approval.
         const toolName = String(event.data?.toolName ?? 'tool')
+        const approvalId = String(event.data?.id ?? `seq-${String(event.seq ?? 'unknown')}`)
+        const callId = event.data?.callId ? String(event.data.callId) : ''
+        let argsRaw
+        if (callId && record.openTools.has(callId)) argsRaw = record.openTools.get(callId).args
+        else {
+          for (const entry of record.openTools.values()) {
+            if (entry.name === toolName) { argsRaw = entry.args; break }
+          }
+        }
         this.#enterWait(record, {
-          phase: 'approval',
-          stage: '等待确认',
-          toolName,
-          message: statusCopy('waiting', event.seq),
+          kind: 'approval',
+          id: approvalId,
+          payload: {
+            phase: 'approval',
+            stage: '等待确认',
+            toolName,
+            preview: approvalContent(toolName, event.data?.reason, argsRaw),
+            message: statusCopy('waiting', event.seq),
+          },
         })
         return this.#render()
       }
 
       case 'approval/decided':
         // Approval resolved: restore whatever the pet was doing underneath.
-        this.#exitWait(record)
+        this.#exitWait(record, 'approval', String(event.data?.id ?? ''))
         return this.#render()
 
       case 'turn/end':
@@ -259,32 +316,71 @@ export class PetReducer {
     return this.#render()
   }
 
+  /**
+   * One renderable state per active or attention-needing session. IDLE and
+   * DISCONNECTED records remain internally tracked for primary-state fallback,
+   * but are omitted from the card deck so completed/stopped turns disappear.
+   * A SUCCESS pulse is emitted for every completed turn; the Host persists
+   * its reminder independently until the conversation is opened.
+   */
+  states() {
+    const out = []
+    for (const record of this.sessions.values()) {
+      if ([PetState.IDLE, PetState.DISCONNECTED].includes(record.state)) continue
+      out.push({
+        sessionId: record.id,
+        state: record.state,
+        mood: moodFor(record.state, record.payload.phase),
+        phase: record.payload.phase ?? '',
+        message: record.payload.message ?? '',
+        detail: detailFor(record),
+        project: record.project,
+        task: record.task,
+        progress: record.progress,
+        // Only an unresolved approval wait may render the actionable ✓.
+        // Generic WAITING (ask_user_question) and ERROR must not inherit it.
+        approval: record.waits.some((wait) => wait.kind === 'approval'),
+        attention: record.state === PetState.WAITING || record.state === PetState.ERROR,
+        updatedAt: record.updatedAt,
+      })
+    }
+    out.sort((left, right) => {
+      const attention = Number(right.attention) - Number(left.attention)
+      if (attention !== 0) return attention
+      const priority = (statePriority[right.state] ?? 0) - (statePriority[left.state] ?? 0)
+      return priority || right.updatedAt - left.updatedAt || left.sessionId.localeCompare(right.sessionId)
+    })
+    return out
+  }
+
   #toolResult(record, event) {
     const callId = String(event.data?.message?.source?.callId
       ?? event.data?.message?.toolCallId
       ?? event.data?.message?.callId
       ?? event.data?.callId
       ?? '')
+    const knownTool = callId ? record.openTools.has(callId) || record.askTools.has(callId) : false
+    if (!record.turnActive && !knownTool) return []
     const wasAsk = callId ? record.askTools.has(callId) : false
     if (wasAsk) record.askTools.delete(callId)
     if (callId) record.openTools.delete(callId)
     // An answered question ends the waiting state; restore what the pet was
     // doing underneath (e.g. THINKING while streaming the next answer).
     if (wasAsk) {
-      this.#exitWait(record)
+      this.#exitWait(record, 'ask', callId)
       return this.#render()
     }
     const next = record.openTools.size > 0 ? PetState.WORKING : PetState.THINKING
     const nextPayload = {
       phase: 'tool-result',
       activity: next === PetState.WORKING
-        ? toolActivity(record.openTools.values().next().value)
+        ? toolActivity(record.openTools.values().next().value?.name)
         : undefined,
       stage: next === PetState.WORKING
-        ? activityStage(toolActivity(record.openTools.values().next().value))
+        ? activityStage(toolActivity(record.openTools.values().next().value?.name))
         : '整理阶段',
       message: next === PetState.WORKING
-        ? activityCopy(toolActivity(record.openTools.values().next().value), event.seq)
+        ? activityCopy(toolActivity(record.openTools.values().next().value?.name), event.seq)
         : statusCopy('result', event.seq),
     }
     this.#update(record, next, nextPayload)
@@ -341,6 +437,10 @@ export class PetReducer {
   #turnEnd(record, event) {
     record.turnActive = false
     record.openTools.clear()
+    record.askTools.clear()
+    record.waits.length = 0
+    record.savedState = undefined
+    record.savedPayload = undefined
     const kind = String(event.data?.reason?.kind ?? 'completed')
 
     if (kind === 'blocked') {
@@ -379,11 +479,7 @@ export class PetReducer {
       message: statusCopy('idle', event.seq),
     })
     const selection = this.#select()
-    if ([PetState.WAITING, PetState.ERROR].includes(selection.record.state)) {
-      return this.#render(selection)
-    }
-    this.#remember(selection)
-    return [createMessage(PetMessageKind.PULSE, {
+    const pulse = createMessage(PetMessageKind.PULSE, {
       sessionId: record.id,
       sourceSeq: event.seq,
       state: PetState.SUCCESS,
@@ -396,7 +492,12 @@ export class PetReducer {
       phase: 'turn-end',
       message: statusCopy('success', event.seq),
       detail: detailFor(record, '本轮已完成'),
-    })]
+    })
+    if ([PetState.WAITING, PetState.ERROR].includes(selection.record.state)) {
+      return [...this.#render(selection), pulse]
+    }
+    this.#remember(selection)
+    return [pulse]
   }
 
   #record(sessionId) {
@@ -409,7 +510,7 @@ export class PetReducer {
       turnActive: false,
       openTools: new Map(),
       askTools: new Set(),
-      waits: 0,
+      waits: [],
       savedState: undefined,
       savedPayload: undefined,
       task: undefined,
@@ -429,27 +530,41 @@ export class PetReducer {
     record.updatedAt = ++this.clock
   }
 
-  /** Enter a "waiting on the human" state, remembering what to restore later. */
-  #enterWait(record, payload) {
-    if (record.waits === 0) {
+  /** Enter an identified human wait, remembering what to restore later. */
+  #enterWait(record, wait) {
+    if (record.waits.length === 0) {
       record.savedState = record.state
       record.savedPayload = record.payload
     }
-    record.waits += 1
+    const existing = record.waits.findIndex((entry) => entry.kind === wait.kind && entry.id === wait.id)
+    if (existing >= 0) record.waits.splice(existing, 1)
+    record.waits.push(wait)
     record.state = PetState.WAITING
-    record.payload = payload
+    record.payload = this.#waitPayload(record)
     record.updatedAt = ++this.clock
   }
 
-  /** Leave one waiting state; restore the saved state when none remain. */
-  #exitWait(record) {
-    record.waits = Math.max(0, record.waits - 1)
+  /** Resolve one identified wait and restore work only after all waits settle. */
+  #exitWait(record, kind, id) {
+    const index = record.waits.findIndex((wait) => wait.kind === kind && wait.id === id)
+    if (index < 0) return
+    record.waits.splice(index, 1)
     record.updatedAt = ++this.clock
-    if (record.waits !== 0) return
+    if (record.waits.length > 0) {
+      record.state = PetState.WAITING
+      record.payload = this.#waitPayload(record)
+      return
+    }
     record.state = record.savedState ?? PetState.THINKING
     record.payload = record.savedPayload ?? { phase: 'wait-end', message: '蕾米埃尔待命中' }
     record.savedState = undefined
     record.savedPayload = undefined
+  }
+
+  #waitPayload(record) {
+    return record.waits.find((wait) => wait.kind === 'approval')?.payload
+      ?? record.waits.at(-1)?.payload
+      ?? { phase: 'wait-end', message: '蕾米埃尔待命中' }
   }
 
   #select() {
@@ -499,6 +614,7 @@ export class PetReducer {
       record.payload.phase ?? '',
       record.payload.activity ?? '',
       record.payload.toolName ?? '',
+      record.payload.preview ?? '',
       record.payload.message ?? '',
       record.project ?? '',
       record.task ?? '',

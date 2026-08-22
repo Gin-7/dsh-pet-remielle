@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { backendCandidates, DesktopWindow, findRoot, findDshRoot } from '../src/desktop-window.js'
@@ -167,4 +167,15 @@ test('findDshRoot returns fallbackCwd when no dsh root', () => {
   } finally {
     process.argv[1] = saved
   }
+})
+
+test('pet-view ships the stacked bubble deck and a single page-switch dot', () => {
+  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  assert.match(html, /class="rm2-pet-bubbles"/)
+  assert.match(html, /class="rm2-bubble-dot"/)
+  assert.match(html, /SESSION_OPEN_ENDPOINT/)
+  assert.doesNotMatch(html, /id="dot1"/)
+  assert.match(html, /height:\s*68px/)
+  assert.match(html, /idle-placeholder/)
+  assert.match(html, /clearPulse:\s*true/)
 })

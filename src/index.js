@@ -46,6 +46,8 @@ export const inject = ['sessions', 'credentials']
 export const CONFIG_ENDPOINT = '/plugins/dsh-pet-remielle/config'
 export const STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
 export const STREAM_ENDPOINT = '/plugins/dsh-pet-remielle/stream'
+export const COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
+export const SESSION_OPEN_ENDPOINT = '/plugins/dsh-pet-remielle/session/open'
 export const PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 export const ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 export const PET_VIEW_ENDPOINT = '/plugins/dsh-pet-remielle/pet-view'
@@ -68,7 +70,10 @@ export const Config = Schema.object({
   hidden: Schema.boolean().default(false).description('隐藏桌宠'),
   includeSubagents: Schema.boolean().default(false).description('允许子 Agent 抢占宠物状态'),
   showBubble: Schema.boolean().default(true).description('在宠物上方显示状态气泡（阶段/待办/进度）'),
+  showBubbleStatus: Schema.boolean().default(true).description('气泡中显示会话状态（任务阶段/进度）'),
+  showBubbleUsage: Schema.boolean().default(false).description('气泡中显示 DeepSeek 余额/今日已用'),
   usageMode: Schema.string().default('ledger').description('今日已用统计模式：小鲸鱼记账（ledger，免令牌）或 实时·令牌（token，需平台会话令牌）'),
+  platformToken: Schema.string().default('').description('DEEPSEEK_PLATFORM_TOKEN 平台会话令牌（实时·令牌模式需要，留空时回落到 DSH 凭据服务）'),
   desktopMode: Schema.boolean().default(false).description('桌面悬浮模式：用独立置顶窗口显示宠物（打开时如无 Electron 会自动下载运行时，下载失败则回落页面内）'),
   posX: Schema.number().default(null).description('宠物 X 位置（null = 使用默认位置）'),
   posY: Schema.number().default(null).description('宠物 Y 位置（null = 使用默认位置）'),
@@ -85,7 +90,10 @@ const defaults = Object.freeze({
   hidden: false,
   includeSubagents: false,
   showBubble: true,
+  showBubbleStatus: true,
+  showBubbleUsage: false,
   usageMode: 'ledger',
+  platformToken: '',
   desktopMode: false,
   posX: null,
   posY: null,
@@ -103,7 +111,10 @@ function publicConfig(config = {}) {
     hidden: config.hidden ?? defaults.hidden,
     includeSubagents: config.includeSubagents ?? defaults.includeSubagents,
     showBubble: config.showBubble ?? defaults.showBubble,
+    showBubbleStatus: config.showBubbleStatus ?? defaults.showBubbleStatus,
+    showBubbleUsage: config.showBubbleUsage ?? defaults.showBubbleUsage,
     usageMode: normalizeUsageMode(config.usageMode),
+    platformToken: config.platformToken ?? defaults.platformToken,
     desktopMode: config.desktopMode ?? defaults.desktopMode,
     posX: config.posX ?? defaults.posX,
     posY: config.posY ?? defaults.posY,
@@ -163,7 +174,7 @@ async function readJsonBody(req) {
 }
 
 export function createConfigHandler(settings) {
-  const allowed = new Set(['enabled', 'scale', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'usageMode', 'desktopMode', 'posX', 'posY'])
+  const allowed = new Set(['enabled', 'scale', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus', 'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY'])
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method === 'GET') {
@@ -181,6 +192,57 @@ export function createConfigHandler(settings) {
       jsonResponse(res, 200, settings.get())
     } catch (error) {
       jsonResponse(res, 400, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+}
+
+export function applyCompletionAck(completionQueue, pulse, sessionId, { clearPulse = false } = {}) {
+  completionQueue.delete(sessionId)
+  if (clearPulse && pulse?.sessionId === sessionId && pulse.state === PetState.SUCCESS) return null
+  return pulse
+}
+
+export function createCompletionAckHandler({ acknowledge, broadcast = () => {} }) {
+  return async (req, res) => {
+    if (!localOnly(req, res)) return
+    if (req.method !== 'POST') {
+      jsonResponse(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    try {
+      const body = await readJsonBody(req)
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+      if (!sessionId) throw new Error('sessionId must be a non-empty string')
+      acknowledge(sessionId, { clearPulse: body.clearPulse === true })
+      broadcast()
+      jsonResponse(res, 200, { ok: true })
+    } catch (error) {
+      jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+}
+
+export function createSessionOpenHandler({ notify }) {
+  return async (req, res) => {
+    if (!localOnly(req, res)) return
+    if (req.method !== 'POST') {
+      jsonResponse(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    try {
+      const body = await readJsonBody(req)
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+      if (!sessionId) throw new Error('sessionId must be a non-empty string')
+      notify({
+        protocolVersion: 1,
+        kind: 'session-action',
+        sessionId,
+        approve: body.approve === true,
+        completed: body.completed === true,
+      })
+      jsonResponse(res, 200, { ok: true })
+    } catch (error) {
+      jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
     }
   }
 }
@@ -314,10 +376,12 @@ export function createAssetsHandler(petsRoot) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates, getCompletions }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
   const activePetOf = typeof getActivePet === 'function' ? getActivePet : () => undefined
+  const statesOf = typeof getStates === 'function' ? getStates : () => []
+  const completionsOf = typeof getCompletions === 'function' ? getCompletions : () => []
   return () => {
     const config = publicConfig(getConfig())
     const now = Date.now()
@@ -325,6 +389,73 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
     const base = getLatest()
     const activePulse = pulse && pulse.until > now ? pulse : undefined
     const source = activePulse ?? base
+    // One entry per tracked session for the stacked-bubble view. The active
+    // PULSE overlay (success / error flash) overrides its own session's entry
+    // so the flash lands on the right bubble, not on the primary.
+    const stateEntries = statesOf()
+    let pulseMatched = false
+    const sessions = stateEntries.map((entry) => {
+      if (activePulse && activePulse.sessionId === entry.sessionId) {
+        pulseMatched = true
+        return {
+          ...entry,
+          state: activePulse.state,
+          mood: activePulse.mood ?? entry.mood,
+          phase: activePulse.phase ?? entry.phase,
+          message: activePulse.message ?? entry.message,
+          detail: activePulse.detail ?? entry.detail,
+          approval: entry.approval === true,
+          completed: activePulse.state === PetState.SUCCESS,
+          pulseUntil: activePulse.until,
+        }
+      }
+      return entry
+    })
+    // Completed sessions are absent from reducer.states(). Add the transient
+    // pulse card while it is live; persistent reminders are merged below.
+    if (activePulse && activePulse.sessionId && !pulseMatched) {
+      sessions.push({
+        sessionId: activePulse.sessionId,
+        state: activePulse.state,
+        mood: activePulse.mood ?? '06',
+        phase: activePulse.phase ?? 'pulse',
+        message: activePulse.message ?? '',
+        detail: activePulse.detail ?? 'DSH',
+        project: activePulse.project,
+        task: activePulse.task,
+        progress: activePulse.progress,
+        attention: activePulse.state === PetState.WAITING || activePulse.state === PetState.ERROR,
+        approval: false,
+        completed: activePulse.state === PetState.SUCCESS,
+        updatedAt: now,
+        pulseUntil: activePulse.until,
+      })
+    }
+    for (const completion of completionsOf()) {
+      const liveIndex = sessions.findIndex((entry) => entry.sessionId === completion.sessionId)
+      if (liveIndex >= 0) {
+        const live = sessions[liveIndex]
+        if (live.state === PetState.SUCCESS && live.pulseUntil > now) {
+          sessions[liveIndex] = {
+            ...live,
+            targetSessionId: completion.sessionId,
+            completionNotification: true,
+          }
+        }
+        continue
+      }
+      sessions.push({
+        ...completion,
+        sessionId: `completion:${completion.sessionId}`,
+        targetSessionId: completion.sessionId,
+        state: PetState.SUCCESS,
+        mood: completion.mood ?? '03',
+        completed: true,
+        completionNotification: true,
+        attention: false,
+        approval: false,
+      })
+    }
     return {
       ok: true,
       enabled: config.enabled === true,
@@ -332,7 +463,10 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       opacity: config.opacity,
       locked: config.locked === true,
       bubble: config.showBubble !== false,
+      showBubbleStatus: config.showBubbleStatus !== false,
+      showBubbleUsage: config.showBubbleUsage === true,
       usageMode: config.usageMode ?? 'ledger',
+      platformToken: config.platformToken ?? '',
       paused: config.paused === true,
       hidden: config.hidden === true,
       desktopActive: desktopActiveOf(),
@@ -350,6 +484,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       task: base?.task ?? undefined,
       progress: base?.progress ?? undefined,
       pulseUntil: activePulse ? activePulse.until : 0,
+      sessions,
       ts: now,
     }
   }
@@ -447,6 +582,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   }
   const balanceService = createBalanceService({
     resolveCredential,
+    getPlatformToken: () => String(settings.get().platformToken || ''),
     log: (code, error) => logger.error?.(`dsh-pet-remielle: ${code} ${error}`),
   })
   let usageModeNow = normalizeUsageMode(settings.get().usageMode)
@@ -463,10 +599,25 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     detail: 'DSH · 等待下一次任务',
   })
   let pulse = null
+  // Completed turns stay visible until the user opens their conversation.
+  const completionQueue = new Map()
 
   const onMessage = (message) => {
     if (message.kind === PetMessageKind.PULSE) {
       pulse = { ...message, until: Date.now() + (message.ttlMs ?? 3000) }
+      if (message.state === PetState.SUCCESS && message.sessionId) {
+        completionQueue.set(message.sessionId, {
+          sessionId: message.sessionId,
+          message: message.message ?? '任务已完成',
+          detail: message.detail ?? '任务已完成',
+          project: message.project,
+          task: message.task,
+          progress: message.progress,
+          phase: 'turn-end',
+          updatedAt: Date.now(),
+          completedAt: Date.now(),
+        })
+      }
       // The durable state beneath the overlay: after the pulse expires the
       // pet falls back to what the reducer remembered at pulse time.
       latest = {
@@ -492,6 +643,13 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     }
     if (message.kind === PetMessageKind.STATE) {
       latest = message
+      if (
+        message.sessionId
+        && message.state !== PetState.IDLE
+        && message.state !== PetState.DISCONNECTED
+      ) {
+        completionQueue.delete(message.sessionId)
+      }
     }
   }
 
@@ -526,6 +684,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getPetId: () => registry.activePetId,
     getDesktopActive: () => desktopActive,
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
+    getStates: () => reducer.states(),
+    getCompletions: () => [...completionQueue.values()],
   })
 
   const hub = createStreamHub({ serve: serveState })
@@ -690,6 +850,29 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: local state endpoint',
       )
       httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: COMPLETION_ACK_ENDPOINT,
+          handler: createCompletionAckHandler({
+            acknowledge: (sessionId, opts) => {
+              pulse = applyCompletionAck(completionQueue, pulse, sessionId, opts)
+            },
+            broadcast: () => hub.broadcast(),
+          }),
+        }),
+        'dsh-pet-remielle: completion notification acknowledgement',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: SESSION_OPEN_ENDPOINT,
+          handler: createSessionOpenHandler({
+            notify: (payload) => hub.notify(payload),
+          }),
+        }),
+        'dsh-pet-remielle: desktop session open/approve bridge',
+      )
+      httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: BALANCE_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return
           try {
@@ -700,49 +883,6 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           }
         } }),
         'dsh-pet-remielle: balance endpoint',
-      )
-      // ---- 平台令牌（DEEPSEEK_PLATFORM_TOKEN）：在宠物设置里直接填写 ----
-      // GET  → 是否已配置（不返回令牌本身）
-      // POST → { token: '...' } 写入凭据服务；空字符串清除
-      httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/platform-token', handler: async (req, res) => {
-          if (!localOnly(req, res)) return
-          const cred = eventCtx.credentials ?? ctx.credentials
-          if (req.method === 'GET') {
-            let configured = false
-            if (cred && typeof cred.resolve === 'function') {
-              try { configured = !!(await cred.resolve('DEEPSEEK_PLATFORM_TOKEN')) } catch { /* 保持 false */ }
-            }
-            jsonResponse(res, 200, { ok: true, configured })
-            return
-          }
-          if (req.method !== 'POST') {
-            jsonResponse(res, 405, { ok: false, error: 'method not allowed (GET/POST only)' })
-            return
-          }
-          try {
-            const value = await readJsonBody(req)
-            const token = typeof value.token === 'string' ? value.token.trim() : ''
-            if (!cred || typeof cred.set !== 'function') {
-              jsonResponse(res, 500, { ok: false, error: 'credentials service unavailable' })
-              return
-            }
-            if (token) {
-              await cred.set('DEEPSEEK_PLATFORM_TOKEN', token)
-              balanceService.invalidate()
-              jsonResponse(res, 200, { ok: true, configured: true })
-            } else {
-              if (typeof cred.unset === 'function') {
-                try { await cred.unset('DEEPSEEK_PLATFORM_TOKEN') } catch { /* 忽略 */ }
-              }
-              balanceService.invalidate()
-              jsonResponse(res, 200, { ok: true, configured: false })
-            }
-          } catch (error) {
-            jsonResponse(res, 400, { ok: false, error: String((error && error.message) || error) })
-          }
-        } }),
-        'dsh-pet-remielle: platform token endpoint',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: STREAM_ENDPOINT, handler: async (req, res) => {
