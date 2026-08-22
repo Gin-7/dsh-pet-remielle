@@ -27,7 +27,7 @@
   var FETCH_TIMEOUT_MS = 25000
 
   var usageMode = 'ledger'
-  var state = { balance: null, currency: null, todayUsage: null, isPeak: false, status: 'loading', message: '' }
+  var state = { balance: null, currency: 'CNY', todayUsage: null, isPeak: false, status: 'loading', message: '' }
   var shown = null
   var busy = false
   var animId = null
@@ -40,6 +40,7 @@
   function fmt(balance, currency) {
     var num = Number(balance)
     var fixed = isFinite(num) ? num.toFixed(2) : '--'
+    currency = currency || 'CNY'
     return currency === 'CNY' ? '¥ ' + fixed : fixed + ' ' + currency
   }
 
@@ -58,13 +59,21 @@
 
   function emitBalance(amount) {
     var used = state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.currency) : '--'
+    var detail = '今日已用 ' + used
+    var period = periodText()
+    var color = periodColor()
+    // 失败时可观测：把时段替换为"获取失败"，不要把错误信息再拼进 detail（客户端会再拼一次 · period，会重复）
+    if (state.status === 'error' && state.message) {
+      period = '获取失败'
+      color = '#c0392b'
+    }
     emit({
       kind: 'balance',
       label: 'DeepSeek 余额',
       amount: amount !== undefined ? fmt(amount, state.currency) : fmt(shown, state.currency),
-      detail: '今日已用 ' + used,
-      period: periodText(),
-      color: periodColor(),
+      detail: detail,
+      period: period,
+      color: color,
     })
   }
 

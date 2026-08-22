@@ -1,16 +1,37 @@
+import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createStateSnapshot } from '../src/index.js'
+import { createCompletionAckHandler, createStateSnapshot } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
-function snapshotWith({ latest, pulse = null, config = {}, petId }) {
+function snapshotWith({ latest, pulse = null, config = {}, petId, getStates, getCompletions }) {
   return createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
     getConfig: () => config,
     getPetId: () => petId,
+    getStates,
+    getCompletions,
   })()
+}
+
+function responseRecorder() {
+  return {
+    status: 0,
+    headers: {},
+    body: '',
+    writeHead(status, headers) { this.status = status; this.headers = headers },
+    end(body = '') { this.body = String(body) },
+  }
+}
+
+function request(method, body) {
+  const req = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))])
+  req.method = method
+  req.headers = { host: '127.0.0.1:3080' }
+  req.socket = { remoteAddress: '127.0.0.1' }
+  return req
 }
 
 const idle = createMessage(PetMessageKind.STATE, {
@@ -124,6 +145,9 @@ test('active pulse overlay wins over durable state', () => {
   assert.equal(snapshot.state, PetState.SUCCESS)
   assert.equal(snapshot.mood, '03')
   assert.equal(snapshot.message, '这次任务搞定啦~')
+  assert.equal(snapshot.sessions.length, 1)
+  assert.equal(snapshot.sessions[0].sessionId, 's1')
+  assert.equal(snapshot.sessions[0].state, PetState.SUCCESS)
 })
 
 test('expired pulse falls back to durable state', () => {
@@ -145,9 +169,127 @@ test('expired pulse falls back to durable state', () => {
   })
   assert.equal(snapshot.state, PetState.IDLE)
   assert.equal(snapshot.mood, '06')
+  assert.deepEqual(snapshot.sessions, [])
 })
 
 test('disabled config is reflected in the snapshot', () => {
   const snapshot = snapshotWith({ latest: idle, config: { enabled: false } })
   assert.equal(snapshot.enabled, false)
+})
+
+test('snapshot carries one entry per tracked session for stacked bubbles', () => {
+  const states = [
+    { sessionId: 's2', state: PetState.WAITING, mood: '05', phase: 'ask', message: '等你回答', detail: 's2 · 等待回答', attention: true, updatedAt: 4 },
+    { sessionId: 's1', state: PetState.THINKING, mood: '01', phase: 'streaming', message: '正在输出', detail: 's1 · 输出阶段', attention: false, updatedAt: 3 },
+  ]
+  const snapshot = snapshotWith({ latest: idle, getStates: () => states })
+  assert.deepEqual(snapshot.sessions, states)
+})
+
+test('active pulse overrides its own session entry in sessions[]', () => {
+  const states = [
+    { sessionId: 's2', state: PetState.WAITING, mood: '05', phase: 'ask', message: '等你回答', detail: 's2 · 等待回答', attention: true, updatedAt: 4 },
+    { sessionId: 's1', state: PetState.THINKING, mood: '01', phase: 'streaming', message: '正在输出', detail: 's1 · 输出阶段', attention: false, updatedAt: 3 },
+  ]
+  const pulse = createMessage(PetMessageKind.PULSE, {
+    sessionId: 's1',
+    state: PetState.SUCCESS,
+    mood: '03',
+    ttlMs: 5000,
+    resumeState: PetState.IDLE,
+    resumeMood: '06',
+    message: '这次任务搞定啦~',
+    detail: 's1 · 本轮已完成',
+  })
+  const snapshot = snapshotWith({
+    latest: idle,
+    getStates: () => states,
+    pulse: { ...pulse, until: Date.now() + 4000 },
+  })
+  assert.equal(snapshot.sessions.length, 2)
+  const flashed = snapshot.sessions.find((entry) => entry.sessionId === 's1')
+  assert.equal(flashed.state, PetState.SUCCESS)
+  assert.equal(flashed.mood, '03')
+  assert.equal(flashed.message, '这次任务搞定啦~')
+  assert.ok(flashed.pulseUntil > Date.now())
+  // The waiting session's entry is untouched.
+  const waiting = snapshot.sessions.find((entry) => entry.sessionId === 's2')
+  assert.equal(waiting.state, PetState.WAITING)
+})
+
+test('sessions defaults to an empty array when no states feed is provided', () => {
+  const snapshot = snapshotWith({ latest: idle })
+  assert.deepEqual(snapshot.sessions, [])
+})
+
+test('persistent completion remains separate from later live state', () => {
+  const snapshot = snapshotWith({
+    latest: idle,
+    getStates: () => [{
+      sessionId: 'done-1',
+      state: PetState.THINKING,
+      mood: '04',
+      message: '后续状态',
+      detail: '分析阶段',
+      updatedAt: 20,
+    }],
+    getCompletions: () => [{
+      sessionId: 'done-1',
+      message: '任务已完成',
+      detail: '点击查看结果',
+      phase: 'turn-end',
+      updatedAt: 12,
+    }],
+  })
+  assert.equal(snapshot.sessions.length, 2)
+  const live = snapshot.sessions.find((entry) => entry.sessionId === 'done-1')
+  assert.equal(live.state, PetState.THINKING)
+  const reminder = snapshot.sessions.find((entry) => entry.sessionId === 'completion:done-1')
+  assert.equal(reminder.targetSessionId, 'done-1')
+  assert.equal(reminder.state, PetState.SUCCESS)
+  assert.equal(reminder.completionNotification, true)
+  assert.equal(reminder.message, '任务已完成')
+})
+
+test('completion acknowledgement deletes one reminder and broadcasts', async () => {
+  const acknowledged = []
+  let broadcasts = 0
+  const handler = createCompletionAckHandler({
+    acknowledge: (sessionId) => acknowledged.push(sessionId),
+    broadcast: () => { broadcasts += 1 },
+  })
+  const res = responseRecorder()
+  await handler(request('POST', { sessionId: 'done-1' }), res)
+  assert.equal(res.status, 200)
+  assert.deepEqual(acknowledged, ['done-1'])
+  assert.equal(broadcasts, 1)
+})
+
+test('completion acknowledgement rejects missing session ids and non-POST methods', async () => {
+  const handler = createCompletionAckHandler({ acknowledge: () => assert.fail('must not acknowledge') })
+  const missing = responseRecorder()
+  await handler(request('POST', {}), missing)
+  assert.equal(missing.status, 400)
+  const wrongMethod = responseRecorder()
+  await handler(request('GET'), wrongMethod)
+  assert.equal(wrongMethod.status, 405)
+})
+
+test('persistent completions remain in sessions after the pulse expires', () => {
+  const snapshot = snapshotWith({
+    latest: idle,
+    getCompletions: () => [{
+      sessionId: 'done-1',
+      message: '任务已完成',
+      detail: '点击查看结果',
+      phase: 'turn-end',
+      updatedAt: 12,
+    }],
+  })
+  assert.equal(snapshot.sessions.length, 1)
+  assert.equal(snapshot.sessions[0].sessionId, 'completion:done-1')
+  assert.equal(snapshot.sessions[0].targetSessionId, 'done-1')
+  assert.equal(snapshot.sessions[0].state, PetState.SUCCESS)
+  assert.equal(snapshot.sessions[0].completed, true)
+  assert.equal(snapshot.sessions[0].completionNotification, true)
 })

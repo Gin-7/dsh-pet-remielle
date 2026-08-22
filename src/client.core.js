@@ -22,6 +22,7 @@
 
 var CONFIG_ENDPOINT = '/plugins/dsh-pet-remielle/config'
 var STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
+var COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
 var PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 var ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 var DESKTOP_ENDPOINT = '/plugins/dsh-pet-remielle/desktop'
@@ -57,13 +58,13 @@ var CSS = [
   '.rm2-pet-menu-item .mute{color:#c2607f;font-size:12px;}',
   '.rm2-pet-menu-item .tick{color:#b03a60;font-weight:600;}',
   '.rm2-pet-menu-sep{height:1px;background:rgba(240,120,160,.25);margin:5px 6px;}',
-  '.rm2-pet-bubble{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;min-width:170px;max-width:340px;padding:8px 12px;border-radius:10px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 6px 20px rgba(190,70,110,.20);font-size:12px;line-height:1.45;text-align:center;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+  '.rm2-pet-bubble{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;min-width:150px;max-width:340px;padding:12px 20px 12px 30px;border-radius:22px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 6px 20px rgba(190,70,110,.20);font-size:12px;line-height:1.45;text-align:left;pointer-events:none;white-space:nowrap;text-overflow:ellipsis;}',
   '.rm2-pet-bubble-title{font-weight:600;color:#b03a60;}',
-  '.rm2-pet-bubble-detail{color:#c2607f;margin-top:2px;font-size:11px;}',
+  '.rm2-pet-bubble-detail{color:#c2607f;margin-top:2px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}',
   // 气泡翻页圆点
-  '.rm2-bubble-dots{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:5px;pointer-events:auto;z-index:1;}',
-  '.rm2-bubble-dot{width:7px;height:7px;border-radius:50%;background:rgba(240,120,160,.25);cursor:pointer;transition:background .2s;}',
-  '.rm2-bubble-dot.active{background:#b03a60;}',
+  '.rm2-bubble-dots{position:absolute;left:10px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;pointer-events:auto;z-index:120;}',
+  '.rm2-bubble-dot{width:10px;height:10px;border-radius:50%;background:#e8508a;cursor:pointer;box-shadow:0 0 0 2px rgba(255,255,255,.65);transition:transform .18s,background .18s;}',
+  '.rm2-bubble-dot:hover{transform:scale(1.25);}',
   '.rm2-pet-bubble::after{content:\"\";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:6px solid transparent;border-top-color:rgba(240,120,160,.45);}',
   'body[data-ds-dark-theme] .rm2-pet-bubble{background:rgba(72,20,42,.96);border-color:rgba(255,150,185,.42);color:#ffd6e4;}',
   'body[data-ds-dark-theme] .rm2-pet-bubble-title{color:#ffd6e4;}',
@@ -110,6 +111,35 @@ var CSS = [
   '.rm2-pet-settings-field:last-child{border-bottom:none;}',
   '[data-testid="dsh-pet-remielle-settings"]:hover{border-color:var(--dsw-alias-label-dimmed);}',
   'body[data-ds-dark-theme] .rm2-pet-menu-sep{background:rgba(255,150,185,.25);}',
+  // 堆叠会话卡（状态页）
+  '.rm2-pet-bubbles{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:12px;width:fit-content;max-width:min(360px,calc(100vw - 24px));display:flex;flex-direction:column;align-items:center;pointer-events:none;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble{position:relative;bottom:auto;left:auto;transform:none;margin:0;box-sizing:border-box;width:fit-content;min-width:150px;max-width:min(360px,calc(100vw - 24px));height:68px;min-height:68px;padding:12px 20px 12px 30px;border-radius:22px;text-align:left;box-shadow:0 8px 24px rgba(190,70,110,.25);transition:width .18s ease,opacity .18s ease;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble::after{display:none;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble{pointer-events:auto;cursor:pointer;}',
+  '.rm2-pet-bubble-header{display:flex;align-items:center;min-width:0;min-height:22px;}',
+  '.rm2-pet-bubble-title{min-width:0;flex:none;white-space:nowrap;overflow:visible;text-overflow:clip;line-height:1.35;}',
+  '.rm2-pet-bubble.title-clipped .rm2-pet-bubble-title{flex:1;overflow:hidden;text-overflow:ellipsis;}',
+  '.rm2-pet-bubble-action{display:inline-flex;flex:none;order:2;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;margin-right:0;border-radius:50%;background:#e8508a;color:#fff;font-size:15px;font-weight:700;line-height:1;}',
+  '.rm2-pet-bubble-action img{width:15px;height:15px;display:block;filter:brightness(0) saturate(100%) invert(1);}',
+  '.rm2-pet-bubble-completion{display:none;flex:none;width:12px;height:12px;margin-right:10px;border-radius:50%;background:#35c979;box-shadow:0 0 0 3px rgba(53,201,121,.18);}',
+  '.rm2-pet-bubble.completed .rm2-pet-bubble-completion{display:inline-flex;}',
+  '.rm2-pet-bubble.idle-placeholder{height:46px;min-height:46px;padding-top:11px;padding-bottom:11px;}',
+  '.rm2-pet-bubble-stack-count{display:none;position:absolute;right:16px;bottom:0;height:8px;align-items:center;color:#f0a8c0;font-size:9px;font-weight:700;line-height:8px;}',
+  '.rm2-pet-bubble.summary-backboard .rm2-pet-bubble-stack-count{display:flex;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-title,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-action,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-completion{visibility:hidden;}',
+  '.rm2-pet-bubble.top{border-color:#b03a60;box-shadow:0 10px 28px rgba(190,70,110,.38);}',
+  '.rm2-pet-bubble.attention{border-color:#e8508a;animation:rm2-pet-attention 1.6s ease-in-out infinite;}',
+  '@keyframes rm2-pet-attention{0%,100%{box-shadow:0 0 0 0 rgba(232,80,138,.35);}50%{box-shadow:0 0 0 6px rgba(232,80,138,0);}}',
+  'body[data-ds-dark-theme] .rm2-pet-bubble.top{border-color:#ffb3c9;}',
+  'body[data-ds-dark-theme] .rm2-pet-bubble.attention{border-color:#ff6fa8;}',
+  // 单气泡（余额页）允许圆点露出到边框外；堆叠卡恢复裁剪，不影响省略号
+  // 堆叠卡需要裁剪超长内容（保留省略号），单气泡（余额）不裁剪
+  '.rm2-pet-bubbles .rm2-pet-bubble{overflow:hidden;}',
+  // 余额气泡复用对话卡工作态：border-box 同 68px 高度、max-width 与对话卡一致(360)、去掉气泡尾三角。
+  // 标题行高 22px 对齐对话卡的 header(min-height 22px)。
+  '.rm2-bubble-balance{box-sizing:border-box;height:68px;min-height:68px;max-width:360px;}',
+  '.rm2-bubble-balance .rm2-pet-bubble-title{line-height:22px;min-width:0;overflow:hidden;text-overflow:ellipsis;}',
+  '.rm2-bubble-balance::after{display:none;}',
 ].join('\n')
 
 function mk(tag, style, text) {
@@ -883,6 +913,30 @@ function PetsSection() {
 
 /** ---------- floating pet (plain DOM) ---------- */
 
+// 隐藏测量节点：复制真实渲染字体来精确测量文字宽度，避免 max-content 撑宽。
+// 提升到模块级并懒创建，mountPet 可多次挂载也不会重复往 body 追加节点。
+var __petMeasureEl = null
+function ensureMeasureEl() {
+  if (!__petMeasureEl) {
+    __petMeasureEl = document.createElement('span')
+    __petMeasureEl.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;'
+    if (document.body) document.body.appendChild(__petMeasureEl)
+  }
+  return __petMeasureEl
+}
+function measureTextW(srcEl, text) {
+  var el = ensureMeasureEl()
+  if (window.getComputedStyle && srcEl) {
+    var cs = window.getComputedStyle(srcEl)
+    el.style.fontFamily = cs.fontFamily
+    el.style.fontSize = cs.fontSize
+    el.style.fontWeight = cs.fontWeight
+    el.style.letterSpacing = cs.letterSpacing
+  }
+  el.textContent = text || ''
+  return el.offsetWidth || 0
+}
+
 function mountPet(ctx) {
   // 余额控制器：幂等加载共享客户端脚本
   if (!window.__petBalance && !document.querySelector('script[src*="balance-widget.js"]')) {
@@ -899,30 +953,36 @@ function mountPet(ctx) {
   img.alt = '桌宠'
   img.draggable = false
   var bubble = mk('div', 'display:none;')
-  bubble.className = 'rm2-pet-bubble'
+  // 单气泡（余额页）：复用状态卡 top 的视觉（粗边框/阴影/字重），外观与对话卡一致
+  bubble.className = 'rm2-pet-bubble top'
   var bubbleTitle = mk('div', '')
   bubbleTitle.className = 'rm2-pet-bubble-title'
   var bubbleDetail = mk('div', '')
   bubbleDetail.className = 'rm2-pet-bubble-detail'
   bubble.appendChild(bubbleTitle)
   bubble.appendChild(bubbleDetail)
-  // 翻页圆点
+  // 堆叠会话卡（状态页）：每会话一张可读卡 + 一张 +N 背板卡
+  var bubbleStack = mk('div', 'display:none;')
+  bubbleStack.className = 'rm2-pet-bubbles'
+  // 翻页圆点（单个：点击在状态↔余额间切换）
   var bubbleDots = mk('div', '', '')
   bubbleDots.className = 'rm2-bubble-dots'
-  var bubbleDot0 = mk('div', '', '')
-  bubbleDot0.className = 'rm2-bubble-dot active'
-  bubbleDot0.title = '状态'
-  var bubbleDot1 = mk('div', '', '')
-  bubbleDot1.className = 'rm2-bubble-dot'
-  bubbleDot1.title = '余额'
-  bubbleDots.appendChild(bubbleDot0)
-  bubbleDots.appendChild(bubbleDot1)
+  var bubbleDot = mk('div', '', '')
+  bubbleDot.className = 'rm2-bubble-dot'
+  bubbleDots.appendChild(bubbleDot)
   bubble.appendChild(bubbleDots)
+  // 气泡框最小宽度：把标题在常见长度内的宽度变化"吸收"掉，避免方框频繁抖动
+  var BUBBLE_MIN_W = 205
+  // 两种方框（堆叠对话卡 / 余额气泡）共用同一宽度规则：取"最宽一行" + 内边距(50)，
+  // 下限 BUBBLE_MIN_W、上限 min(360, 视口-24)。返回含内边距的总宽。
+  function bubbleRowWidth(textW) {
+    var vw = Math.max(150, (window.innerWidth || 1280) - 24)
+    return Math.min(360, vw, Math.max(BUBBLE_MIN_W, textW + 50))
+  }
   var currentBubblePage = 0
   function switchBubblePage(p) {
     currentBubblePage = p
-    bubbleDot0.className = 'rm2-bubble-dot' + (p === 0 ? ' active' : '')
-    bubbleDot1.className = 'rm2-bubble-dot' + (p === 1 ? ' active' : '')
+    bubbleDot.title = p === 0 ? '切到余额' : '切到状态'
     if (p === 0) {
       balanceFrame = null
       lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
@@ -932,8 +992,7 @@ function mountPet(ctx) {
       window.__petBalance.showBalance()
     }
   }
-  bubbleDot0.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(0) })
-  bubbleDot1.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(1) })
+  bubbleDot.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(currentBubblePage === 0 ? 1 : 0) })
   bubble.addEventListener('wheel', function (e) {
     e.preventDefault(); e.stopPropagation()
     // 仅双开时翻页（单开时气泡 pointer-events:none，通常不会触发，这里双重保险）
@@ -1010,6 +1069,7 @@ function mountPet(ctx) {
 
   dock.appendChild(img)
   dock.appendChild(bubble)
+  dock.appendChild(bubbleStack)
   root.appendChild(dock)
   document.body.appendChild(picEl)
   document.head.appendChild(styleEl)
@@ -1052,6 +1112,408 @@ function mountPet(ctx) {
   var lastBubbleTitleAt = 0
   var lastBubbleDetail = ''
   var prevBubbleVisible = false
+  var MAX_BUBBLES = 2
+  // Same-mood titles refresh at most once per interval (upstream 0.3.1 lock),
+  // so think/working copy does not flip on every chunk. Mood / waiting / error
+  // / success still update immediately. Pending text flushes when the interval elapses.
+  var BUBBLE_TITLE_MS = 2000
+  var currentSessionId = undefined
+  var lastTopEntry = null
+  var bubbleEls = new Map() // sessionId -> { node, title, detail }
+  function stateRank(state) {
+    switch (state) {
+      case 'WAITING': return 60
+      case 'ERROR': return 50
+      case 'SUCCESS': return 70
+      case 'WORKING': return 30
+      case 'THINKING': return 20
+      case 'DISCONNECTED': return -1
+      default: return 0
+    }
+  }
+  function attentionOf(entry) {
+    return entry.attention === true || entry.state === 'WAITING' || entry.state === 'ERROR'
+  }
+  function completionOf(entry) {
+    return entry.completionNotification === true
+  }
+  function targetSessionOf(entry) {
+    return entry.targetSessionId || entry.sessionId
+  }
+  function approvalOf(entry) {
+    return entry.approval === true
+  }
+  function orderSessions(sessions) {
+    return sessions.slice().sort(function (a, b) {
+      var aDone = completionOf(a) ? 1 : 0
+      var bDone = completionOf(b) ? 1 : 0
+      if (aDone !== bDone) return bDone - aDone
+      var aAtt = attentionOf(a) ? 1 : 0
+      var bAtt = attentionOf(b) ? 1 : 0
+      if (aAtt !== bAtt) return bAtt - aAtt
+      var aCur = a.sessionId === currentSessionId ? 1 : 0
+      var bCur = b.sessionId === currentSessionId ? 1 : 0
+      if (aCur !== bCur) return bCur - aCur
+      var priority = stateRank(b.state) - stateRank(a.state)
+      return priority || (b.updatedAt || 0) - (a.updatedAt || 0)
+    })
+  }
+  var completionAckPending = new Set()
+  function acknowledgeCompletion(sessionId, attempt) {
+    if (!sessionId) return
+    var retry = attempt || 0
+    if (retry === 0 && completionAckPending.has(sessionId)) return
+    completionAckPending.add(sessionId)
+    fetch(COMPLETION_ACK_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: sessionId }),
+    }).then(function (response) {
+      if (!response.ok) throw new Error('completion acknowledgement failed')
+      completionAckPending.delete(sessionId)
+    }).catch(function () {
+      if (retry < 2) {
+        window.setTimeout(function () { acknowledgeCompletion(sessionId, retry + 1) }, 250 * (retry + 1))
+      } else {
+        completionAckPending.delete(sessionId)
+      }
+    })
+  }
+  function acknowledgeCompletionAfterOpen(sessionId) {
+    var attempts = 40
+    var confirm = function () {
+      if (sessionListSnapshot() === sessionId) {
+        acknowledgeCompletion(sessionId)
+        return
+      }
+      if (attempts-- > 0) window.setTimeout(confirm, 50)
+    }
+    confirm()
+  }
+  function openSession(sessionId, completed) {
+    if (!sessionId) return
+    // The sessions service owns selection and mounts the conversation scope.
+    // Completion acknowledgement happens only after opening, so an SSE update
+    // cannot replace the clicked card with the idle placeholder first.
+    if (ctx && ctx.sessions && typeof ctx.sessions.open === 'function') {
+      try {
+        ctx.sessions.open(sessionId)
+      } catch (e) {
+        return
+      }
+      if (completed) acknowledgeCompletionAfterOpen(sessionId)
+      return
+    }
+    try {
+      window.localStorage.setItem('dsh.sessions.current', JSON.stringify({ sessionId: sessionId }))
+      window.dispatchEvent(new Event('storage'))
+    } catch (e) { /* storage may be unavailable in an embedded shell */ }
+  }
+  function approveSession(sessionId) {
+    openSession(sessionId)
+    // The public sessions face intentionally exposes selection, not an unsafe
+    // global approval verb. Reuse the mounted native ApprovalPanel button only
+    // after the requested session is current; this preserves its authenticated
+    // PendingApproval.answer path and never answers a question prompt.
+    if (!ctx || !ctx.sessions || typeof ctx.sessions.open !== 'function') return
+    var attempts = 40
+    var tryClick = function () {
+      var current = sessionListSnapshot()
+      if (current !== sessionId) {
+        if (attempts-- > 0) window.setTimeout(tryClick, 50)
+        return
+      }
+      var panel = document.querySelector('[data-approval-key]')
+      var buttons = panel ? panel.querySelectorAll('button') : []
+      for (var i = 0; i < buttons.length; i++) {
+        var label = String(buttons[i].textContent || '').trim()
+        if (/^(允许一次|allow once)$/i.test(label)) {
+          buttons[i].click()
+          return
+        }
+      }
+      if (attempts-- > 0) window.setTimeout(tryClick, 50)
+    }
+    window.setTimeout(tryClick, 50)
+  }
+  function sessionListSnapshot() {
+    if (!ctx || !ctx.sessions || !ctx.sessions.list || typeof ctx.sessions.list.getSnapshot !== 'function') return undefined
+    return ctx.sessions.list.getSnapshot().current
+  }
+  function ensureBubbleEl(sessionId) {
+    var existing = bubbleEls.get(sessionId)
+    if (existing) return existing
+    var node = mk('div', 'display:none;')
+    node.className = 'rm2-pet-bubble'
+    node.setAttribute('role', 'button')
+    node.tabIndex = 0
+    var header = mk('div', '')
+    header.className = 'rm2-pet-bubble-header'
+    var completion = mk('span', '')
+    completion.className = 'rm2-pet-bubble-completion'
+    header.appendChild(completion)
+    var action = mk('span', '', '')
+    action.className = 'rm2-pet-bubble-action'
+    action.setAttribute('aria-label', '蕾米埃尔桌宠')
+    var brandImg = document.createElement('img')
+    brandImg.src = '/favicon.svg'
+    brandImg.alt = ''
+    action.appendChild(brandImg)
+    var title = mk('div', '')
+    title.className = 'rm2-pet-bubble-title'
+    header.appendChild(title)
+    header.appendChild(action)
+    var detail = mk('div', '')
+    detail.className = 'rm2-pet-bubble-detail'
+    var detailText = document.createElement('span')
+    detailText.className = 'rm2-pet-detail-text'
+    detail.appendChild(detailText)
+    var stackCount = document.createElement('span')
+    stackCount.className = 'rm2-pet-bubble-stack-count'
+    node.appendChild(header)
+    node.appendChild(detail)
+    node.appendChild(stackCount)
+    var el = { node: node, header: header, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
+    var activate = function (event) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (el.node.dataset.idlePlaceholder === 'true') return
+      openSession(el.targetSessionId, el.completed)
+    }
+    action.addEventListener('click', function (event) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (el.canApprove) approveSession(el.targetSessionId)
+      else openSession(el.targetSessionId, false)
+    })
+    node.addEventListener('pointerdown', function (event) { event.stopPropagation() })
+    node.addEventListener('click', activate)
+    node.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') activate(event)
+    })
+    bubbleStack.appendChild(node)
+    bubbleEls.set(sessionId, el)
+    return el
+  }
+  function clearBubbleTitleTimer(el) {
+    if (el && el.titleTimer) {
+      window.clearTimeout(el.titleTimer)
+      el.titleTimer = 0
+    }
+  }
+  function commitBubbleTitle(el, text, mood) {
+    clearBubbleTitleTimer(el)
+    el.titleMood = mood
+    el.titleChangedAt = Date.now()
+    el.pendingTitle = ''
+    el.pendingMood = ''
+    if (text !== el.lastText) {
+      el.lastText = text
+      el.title.textContent = text
+    }
+  }
+  function applyBubbleTitle(el, entry) {
+    var text = entry.message || ''
+    var mood = entry.mood || ''
+    var state = entry.state || ''
+    var immediate = !text
+      || state === 'WAITING' || state === 'ERROR' || state === 'SUCCESS'
+      || entry.attention === true
+      || entry.completionNotification === true
+      || entry.idlePlaceholder === true
+    if (!el.titleChangedAt) {
+      commitBubbleTitle(el, text, mood)
+      return
+    }
+    var moodChanged = mood !== el.titleMood
+    var elapsed = Date.now() - el.titleChangedAt
+    if (immediate || moodChanged || elapsed >= BUBBLE_TITLE_MS) {
+      commitBubbleTitle(el, text, mood)
+      return
+    }
+    if (text === el.lastText) {
+      el.pendingTitle = ''
+      clearBubbleTitleTimer(el)
+      return
+    }
+    el.pendingTitle = text
+    el.pendingMood = mood
+    if (!el.titleTimer) {
+      el.titleTimer = window.setTimeout(function () {
+        el.titleTimer = 0
+        if (el.pendingTitle && el.pendingTitle !== el.lastText) {
+          commitBubbleTitle(el, el.pendingTitle, el.pendingMood || el.titleMood)
+        }
+      }, Math.max(16, BUBBLE_TITLE_MS - elapsed))
+    }
+  }
+  function renderBubble(el, entry, index) {
+    var text = entry.message || ''
+    var detail = entry.detail || ''
+    if (!text && !detail) {
+      commitBubbleTitle(el, '', entry.mood || '')
+      el.node.style.display = 'none'
+      return
+    }
+    applyBubbleTitle(el, entry)
+    // 详情行为单行文本，用 block 使 overflow/ellipsis 生效（display:flex 会让 text-overflow 失效）
+    el.detail.style.display = detail ? 'block' : 'none'
+    if (detail !== el.lastDetail) {
+      el.lastDetail = detail
+      el.detailText.textContent = detail.replace(/^\s*[·•]\s*/, '· ')
+    }
+    var attention = attentionOf(entry)
+    var approval = approvalOf(entry)
+    var completed = completionOf(entry)
+    el.targetSessionId = targetSessionOf(entry)
+    el.canApprove = approval
+    el.completed = completed
+    var actionNotif = approval || (attention && !completed)
+    if (actionNotif) {
+      var glyph = approval ? '✓' : entry.phase === 'ask' ? '?' : '!'
+      if (el.action.textContent !== glyph) el.action.textContent = glyph
+      el.action.setAttribute('aria-label', approval ? '允许一次，点击直接确认' : completed ? '任务已完成，点击查看' : '需要处理，点击跳转')
+    } else if (el.action.firstChild !== el.brandImg) {
+      el.action.textContent = ''
+      el.action.appendChild(el.brandImg)
+      el.action.setAttribute('aria-label', '蕾米埃尔桌宠')
+    }
+    el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
+    el.node.className = 'rm2-pet-bubble' + (index === 0 ? ' top' : '') + (attention ? ' attention' : '') + (approval ? ' approval' : '') + (completed ? ' completed' : '') + (entry.idlePlaceholder ? ' idle-placeholder' : '') + (entry.summaryCount ? ' summary-backboard' : '')
+    el.node.setAttribute('aria-disabled', entry.idlePlaceholder ? 'true' : 'false')
+    el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
+    el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
+    el.node.title = approval ? '允许一次：点击圆形勾号直接确认' : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
+    // Deck layout: the front card is readable and background cards expose
+    // only a shallow lower edge. Visual order is driven by the flex `order`
+    // property (not DOM order), so cards keep their correct stacking even
+    // when a session moves between the front and the backboard slot.
+    el.node.style.zIndex = String(100 - index)
+    el.node.style.order = String(index)
+    el.node.style.marginTop = index === 0 ? '0px' : '-60px'
+    // All cards share one width: the widest visible card determines the deck,
+    // so a short front card never floats above a much wider lower card.
+    el.node.style.width = '100%'
+    el.node.style.opacity = index === 0 ? '1' : String(Math.max(0.46, 0.82 - index * 0.1))
+    el.node.style.display = 'block'
+  }
+  function updateBubbles(snapshot) {
+    if (!snapshot) return
+    // A present sessions[] is authoritative even when empty. Falling back to
+    // the legacy singleton only when the field is absent prevents an IDLE
+    // snapshot from resurrecting bubbles for turns that already stopped.
+    var sessions = Array.isArray(snapshot.sessions)
+      ? snapshot.sessions
+      : [snapshot] // legacy single-session snapshot
+    // Be defensive against an older Host process that still includes settled
+    // records. The browser deck never renders durable inactive sessions.
+    sessions = sessions.filter(function (entry) {
+      return entry && entry.state !== 'IDLE' && entry.state !== 'DISCONNECTED'
+    })
+    sessions = sessions.map(function (entry) {
+      if (!entry || !completionOf(entry) || targetSessionOf(entry) !== currentSessionId) return entry
+      acknowledgeCompletion(currentSessionId)
+      if (entry.state === 'SUCCESS' && entry.pulseUntil > Date.now()) {
+        return { ...entry, completionNotification: false }
+      }
+      return null
+    }).filter(Boolean)
+    if (sessions.length === 0 && snapshot.enabled !== false) {
+      sessions = [{
+        sessionId: '__pet_idle__',
+        state: 'IDLE',
+        mood: snapshot.mood || '06',
+        message: snapshot.message || '蕾米埃尔待命中',
+        detail: '',
+        phase: 'idle',
+        updatedAt: snapshot.updatedAt || 0,
+        idlePlaceholder: true,
+      }]
+    }
+    var ordered = orderSessions(sessions)
+    lastTopEntry = ordered[0] || null
+    // Pet body follows the top bubble's mood; the turn-end "得意中" flash
+    // below also keys off the top entry's state.
+    if (lastTopEntry && lastTopEntry.mood) snapshot.mood = lastTopEntry.mood
+    var visibleEntries = ordered.slice(0, MAX_BUBBLES)
+    if (visibleEntries.length > 1) {
+      visibleEntries[1] = { ...visibleEntries[1], summaryCount: ordered.length - 1 }
+    }
+    var count = visibleEntries.length
+    var seen = new Set()
+    var measuredWidth = 150
+    bubbleStack.style.width = 'fit-content'
+    // Render each card at intrinsic width first, then set the deck width from
+    // the TOP card only (lower cards' content is hidden, so only the top
+    // card should drive the deck width; this keeps the top card stable).
+    for (var i = 0; i < count; i++) {
+      var entry = visibleEntries[i]
+      seen.add(entry.sessionId)
+      var bubbleEl = ensureBubbleEl(entry.sessionId)
+      if (bubbleEl.node.parentNode !== bubbleStack) bubbleStack.appendChild(bubbleEl.node)
+      renderBubble(bubbleEl, entry, i)
+      bubbleEl.node.style.minWidth = '150px'
+      bubbleEl.node.style.width = 'max-content'
+      bubbleEl.node.style.maxWidth = 'none'
+      bubbleEl.node.classList.remove('title-clipped')
+      var titleWidth = bubbleEl.title.scrollWidth || bubbleEl.title.offsetWidth || 0
+      // 完成时鲸鱼图标保留显示，故恒计入其宽度（原先完成后隐藏鲸鱼时置 0）
+      var actionWidth = 30
+      var completionWidth = completionOf(entry) ? 22 : 0
+      bubbleEl.naturalHeaderWidth = titleWidth + actionWidth + completionWidth
+      // 宽度由两行中最宽的一行决定（标题行 或 详情行，取更宽者 + 内边距）；上限由下文 min(360,viewport) 截断，
+      // 只有超出该上限时才由详情行的省略号截断，符合「最宽行决定宽度 + 最大宽度限制」的设计。
+      var detailW = bubbleEl.detail.scrollWidth || bubbleEl.detail.offsetWidth || 0
+      if (i === 0) measuredWidth = Math.max(bubbleEl.naturalHeaderWidth, detailW)
+      bubbleEl.node.style.maxWidth = ''
+      bubbleEl.node.style.width = '100%'
+    }
+    var deckWidth = bubbleRowWidth(measuredWidth)
+    var deckWidthPx = deckWidth + 'px'
+    if (bubbleStack.style.width !== deckWidthPx) bubbleStack.style.width = deckWidthPx
+    for (var j = 0; j < count; j++) {
+      var renderEntry = visibleEntries[j]
+      var renderEl = bubbleEls.get(renderEntry.sessionId)
+      renderBubble(renderEl, renderEntry, j)
+      renderEl.node.classList.toggle('title-clipped', renderEl.naturalHeaderWidth > Math.max(0, deckWidth - 50))
+    }
+    for (var key of bubbleEls.keys()) {
+      if (!seen.has(key)) {
+        var el = bubbleEls.get(key)
+        clearBubbleTitleTimer(el)
+        if (el && el.node && el.node.remove) el.node.remove()
+        bubbleEls.delete(key)
+      }
+    }
+    // 切换圆点对齐顶卡（第一张可读卡）垂直居中，与余额一致（不随整个堆叠区居中）
+    if (bubbleDots && ordered[0] && bubbleEls.get(ordered[0].sessionId)) {
+      var topNode = bubbleEls.get(ordered[0].sessionId).node
+      if (bubbleDots.parentNode !== topNode) topNode.appendChild(bubbleDots)
+    }
+    bubbleStack.style.display = snapshot.bubble !== false && count > 0 ? 'flex' : 'none'
+    if (count === 0) bubbleStack.style.width = ''
+  }
+  // Follow the user's current conversation so its bubble ranks on top of
+  // same-priority peers (the "which dialog is on top" rule).
+  if (ctx && ctx.sessions && ctx.sessions.list && typeof ctx.effect === 'function') {
+    var sessionList = ctx.sessions.list
+    currentSessionId = typeof sessionList.getSnapshot === 'function' ? sessionList.getSnapshot().current : undefined
+    ctx.effect(function () {
+      return sessionList.subscribe(function () {
+        var next = typeof sessionList.getSnapshot === 'function' ? sessionList.getSnapshot().current : undefined
+        if (next !== currentSessionId) {
+          currentSessionId = next
+          if (next && lastSnapshot && Array.isArray(lastSnapshot.sessions)) {
+            var openedCompletion = lastSnapshot.sessions.some(function (entry) {
+              return entry && targetSessionOf(entry) === next && completionOf(entry)
+            })
+            if (openedCompletion) acknowledgeCompletion(next)
+          }
+          if (lastSnapshot) updateBubbles(lastSnapshot)
+        }
+      })
+    })
+  }
   function updateBubble(snapshot) {
     if (!snapshot) return
     // 气泡从无到有（总开关从关到开）时，回到状态页
@@ -1086,44 +1548,43 @@ function mountPet(ctx) {
     if (currentBubblePage === 0) balanceRequested = false
     // 双开时气泡可交互（接收滚轮翻页），否则透传给宠物
     bubble.style.pointerEvents = bothOn && snapshot.showBubble !== false ? 'auto' : 'none'
-    // 圆点：仅双开时显示，且高亮当前页
+    // 圆点：仅双开时显示（单圆点，点击切换）
     bubbleDots.style.display = bothOn ? '' : 'none'
-    if (bubbleDot0 && bubbleDot1) {
-      bubbleDot0.className = 'rm2-bubble-dot' + (currentBubblePage === 0 ? ' active' : '')
-      bubbleDot1.className = 'rm2-bubble-dot' + (currentBubblePage === 1 ? ' active' : '')
-    }
+    bubbleDot.title = currentBubblePage === 0 ? '切到余额' : '切到状态'
     var cur = currentBubblePage
     var show = anyOn && (cur === 0 ? statusOn : usageOn)
     if (cur === 0) {
-      // 状态页
-      bubbleTitle.style.color = ''
-      show = show && Boolean(snapshot.detail)
-      if (show) {
-        var text = snapshot.message || ''
-        var detail = snapshot.detail || ''
-        var now = Date.now()
-        var moodChanged = snapshot.mood !== lastBubbleMood
-        if (moodChanged || (text !== lastBubbleText && now - lastBubbleTitleAt >= BUBBLE_TITLE_MS)) {
-          lastBubbleTitleAt = now
-          lastBubbleMood = snapshot.mood
-          lastBubbleText = text
-          bubbleTitle.textContent = text
-        }
-        if (detail !== lastBubbleDetail) {
-          lastBubbleDetail = detail
-          bubbleDetail.textContent = detail
-        }
-      }
+      // 状态页：显示堆叠会话卡（每会话一张 + +N 背板）
+      show = show && statusOn
+      bubbleStack.style.display = show ? 'flex' : 'none'
+      if (show) updateBubbles(snapshot)
+      // 圆点由 updateBubbles 挂到顶卡（第一张可读卡）垂直居中；状态页不显示单气泡，避免与堆叠卡重叠成空气泡
+      bubble.style.display = 'none'
+      bubble.classList.remove('rm2-bubble-balance')
+      bubbleTitle.textContent = ''
+      bubbleDetail.textContent = ''
     } else if (cur === 1) {
-      // 余额页：渲染 balanceFrame 数据
+      // 余额页：隐藏堆叠卡，渲染 balanceFrame 数据
+      bubbleStack.style.display = 'none'
+      if (bubbleDots.parentNode !== bubble) bubble.appendChild(bubbleDots)
+      bubble.classList.add('rm2-bubble-balance')
       show = show && !!balanceFrame && balanceFrame.kind === 'balance'
+      // 即使暂无余额数据也显示气泡容器（至少保留圆点，供切回状态页）
+      bubble.style.display = (show || bothOn) ? 'block' : 'none'
       if (show) {
         bubbleTitle.textContent = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
         bubbleTitle.style.color = ''
         bubbleDetail.innerHTML = (balanceFrame.detail || '') + ' · <span style="color:' + (balanceFrame.color || '#888') + '">' + (balanceFrame.period || '') + '</span>'
+        // 用真实渲染字体精确测量两行文字，宽度复用与对话卡同一规则（最宽行 + 内边距，min/max 截断）
+        var titleText = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
+        var detailText = (balanceFrame.detail || '') + ' · ' + (balanceFrame.period || '')
+        var maxTextW = Math.max(measureTextW(bubbleTitle, titleText), measureTextW(bubbleDetail, detailText))
+        bubble.style.width = bubbleRowWidth(maxTextW) + 'px'
+      } else {
+        bubbleTitle.textContent = '余额加载中…'
+        bubbleDetail.textContent = ''
       }
     }
-    bubble.style.display = show ? 'block' : 'none'
   }
 
   /** After a pulse overlay expires the host falls back to the durable state; schedule one refresh. */
@@ -1714,6 +2175,6 @@ function apply(ctx) {
 
 module.exports = {
   name: 'dsh-pet-remielle-client',
-  inject: ['slots'],
+  inject: ['slots', 'sessions'],
   apply: apply,
 }

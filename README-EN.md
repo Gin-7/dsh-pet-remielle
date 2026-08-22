@@ -24,9 +24,11 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | State machine | Pure-function `PetReducer` with mood mapping (unit-tested) |
 | Message protocol | Typed protocol (protocol.js) |
 | Configuration | schemastery persistence + settings card |
-| Multi-session priority | ✓ (WAITING > ERROR > WORKING > THINKING > IDLE) |
+| Multi-session priority | Unread completions > waiting/errors > current session > state priority > recency |
 | Live push | SSE stream (auto-reconnect + polling fallback) |
-| Status bubble | message + detail (project · completed x/y · phase) |
+| Status bubble | Adaptive two-layer in-page deck: top status card + `+N` summary backboard; message + detail (project · completed x/y · phase) |
+| Session actions | `✓` allows once; `?` / `!` open the matching session; completed reminders use a left green dot |
+| Completion reminders | Background completions persist until that session is opened; the current session has no unread dot (current Host lifetime only) |
 | Balance | Single-click the pet to show DeepSeek balance + time period (60s auto-refresh, rolling-number animation, stale fallback on network blips), auto-returns to the status bubble after 5s |
 | Today usage | Two modes: ledger (default, token-free, balance-delta) / real-time token (platform usage API + peak/off-peak pricing, exact) |
 | Desktop float | Bundled Electron transparent always-on-top window (opt-in) |
@@ -46,7 +48,7 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | 05 Waiting | <img src="assets/pets/remielle/05.gif" width="56" alt="05 Waiting"/> | WAITING: question answer, approval pending, turn blocked |
 | 06 Idle | <img src="assets/pets/remielle/06.gif" width="56" alt="06 Idle"/> | IDLE / DISCONNECTED: idle, after turn ends |
 
-When multiple sessions run concurrently, the top-level task with highest priority (WAITING > ERROR > WORKING > THINKING > IDLE) is displayed; sub-agents are ignored by default (configurable).
+When multiple sessions run concurrently, the top task is selected by `unread completion > waiting/error > current session > state priority > recency`; every other session is represented by a clickable `+N` summary backboard. Sub-agents are ignored by default (configurable).
 
 ### Pet Definition Convention
 
