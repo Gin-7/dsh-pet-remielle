@@ -158,6 +158,11 @@ app.whenReady().then(() => {
     const sy = clientY > 4 && Math.abs(physical.y - dipY) > 1 ? clamp(physical.y / dipY) : 1
     drag = { ox: clientX, oy: clientY, sx: sx, sy: sy, tx: NaN, ty: NaN }
     debugLog(`drag-start client=${clientX},${clientY} pos=${x},${y} cursor=${physical.x},${physical.y} scale=${sx.toFixed(3)},${sy.toFixed(3)} dsf=${screen.getPrimaryDisplay().scaleFactor}`)
+    const b = win.getContentBounds()
+    debugLog(`bounds x=${b.x} y=${b.y} w=${b.width} h=${b.height}`)
+    win.webContents.executeJavaScript(
+      `JSON.stringify((() => { const img = document.getElementById('pet'); const st = document.getElementById('bubbleStack'); const ir = img && img.getBoundingClientRect(); const sr = st && st.getBoundingClientRect(); return { imgTop: ir && Math.round(ir.top), imgH: ir && Math.round(ir.height), stackTop: sr && Math.round(sr.top), stackH: sr && Math.round(sr.height), docH: document.documentElement.scrollHeight, dpr: window.devicePixelRatio } })())`,
+    ).then((m) => debugLog('page ' + m)).catch(() => {})
   })
   ipcMain.on('drag-move', () => {
     if (!drag) return
