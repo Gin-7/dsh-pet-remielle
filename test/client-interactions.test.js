@@ -379,11 +379,11 @@ test('expired reminder for the current conversation disappears immediately', asy
   assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务已完成'), false)
 })
 
-test('desktop session-action without approve does not open the conversation', () => {
+test('desktop session-action without approve opens the conversation (bubble-card jump)', () => {
   const harness = createHarness()
   harness.send({ ...base, desktopActive: true, sessions: [] })
   harness.send({ kind: 'session-action', sessionId: 'desk-1', completed: true })
-  assert.deepEqual(harness.opened, [])
+  assert.deepEqual(harness.opened, ['desk-1'])
 })
 
 test('desktop session-action approve opens the conversation for the native allow-once button', () => {
@@ -487,3 +487,20 @@ test('deck order puts approval above ask above completion', () => {
   // MAX_BUBBLES = 2：完成卡被挤出可视栈，但旧排序下它（updatedAt 最大）会占首位。
   assert.deepEqual(titles, ['等待确认', '等待回答'])
 })
+
+test('desktop bubble click (session-action without approve) opens its conversation only', () => {
+  const harness = createHarness()
+  harness.send({ kind: 'session-action', sessionId: 'desk-9', approve: false })
+  assert.ok(harness.opened.includes('desk-9'), 'should open the session')
+  assert.deepEqual(harness.allowClicks, [])
+})
+
+test('desktop completion-card click opens the conversation and acknowledges', async () => {
+  const harness = createHarness()
+  harness.send({ kind: 'session-action', sessionId: 'done-9', approve: false, completed: true })
+  assert.ok(harness.opened.includes('done-9'), 'should open the completed session')
+  assert.deepEqual(harness.allowClicks, [])
+  await Promise.resolve()
+  assert.ok(harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'done-9' })))
+})
+

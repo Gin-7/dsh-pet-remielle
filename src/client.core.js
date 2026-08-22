@@ -1733,6 +1733,8 @@ function mountPet(ctx) {
     if (!snapshot) return
     if (snapshot.kind === 'session-action') {
       if (snapshot.sessionId && snapshot.approve) approveSession(snapshot.sessionId)
+      // 桌面悬浮窗点击气泡卡（approve=false）：仅跳转到该对话；完成卡顺带 ack。
+      else if (snapshot.sessionId) openSession(snapshot.sessionId, snapshot.completed === true)
       return
     }
     if (snapshot.kind === 'download') {

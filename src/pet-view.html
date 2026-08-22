@@ -512,6 +512,15 @@
       })
       .catch(function () {})
   }
+  // 点击整张气泡卡：经宿主广播 session-action(approve=false)，由网页客户端跳转到该对话。
+  function requestSessionOpen(sessionId, completed) {
+    if (!sessionId) return
+    fetch(SESSION_OPEN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: sessionId, approve: false, completed: completed === true }),
+    }).catch(function () {})
+  }
   // 与网页端一致：去重 + 有限退避重试，网络抖动时绿点不至于消不掉
   var completionAckPending = new Set()
   function acknowledgeCompletion(sessionId, attempt) {
@@ -571,6 +580,7 @@
     var activate = function (event) {
       event.preventDefault()
       event.stopPropagation()
+      requestSessionOpen(el.targetSessionId, el.completed)
       if (el.completed) acknowledgeCompletion(el.targetSessionId)
     }
     action.addEventListener('click', function (event) {
