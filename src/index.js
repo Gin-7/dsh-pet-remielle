@@ -40,6 +40,7 @@ import {
   upsertPet,
 } from './pets.js'
 import { createBalanceService, normalizeUsageMode } from './balance.js'
+import { statusCopy } from './status-copy.js'
 
 export const name = 'dsh-pet-remielle'
 export const inject = ['sessions', 'credentials']
@@ -624,7 +625,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       if (message.state === PetState.SUCCESS && message.sessionId) {
         completionQueue.set(message.sessionId, {
           sessionId: message.sessionId,
-          message: message.message ?? '任务已完成',
+          // 与 reducer 的 SUCCESS 文案同池（status-copy.js success），缺省也走随机固定文案。
+          message: message.message ?? statusCopy('success', Date.now()),
           detail: message.detail ?? '任务已完成',
           project: message.project,
           task: message.task,

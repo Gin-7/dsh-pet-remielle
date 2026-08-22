@@ -425,10 +425,12 @@ test('sidebar green-dot session (completed) is surfaced as a clickable completio
     ws1: { id: 'ws1', title: '还在运行', running: true, completed: false, updatedAt: 4 },
   })
   harness.send({ ...base, sessions: [] })
-  // 补卡标题用固定文案，不泄漏会话首条用户消息原文（displayTitle）。
-  const card = harness.card('任务已完成')
+  // 补卡标题用 success 固定文案池（不泄漏会话首条用户消息原文 displayTitle）。
+  const completionTitles = ['这次任务搞定啦~', '这一轮顺利完成哦', '任务完成咯，干得漂亮']
+  const card = harness.elements.find((node) => node.className === 'rm2-pet-bubble-title' && completionTitles.includes(node.textContent))
   assert.ok(card, 'missing sidebar completed completion card')
-  card.listeners.get('click')[0]({ preventDefault() {}, stopPropagation() {} })
+  const bubbleCard = card.parentNode.parentNode
+  bubbleCard.listeners.get('click')[0]({ preventDefault() {}, stopPropagation() {} })
   assert.ok(harness.opened.includes('ws2'), 'clicking should open the completed session')
 })
 

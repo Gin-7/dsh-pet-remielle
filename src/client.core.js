@@ -1477,6 +1477,14 @@ function mountPet(ctx) {
     el.node.style.opacity = index === 0 ? '1' : String(Math.max(0.46, 0.82 - index * 0.1))
     el.node.style.display = 'block'
   }
+  // 与宿主 src/status-copy.js 的 success 文案池保持一致（网页包不含该模块，此处内联）。
+  var SUCCESS_COPY_POOL = ['这次任务搞定啦~', '这一轮顺利完成哦', '任务完成咯，干得漂亮']
+  function seedNumberOf(seed) {
+    var text = String(seed == null ? '' : seed)
+    var total = 0
+    for (var i = 0; i < text.length; i++) total += text.charCodeAt(i)
+    return Math.abs(total)
+  }
   function updateBubbles(snapshot) {
     if (!snapshot) return
     // A present sessions[] is authoritative even when empty. Falling back to
@@ -1520,9 +1528,10 @@ function mountPet(ctx) {
               state: 'SUCCESS',
               completed: true,
               completionNotification: true,
-              // 标题统一用固定文案：displayTitle/title 是会话首条用户消息原文，
-              // 直接上泡会把原始提问文本泄漏到气泡第一行。
-              message: '任务已完成',
+              // 标题不用 displayTitle/title（那是会话首条用户消息原文，直接上泡
+              // 会把原始提问文本泄漏到气泡第一行），改用与宿主 status-copy.js
+              // success 同池的固定文案；种子取 sessionId，同一张卡文案保持稳定。
+              message: SUCCESS_COPY_POOL[seedNumberOf(sid) % SUCCESS_COPY_POOL.length],
               detail: (item.cwd && String(item.cwd).split(/[\\/]/).filter(Boolean).pop())
                 ? '已完成 · ' + String(item.cwd).split(/[\\/]/).filter(Boolean).pop()
                 : '已完成',
