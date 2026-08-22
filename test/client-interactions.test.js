@@ -431,3 +431,45 @@ test('sidebar green-dot session (completed) is surfaced as a clickable completio
   assert.ok(harness.opened.includes('ws2'), 'clicking should open the completed session')
 })
 
+test('bubble area swallows pet interactions (click/dblclick/pointerdown/mousedown)', () => {
+  const harness = createHarness()
+  // 状态页牌叠（rm2-pet-bubbles）与余额页单气泡（rm2-pet-bubble top）都要拦截：
+  // 否则事件冒泡到 dock 会触发随机表情 / 双击画画 / 按下拖拽。
+  for (const className of ['rm2-pet-bubble top', 'rm2-pet-bubbles']) {
+    const el = harness.elements.find((node) => node.className === className)
+    assert.ok(el, `missing element ${className}`)
+    for (const type of ['pointerdown', 'mousedown', 'click', 'dblclick']) {
+      const listeners = el.listeners.get(type) ?? []
+      assert.ok(listeners.length >= 1, `${className} is missing a ${type} blocker`)
+      let stopped = false
+      listeners[listeners.length - 1]({ stopPropagation() { stopped = true } })
+      assert.ok(stopped, `${className} ${type} blocker does not stop propagation`)
+    }
+  }
+})
+
+test('bubble hover uses the default cursor and wheel flips pages instead of scaling', () => {
+  const harness = createHarness()
+  // 悬浮指针：气泡区域不再继承 dock 的 grab 手型（可点击的会话卡/圆点仍为 pointer）
+  const css = harness.elements.find((node) => node.tag === 'style' && node.textContent.includes('.rm2-pet-bubbles'))?.textContent
+  assert.ok(css, 'missing injected pet CSS')
+  assert.match(css, /\.rm2-pet-bubble\{[^}]*cursor:default/)
+  assert.match(css, /\.rm2-pet-bubbles\{[^}]*cursor:default/)
+  harness.send({ ...base, sessions: [] })
+  // 滚轮翻页：两个气泡容器都要接住 wheel（stopPropagation，不冒泡到 dock 缩放），
+  // 且容器可命中（pointer-events:auto），卡片缝隙上的滚轮不再穿透。
+  for (const className of ['rm2-pet-bubble top', 'rm2-pet-bubbles']) {
+    const el = harness.elements.find((node) => node.className === className)
+    assert.ok(el, `missing element ${className}`)
+    assert.equal(el.style.pointerEvents, 'auto', `${className} should be hit-testable while shown`)
+    const wheel = el.listeners.get('wheel')?.[0]
+    assert.ok(wheel, `${className} is missing a wheel handler`)
+    let stopped = false
+    let prevented = false
+    wheel({ preventDefault() { prevented = true }, stopPropagation() { stopped = true } })
+    assert.ok(stopped && prevented, `${className} wheel handler must capture the event`)
+  }
+})
+
+
+

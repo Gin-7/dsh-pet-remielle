@@ -21,6 +21,7 @@
     flex-direction: column;
     align-items: center;
     pointer-events: none;
+    cursor: default;
   }
   .rm2-pet-bubble {
     display: none;
@@ -38,6 +39,7 @@
     line-height: 1.45;
     text-align: left;
     white-space: nowrap;
+    cursor: default;
   }
   .rm2-pet-bubbles .rm2-pet-bubble {
     margin: 0;
@@ -189,6 +191,14 @@
   bubbleDot.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(currentBubblePage === 0 ? 1 : 0) })
   bubbleEl.addEventListener('wheel', onBubbleWheel, { passive: false })
   bubbleStack.addEventListener('wheel', onBubbleWheel, { passive: false })
+  // 气泡区域吞掉桌宠交互事件：双击气泡不再触发画画（window dblclick），
+  // 按下/点击气泡也不再冒泡；气泡自身的圆点与会话卡操作不受影响。
+  var petSwallowTypes = ['pointerdown', 'mousedown', 'click', 'dblclick']
+  ;[bubbleEl, bubbleStack].forEach(function (el) {
+    for (var i = 0; i < petSwallowTypes.length; i++) {
+      el.addEventListener(petSwallowTypes[i], function (e) { e.stopPropagation() })
+    }
+  })
   var picEl = document.createElement('img')
   picEl.style.cssText = 'position:fixed;right:24px;top:24px;width:220px;height:auto;border-radius:10px;box-shadow:0 8px 24px rgba(15,30,72,.3);display:none;cursor:pointer;'
   picEl.title = '点击关闭'
@@ -800,7 +810,11 @@
       window.setTimeout(function () { if (window.__petBalance) window.__petBalance.showBalance() }, 0)
     }
     if (currentBubblePage === 0) balanceRequested = false
-    bubbleEl.style.pointerEvents = bothOn && snapshot.showBubble !== false ? 'auto' : 'none'
+    // 气泡始终捕获点击：避免点击气泡穿透到桌宠触发交互（状态页与余额页一致）。
+    // 牌叠容器也要可命中：否则卡片缝隙上的滚轮/点击会落到底层（缩放桌宠/穿透窗口）。
+    var bubblePointer = snapshot.showBubble !== false ? 'auto' : 'none'
+    bubbleEl.style.pointerEvents = bubblePointer
+    bubbleStack.style.pointerEvents = bubblePointer
     bubbleDots.style.display = bothOn ? '' : 'none'
     bubbleDot.title = currentBubblePage === 0 ? '切到余额' : '切到状态'
     var cur = currentBubblePage
