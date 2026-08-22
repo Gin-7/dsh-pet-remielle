@@ -376,9 +376,9 @@ test('approval/asked -> WAITING, approval/decided restores WORKING', () => {
   const waiting = states.find((m) => m.phase === 'approval')
   assert.equal(waiting.state, PetState.WAITING)
   assert.equal(waiting.mood, '05')
-  assert.equal(waiting.detail, 'dsh-pet-remielle · escalate sandbox to danger-full-access: 同步插件')
+  assert.equal(waiting.detail, 'dsh-pet-remielle · 同步插件')
   assert.equal(reducer.states()[0].approval, true)
-  assert.equal(reducer.states()[0].detail, 'dsh-pet-remielle · escalate sandbox to danger-full-access: 同步插件')
+  assert.equal(reducer.states()[0].detail, 'dsh-pet-remielle · 同步插件')
   const tail = collect(reducer, sess, [
     event('approval/decided', { id: 'a1', outcome: 'allow' }, 4),
     event('tool/result', { callId: 'c' }, 5),

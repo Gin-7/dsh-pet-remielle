@@ -94,8 +94,15 @@ function parseToolArgs(raw) {
   try { return JSON.parse(String(raw ?? '')) } catch { return null }
 }
 
+function approvalReason(reason) {
+  const value = String(reason ?? '').replace(/\s+/gu, ' ').trim()
+  if (!value) return ''
+  const match = value.match(/^escalate sandbox to \S+:\s*(.+)$/iu)
+  return match ? match[1].trim() : value
+}
+
 function approvalContent(toolName, reason, argsRaw) {
-  const why = clipLine(reason)
+  const why = clipLine(approvalReason(reason))
   if (why) return why
   const args = parseToolArgs(argsRaw)
   if (args && typeof args.justification === 'string' && args.justification.trim()) return clipLine(args.justification)
