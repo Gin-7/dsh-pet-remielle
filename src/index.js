@@ -271,6 +271,13 @@ export async function scanPetDirs(root) {
       if (files.includes(PET_MANIFEST)) {
         manifest = parsePetManifest(await readFile(join(dir, PET_MANIFEST), 'utf8'))
       }
+      // 自动统计作品图数量：pics/<n>.png 有多少张就画多少张，
+      // 直接往 pics/ 文件夹放图即可，无需手动改 pet-manifest.json。
+      let pics = 0
+      try {
+        pics = (await readdir(join(dir, 'pics'))).filter((f) => /^\d{1,3}\.png$/i.test(f)).length
+      } catch { /* 无 pics 目录 */ }
+      if (pics > 0) manifest.pics = pics
     } catch {
       gifs = []
     }

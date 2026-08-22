@@ -875,11 +875,15 @@
   // Renders off-screen and streams frames to a desktop-top-right window (via
   // petBridge) so it never covers the pet bubble; falls back to an in-window
   // canvas if no bridge is available.
+  var drawingActive = false
   function playDraw() {
+    if (drawingActive) return
     if (!lastSnapshot || !lastSnapshot.pics) return
     var PIC_DRAW_MS = 6000 // 绘制时长 == 显示“绘制中(01)”的时长
     moodOverride = { mood: '01', until: Date.now() + PIC_DRAW_MS }
     apply(lastSnapshot)
+    drawingActive = true
+    window.setTimeout(function () { drawingActive = false }, PIC_DRAW_MS + 3500)
     var n = Math.floor(Math.random() * lastSnapshot.pics) + 1
     var src = '/plugins/dsh-pet-remielle/assets/' + encodeURIComponent(lastSnapshot.petId || 'remielle') + '/pics/' + n + '.png'
     var img = new Image()

@@ -19,32 +19,14 @@ import os from 'node:os'
 import path from 'node:path'
 
 const BALANCE_URL = 'https://api.deepseek.com/user/balance'
-const USAGE_URL = 'https://platform.deepseek.com/api/v0/usage/by_api_key/amount'
+const USAGE_URL = 'https://platform.deepseek.com/api/v0/usage/by_api_key/cost'
 const BALANCE_TTL_MS = 25000
 
-// DeepSeek CNY prices per million tokens: [空闲时段价, 高峰时段价].
-// 高峰时段：每日 9:00–12:00 和 14:00–18:00（北京时间）。
+// 高峰时段：每日 9:00–12:00 和 14:00–18:00（北京时间），仅用于「空闲/高峰」提示。
 const PEAK_HOURS = [
   [9, 12],
   [14, 18],
 ]
-const BASE_PRICE = { hit: [0.05, 0.1], miss: [1.5, 3.0], out: [4.5, 9.0] }
-const PRICING = {
-  'deepseek-chat': BASE_PRICE,
-  'deepseek-reasoner': BASE_PRICE,
-  'deepseek-v4-flash': BASE_PRICE,
-  'deepseek-v4-pro': BASE_PRICE,
-  _default: BASE_PRICE,
-}
-
-function priceFor(model) {
-  const m = String(model || '').toLowerCase()
-  for (const key of Object.keys(PRICING)) {
-    if (key === '_default') continue
-    if (m.indexOf(key) !== -1) return PRICING[key]
-  }
-  return PRICING._default
-}
 
 /** bucket time is an epoch second; derive the Beijing local hour. */
 export function isPeakTime(timeSec) {
@@ -135,11 +117,9 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
   }
 
   async function fetchUsage() {
-    // 优先使用插件配置里的令牌，未配置时回落到 DSH 凭据服务
+    // 优先用配置里的 platformToken（main 设置页填写），回落到 DSH 凭据服务
     let token = ''
-    try {
-      if (typeof getPlatformToken === 'function') token = String(getPlatformToken() || '').replace(/^Bearer\s+/i, '')
-    } catch (err) { /* ignore */ }
+    try { token = String((typeof getPlatformToken === 'function' ? getPlatformToken() : '') || '').replace(/^Bearer\s+/i, '') } catch { /* ignore */ }
     if (!token) {
       let cred
       try {
@@ -150,7 +130,6 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
       if (!cred) return { error: 'no platform token' }
       token = String(cred.value).replace(/^Bearer\s+/i, '')
     }
-    if (!token) return { error: 'no platform token' }
     try {
       const now = new Date()
       const tz = -now.getTimezoneOffset() * 60
@@ -163,41 +142,38 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
       })
       if (!res.ok) return { error: 'http ' + res.status }
       const data = await res.json()
-      const u = computeTodayUsage(data)
-      if (u && isFinite(u.amount)) return { amount: u.amount, tokens: u.tokens }
+      const amount = computeTodayCost(data)
+      if (isFinite(amount)) return { amount }
       return { error: 'no usage' }
     } catch (err) {
       return { error: String((err && err.message) || err) }
     }
   }
 
-  function computeTodayUsage(data) {
-    let d = data
-    if (d && d.data && d.data.biz_data && Array.isArray(d.data.biz_data.series)) d = d.data.biz_data
-    else if (d && d.data && Array.isArray(d.data.series)) d = d.data
-    const series = Array.isArray(d.series) ? d.series : null
-    if (!series || series.length === 0) return null
-    let cost = 0
-    let tokens = 0
+  /**
+   * `usage/by_api_key/cost` returns the platform's own cost per hour bucket
+   * (`data.biz_data.data[].series[].buckets[].cost`, CNY string). Summing them
+   * gives the exact today usage — no local pricing table needed.
+   */
+  function computeTodayCost(data) {
+    const biz = data && data.data && data.data.biz_data
+    const groups = biz && Array.isArray(biz.data) ? biz.data : null
+    if (!groups) return null
+    let total = 0
     let found = false
-    for (const s of series) {
-      if (!s || typeof s !== 'object') continue
-      const p = priceFor(s.model)
-      const buckets = Array.isArray(s.buckets) ? s.buckets : []
-      for (const b of buckets) {
-        const u = b && b.usage
-        if (!u || typeof u !== 'object') continue
-        const hit = Number(u.PROMPT_CACHE_HIT_TOKEN) || 0
-        const miss = Number(u.PROMPT_CACHE_MISS_TOKEN) || 0
-        const out = Number(u.RESPONSE_TOKEN) || 0
-        if (hit + miss + out === 0) continue
-        found = true
-        tokens += hit + miss + out
-        const pi = isPeakTime(b.time) ? 1 : 0
-        cost += (hit / 1e6) * p.hit[pi] + (miss / 1e6) * p.miss[pi] + (out / 1e6) * p.out[pi]
+    for (const g of groups) {
+      const series = Array.isArray(g && g.series) ? g.series : []
+      for (const s of series) {
+        const buckets = Array.isArray(s && s.buckets) ? s.buckets : []
+        for (const b of buckets) {
+          const c = Number(b && b.cost)
+          if (!isFinite(c)) continue
+          found = true
+          total += c
+        }
       }
     }
-    return found ? { amount: cost, tokens: tokens } : null
+    return found ? total : null
   }
 
   function todayKey() {

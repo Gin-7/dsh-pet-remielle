@@ -195,8 +195,7 @@
     showStatus: function () {
       if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
       mode = 'status'
-      emit({ kind: 'status' })
-    },
+      emit({ kind: 'status' })    },
     subscribe: function (cb) {
       listeners.push(cb)
       return function () {

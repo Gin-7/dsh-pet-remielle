@@ -160,10 +160,8 @@ Single-click the pet to see your DeepSeek account balance and today's spend (bub
 
 - **Balance**: from the official API `api.deepseek.com/user/balance` (credential `DEEPSEEK_API_KEY`). Auto-refreshes every 60s; single-click the pet to refresh manually; rolling-number animation on changes; transient network blips keep the last known balance instead of flashing errors.
 - **Today usage · ledger (default, token-free)**: accumulates balance deltas into `$DSH_HOME/.dshp-usage.json` (cross-day reset & archive). No extra token needed, but it is an estimate — usage while DSH is off is not recorded.
-- **Today usage · real-time token (exact)**: after configuring the platform session token `DEEPSEEK_PLATFORM_TOKEN`, it queries the platform usage API (`platform.deepseek.com/api/v0/usage/by_api_key/amount`) and converts with **peak/off-peak pricing**:
-  - Peak hours: 09:00–12:00 and 14:00–18:00 (Beijing time)
-  - Prices (off-peak/peak, per million tokens): cache hit 0.05/0.10 CNY; cache miss 1.5/3.0 CNY; output 4.5/9.0 CNY
-  - The pricing table lives at the top of `src/balance.js` (`PRICING`); update it when DeepSeek changes prices
+- **Today usage · real-time token (exact)**: after configuring the platform session token `DEEPSEEK_PLATFORM_TOKEN`, it queries the platform cost API (`platform.deepseek.com/api/v0/usage/by_api_key/cost`) and reads the platform's own per-hour CNY amount — no local pricing table, so DeepSeek price changes are followed automatically:
+  - The bubble also shows the current period (off-peak / peak; peak: 09:00–12:00 and 14:00–18:00 Beijing time)
   - Falls back to ledger mode when the token is missing or invalid
 
 **Switching usage mode**: Settings → Pet Management → Behavior → "Usage Mode" (ledger / real-time token), or the pet's right-click menu → "Usage Mode".
