@@ -471,5 +471,19 @@ test('bubble hover uses the default cursor and wheel flips pages instead of scal
   }
 })
 
-
-
+test('deck order puts approval above ask above completion', () => {
+  const harness = createHarness()
+  harness.send({
+    ...base,
+    sessions: [
+      { sessionId: 'done', state: 'SUCCESS', message: '任务已完成', detail: '结果', completed: true, completionNotification: true, updatedAt: 3 },
+      { sessionId: 'ask-1', state: 'WAITING', phase: 'ask', message: '等待回答', detail: '问题', ask: true, attention: true, updatedAt: 2 },
+      { sessionId: 'appr-1', state: 'WAITING', phase: 'approval', message: '等待确认', detail: '审批', approval: true, attention: true, updatedAt: 1 },
+    ],
+  })
+  const titles = harness.elements
+    .filter((node) => node.className === 'rm2-pet-bubble-title' && node.textContent)
+    .map((node) => node.textContent)
+  // MAX_BUBBLES = 2：完成卡被挤出可视栈，但旧排序下它（updatedAt 最大）会占首位。
+  assert.deepEqual(titles, ['等待确认', '等待回答'])
+})

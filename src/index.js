@@ -406,6 +406,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
           message: activePulse.message ?? entry.message,
           detail: activePulse.detail ?? entry.detail,
           approval: entry.approval === true,
+          ask: entry.ask === true,
           completed: activePulse.state === PetState.SUCCESS,
           pulseUntil: activePulse.until,
         }
@@ -427,6 +428,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         progress: activePulse.progress,
         attention: activePulse.state === PetState.WAITING || activePulse.state === PetState.ERROR,
         approval: false,
+        ask: false,
         completed: activePulse.state === PetState.SUCCESS,
         updatedAt: now,
         pulseUntil: activePulse.until,
@@ -455,6 +457,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         completionNotification: true,
         attention: false,
         approval: false,
+        ask: false,
       })
     }
     return {
@@ -864,6 +867,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         balanceWidgetJs = await readFile(new URL('../src/balance-widget.js', import.meta.url), 'utf8')
         return balanceWidgetJs
       }
+      let sessionOrderJs = null
+      const readSessionOrder = async () => {
+        if (sessionOrderJs) return sessionOrderJs
+        sessionOrderJs = await readFile(new URL('../src/session-order.js', import.meta.url), 'utf8')
+        return sessionOrderJs
+      }
 
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: CONFIG_ENDPOINT, handler: createConfigHandler(settings) }),
@@ -942,6 +951,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           res.end(js)
         } }),
         'dsh-pet-remielle: balance bubble client script',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/session-order.js', handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const js = await readSessionOrder()
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'cache-control': 'no-store',
+          })
+          res.end(js)
+        } }),
+        'dsh-pet-remielle: shared bubble order script',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({

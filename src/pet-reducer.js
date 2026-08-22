@@ -340,6 +340,8 @@ export class PetReducer {
         // Only an unresolved approval wait may render the actionable ✓.
         // Generic WAITING (ask_user_question) and ERROR must not inherit it.
         approval: record.waits.some((wait) => wait.kind === 'approval'),
+        // 等待用户回答（ask_user_question）单独暴露，供气泡排序置于审批之下、完成之上。
+        ask: record.waits.some((wait) => wait.kind === 'ask'),
         attention: record.state === PetState.WAITING || record.state === PetState.ERROR,
         updatedAt: record.updatedAt,
       })

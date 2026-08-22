@@ -1223,43 +1223,16 @@ function mountPet(ctx) {
   var currentSessionId = undefined
   var lastTopEntry = null
   var bubbleEls = new Map() // sessionId -> { node, title, detail }
-  function stateRank(state) {
-    switch (state) {
-      case 'WAITING': return 60
-      case 'ERROR': return 50
-      case 'SUCCESS': return 70
-      case 'WORKING': return 30
-      case 'THINKING': return 20
-      case 'DISCONNECTED': return -1
-      default: return 0
-    }
-  }
-  function attentionOf(entry) {
-    return entry.attention === true || entry.state === 'WAITING' || entry.state === 'ERROR'
-  }
-  function completionOf(entry) {
-    return entry.completionNotification === true
-  }
-  function targetSessionOf(entry) {
-    return entry.targetSessionId || entry.sessionId
-  }
-  function approvalOf(entry) {
-    return entry.approval === true
-  }
+  // 排序逻辑与桌面悬浮窗共用 src/session-order.js（构建时由 scripts/build-client.mjs
+  // 拼接到本文件之前）：审批 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
+  var __order = window.__rm2SessionOrder
+  var stateRank = __order.stateRank
+  var attentionOf = __order.attentionOf
+  var completionOf = __order.completionOf
+  var targetSessionOf = __order.targetSessionOf
+  var approvalOf = __order.approvalOf
   function orderSessions(sessions) {
-    return sessions.slice().sort(function (a, b) {
-      var aDone = completionOf(a) ? 1 : 0
-      var bDone = completionOf(b) ? 1 : 0
-      if (aDone !== bDone) return bDone - aDone
-      var aAtt = attentionOf(a) ? 1 : 0
-      var bAtt = attentionOf(b) ? 1 : 0
-      if (aAtt !== bAtt) return bAtt - aAtt
-      var aCur = a.sessionId === currentSessionId ? 1 : 0
-      var bCur = b.sessionId === currentSessionId ? 1 : 0
-      if (aCur !== bCur) return bCur - aCur
-      var priority = stateRank(b.state) - stateRank(a.state)
-      return priority || (b.updatedAt || 0) - (a.updatedAt || 0)
-    })
+    return __order.orderSessions(sessions, currentSessionId)
   }
   var completionAckPending = new Set()
   function acknowledgeCompletion(sessionId, attempt) {
