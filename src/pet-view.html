@@ -517,7 +517,7 @@
     fetch(COMPLETION_ACK_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId: sessionId }),
+      body: JSON.stringify({ sessionId: sessionId, clearPulse: true }),
     }).catch(function () {})
   }
   function ensureBubbleEl(sessionId) {

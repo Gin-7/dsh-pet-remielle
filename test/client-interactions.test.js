@@ -399,7 +399,7 @@ test('same session live work hides its own completion reminder', () => {
 
 test('sidebar green-dot session (completed) is surfaced as a clickable completion card', () => {
   const harness = createHarness('current', true, {
-    ws2: { id: 'ws2', title: '插件图标遮挡配色问题', completed: true, cwd: 'C:\\xx\\.dsh', updatedAt: 5 },
+    ws2: { id: 'ws2', displayTitle: '插件图标遮挡配色问题', completed: true, cwd: 'C:\\xx\\.dsh', updatedAt: 5 },
     ws1: { id: 'ws1', title: '还在运行', running: true, completed: false, updatedAt: 4 },
   })
   harness.send({ ...base, sessions: [] })

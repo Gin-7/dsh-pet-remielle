@@ -196,6 +196,12 @@ export function createConfigHandler(settings) {
   }
 }
 
+export function applyCompletionAck(completionQueue, pulse, sessionId, { clearPulse = false } = {}) {
+  completionQueue.delete(sessionId)
+  if (clearPulse && pulse?.sessionId === sessionId && pulse.state === PetState.SUCCESS) return null
+  return pulse
+}
+
 export function createCompletionAckHandler({ acknowledge, broadcast = () => {} }) {
   return async (req, res) => {
     if (!localOnly(req, res)) return
@@ -207,7 +213,7 @@ export function createCompletionAckHandler({ acknowledge, broadcast = () => {} }
       const body = await readJsonBody(req)
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
       if (!sessionId) throw new Error('sessionId must be a non-empty string')
-      acknowledge(sessionId)
+      acknowledge(sessionId, { clearPulse: body.clearPulse === true })
       broadcast()
       jsonResponse(res, 200, { ok: true })
     } catch (error) {
@@ -596,7 +602,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         completionQueue.set(message.sessionId, {
           sessionId: message.sessionId,
           message: message.message ?? '任务已完成',
-          detail: message.detail ?? '任务已完成，点击查看结果',
+          detail: message.detail ?? '任务已完成',
           project: message.project,
           task: message.task,
           progress: message.progress,
@@ -841,7 +847,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           kind: 'exact',
           path: COMPLETION_ACK_ENDPOINT,
           handler: createCompletionAckHandler({
-            acknowledge: (sessionId) => completionQueue.delete(sessionId),
+            acknowledge: (sessionId, opts) => {
+              pulse = applyCompletionAck(completionQueue, pulse, sessionId, opts)
+            },
             broadcast: () => hub.broadcast(),
           }),
         }),

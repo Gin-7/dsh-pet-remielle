@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createCompletionAckHandler, createSessionOpenHandler, createStateSnapshot } from '../src/index.js'
+import { applyCompletionAck, createCompletionAckHandler, createSessionOpenHandler, createStateSnapshot } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -236,7 +236,7 @@ test('live session suppresses its own completion reminder', () => {
     getCompletions: () => [{
       sessionId: 'done-1',
       message: '任务已完成',
-      detail: '点击查看结果',
+      detail: '任务已完成',
       phase: 'turn-end',
       updatedAt: 12,
     }],
@@ -261,6 +261,38 @@ test('completion acknowledgement deletes one reminder and broadcasts', async () 
   assert.equal(broadcasts, 1)
 })
 
+test('completion acknowledgement forwards clearPulse only when requested', async () => {
+  const acknowledged = []
+  const handler = createCompletionAckHandler({
+    acknowledge: (sessionId, opts) => acknowledged.push({ sessionId, opts }),
+  })
+  const plain = responseRecorder()
+  await handler(request('POST', { sessionId: 'done-1' }), plain)
+  const flagged = responseRecorder()
+  await handler(request('POST', { sessionId: 'done-1', clearPulse: true }), flagged)
+  assert.equal(plain.status, 200)
+  assert.equal(flagged.status, 200)
+  assert.deepEqual(acknowledged, [
+    { sessionId: 'done-1', opts: { clearPulse: false } },
+    { sessionId: 'done-1', opts: { clearPulse: true } },
+  ])
+})
+
+test('applyCompletionAck clears SUCCESS pulse only when clearPulse is set', () => {
+  const queue = new Map([['done-1', { sessionId: 'done-1' }]])
+  const success = { sessionId: 'done-1', state: PetState.SUCCESS }
+  assert.equal(applyCompletionAck(queue, success, 'done-1'), success)
+  assert.equal(queue.has('done-1'), false)
+  queue.set('done-1', { sessionId: 'done-1' })
+  assert.equal(applyCompletionAck(queue, success, 'done-1', { clearPulse: true }), null)
+})
+
+test('applyCompletionAck does not clear an ERROR pulse', () => {
+  const queue = new Map([['done-1', { sessionId: 'done-1' }]])
+  const errorPulse = { sessionId: 'done-1', state: PetState.ERROR }
+  assert.equal(applyCompletionAck(queue, errorPulse, 'done-1', { clearPulse: true }), errorPulse)
+})
+
 test('completion acknowledgement rejects missing session ids and non-POST methods', async () => {
   const handler = createCompletionAckHandler({ acknowledge: () => assert.fail('must not acknowledge') })
   const missing = responseRecorder()
@@ -277,7 +309,7 @@ test('persistent completions remain in sessions after the pulse expires', () => 
     getCompletions: () => [{
       sessionId: 'done-1',
       message: '任务已完成',
-      detail: '点击查看结果',
+      detail: '任务已完成',
       phase: 'turn-end',
       updatedAt: 12,
     }],

@@ -59,10 +59,22 @@ app.whenReady().then(() => {
   let clickThrough = false
   let forceInteractive = false
   let hitRects = null
+  let hitTimer = null
+  function ensureHitTimer() {
+    if (hitTimer != null) return
+    hitTimer = setInterval(syncIgnore, 16)
+  }
+  function stopHitTimer() {
+    if (hitTimer == null) return
+    clearInterval(hitTimer)
+    hitTimer = null
+  }
   function applyIgnore(on) {
     on = Boolean(on)
     if (on === clickThrough) return
     clickThrough = on
+    if (clickThrough) ensureHitTimer()
+    else stopHitTimer()
     try {
       win.setIgnoreMouseEvents(on, { forward: true })
     } catch {
@@ -115,7 +127,6 @@ app.whenReady().then(() => {
     }
     syncIgnore()
   })
-  const hitTimer = setInterval(syncIgnore, 16)
 
   // JS-driven dragging from the pet image: move the window by deltas.
   ipcMain.on('move-window', (_event, dx, dy) => {
@@ -201,7 +212,7 @@ app.whenReady().then(() => {
   win.webContents.on('console-message', (_e, level, msg) => console.log('[pet-console]', level, String(msg).slice(0, 160)))
   win.once('ready-to-show', () => { console.log('[pet] ready-to-show'); win.show() })
   win.on('closed', () => {
-    clearInterval(hitTimer)
+    stopHitTimer()
     app.quit()
   })
 

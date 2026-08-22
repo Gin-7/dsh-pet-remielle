@@ -177,4 +177,5 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   assert.doesNotMatch(html, /id="dot1"/)
   assert.match(html, /height:\s*68px/)
   assert.match(html, /idle-placeholder/)
+  assert.match(html, /clearPulse:\s*true/)
 })

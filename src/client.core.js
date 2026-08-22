@@ -1441,10 +1441,10 @@ function mountPet(ctx) {
               state: 'SUCCESS',
               completed: true,
               completionNotification: true,
-              message: item.title || '任务已完成',
+              message: item.displayTitle || item.title || '任务已完成',
               detail: (item.cwd && String(item.cwd).split(/[\\/]/).filter(Boolean).pop())
                 ? '已完成 · ' + String(item.cwd).split(/[\\/]/).filter(Boolean).pop()
-                : '已完成，点击查看结果',
+                : '已完成',
               mood: '03',
               updatedAt: item.updatedAt || Date.now(),
             })
