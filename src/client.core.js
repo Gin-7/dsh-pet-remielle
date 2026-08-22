@@ -182,23 +182,37 @@ if (!window.__rm2UpdateUi) {
   if (document.body) appendUpdateUi()
   else window.addEventListener('DOMContentLoaded', appendUpdateUi)
   document.addEventListener('pointerdown', function (e) {
+    // 更新进行中不允许点外部关闭（只能点 ✕），避免误关后丢失更新状态展示
+    if (updateState && updateState.phase === 'running') return
     if (updCardEl.style.display === 'block' && !updCardEl.contains(e.target)) updCardEl.style.display = 'none'
   }, true)
   window.__rm2UpdateUi = { bubble: updBubbleEl, card: updCardEl }
 }
 var updBubble = window.__rm2UpdateUi.bubble
 var updCard = window.__rm2UpdateUi.card
+// 更新流程状态：null=空闲；running=请求进行中（禁止点外关闭）；done=成功待重启
+var updateState = null
+var lastUpdateError = ''
 function closeUpdateCard() { updCard.style.display = 'none' }
 function setLatestUpdate(info, isNew) {
   latestInfo = info
   if (isNew) updBubble.style.display = 'inline-flex'
   else updBubble.style.display = 'none'
 }
-function openUpdateCard() {
+function baseUpdateNotes() {
+  if (latestInfo.needsCleanReinstall) {
+    return '版本低于 0.3.0，包名已变更，无法自动更新。\n请先彻底卸载旧版本，再重新安装 dsh-pet-remielle。'
+  }
+  return latestInfo.notes || '(无更新说明)'
+}
+function renderUpdateCard() {
   if (!latestInfo) return
   updCard.textContent = ''
+  var phase = updateState && updateState.phase
+  var titleText = phase === 'done' ? '更新成功' : phase === 'running' ? '正在更新' : '发现新版本'
   var heading = mk('div', 'display:flex;justify-content:space-between;align-items:center;gap:12px;')
-  var title = mk('strong', 'font-size:15px;', '发现新版本')
+  var title = mk('strong', 'font-size:15px;', titleText)
+  // ✕ 始终可关；更新中仅它可关（点外部无效）
   var closeX = mk('button', 'border:none;background:transparent;cursor:pointer;font-size:16px;color:var(--dsw-alias-label-tertiary,#6f7c99);', '✕')
   closeX.addEventListener('click', closeUpdateCard)
   heading.appendChild(title)
@@ -209,43 +223,62 @@ function openUpdateCard() {
   versions.appendChild(mk('span', 'color:var(--dsw-alias-label-tertiary,#6f7c99);', '→'))
   versions.appendChild(mk('span', 'color:var(--dsw-alias-brand-primary,#526aa8);', latestInfo.latest))
   updCard.appendChild(versions)
-  var notes = mk('pre', 'white-space:pre-wrap;margin:8px 0 0;max-height:180px;overflow:auto;background:rgba(103,126,183,.07);border:1px solid var(--dsw-alias-border-l1,rgba(71,91,145,.18));border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.55;', latestInfo.needsCleanReinstall ? '版本低于 0.3.0，包名已变更，无法自动更新。\n请先彻底卸载旧版本，再重新安装 dsh-pet-remielle。' : (latestInfo.notes || '(无更新说明)'))
+  var notesText = baseUpdateNotes()
+  if (phase === 'done') {
+    notesText += '\n\n──── 更新输出 ────\n' + (updateState.output || '(无输出)')
+    notesText += '\n\n请重启 DSH 使新版本生效。'
+  } else if (lastUpdateError) {
+    notesText += '\n\n❌ 上次更新失败：' + lastUpdateError
+  }
+  var notes = mk('pre', 'white-space:pre-wrap;margin:8px 0 0;max-height:180px;overflow:auto;background:rgba(103,126,183,.07);border:1px solid var(--dsw-alias-border-l1,rgba(71,91,145,.18));border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.55;', notesText)
   updCard.appendChild(notes)
-  var actions = mk('div', 'display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:14px;')
-  if (latestInfo.needsCleanReinstall) {
+  var actions = mk('div', 'display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:14px;min-height:32px;')
+  if (phase === 'running') {
+    // 更新中：纯状态文案——不渲染任何不可点击的假按钮
+    actions.appendChild(mk('span', 'color:var(--dsw-alias-label-secondary,#42506b);font-size:13px;', '⏳ 正在更新，请勿关闭 DSH…'))
+  } else if (phase === 'done') {
+    actions.appendChild(mk('span', 'color:#2fa24c;font-weight:600;font-size:13px;', '✔ 请重启 DSH 后生效'))
+  } else if (latestInfo.needsCleanReinstall) {
     var upgrade = mk('button', 'padding:6px 14px;border-radius:8px;border:none;background:var(--dsw-alias-brand-primary,#526aa8);color:#fff;cursor:pointer;font-size:13px;font-family:inherit;', '查看升级说明')
     upgrade.addEventListener('click', function () { window.open('https://github.com/Gin-7/dsh-pet-remielle#升级', '_blank') })
     actions.appendChild(upgrade)
   } else {
     var gh = mk('button', 'padding:6px 14px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2,#d8d8d8);background:transparent;cursor:pointer;font-size:13px;font-family:inherit;', '去 GitHub 查看')
     gh.addEventListener('click', function () { window.open(latestInfo.htmlUrl || 'https://github.com/Gin-7/dsh-pet-remielle/releases', '_blank') })
-    var updBtn = mk('button', 'padding:6px 14px;border-radius:8px;border:none;background:var(--dsw-alias-brand-primary,#526aa8);color:#fff;cursor:pointer;font-size:13px;font-family:inherit;', '更新')
-    updBtn.addEventListener('click', function () { runSelfUpdate(updBtn, notes) })
+    var updBtn = mk('button', 'padding:6px 14px;border-radius:8px;border:none;background:var(--dsw-alias-brand-primary,#526aa8);color:#fff;cursor:pointer;font-size:13px;font-family:inherit;', '一键更新')
+    updBtn.addEventListener('click', function () { runSelfUpdate() })
     actions.appendChild(gh)
     actions.appendChild(updBtn)
   }
   updCard.appendChild(actions)
   updCard.style.display = 'block'
 }
-function runSelfUpdate(btn, notesEl) {
-  if (!btn.disabled) { btn.disabled = true; btn.textContent = '更新中…' }
+function openUpdateCard() {
+  if (!latestInfo) return
+  renderUpdateCard()
+}
+function runSelfUpdate() {
+  if (updateState && updateState.phase === 'running') return
+  lastUpdateError = ''
+  updateState = { phase: 'running', output: '' }
+  renderUpdateCard()
   fetch(UPDATE_ENDPOINT, { method: 'POST' })
     .then(function (r) { return r.json().catch(function () { return null }).then(function (j) { return { ok: r.ok, j: j } }) })
     .then(function (res) {
-      btn.disabled = false
       if (res.ok && res.j && res.j.ok) {
-        btn.textContent = '更新成功，请重启 dsh web'
-        notesEl.textContent = (res.j.output || '') + '\n请重启 DSH 以生效。'
+        updateState = { phase: 'done', output: res.j.output || '' }
         updBubble.style.display = 'none'
       } else {
-        btn.textContent = '更新失败'
-        notesEl.textContent = (res.j && res.j.output) || '更新失败，查看控制台'
+        // 失败：回到常规视图（保留重试按钮），错误信息进 notes
+        lastUpdateError = (res.j && res.j.output) || ('请求失败' + (res.ok ? '' : '（HTTP 错误）'))
+        updateState = null
       }
+      renderUpdateCard()
     })
     .catch(function (err) {
-      btn.disabled = false
-      btn.textContent = '更新失败'
-      notesEl.textContent = String(err)
+      lastUpdateError = String(err)
+      updateState = null
+      renderUpdateCard()
     })
 }
 

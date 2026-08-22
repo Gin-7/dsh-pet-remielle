@@ -77,3 +77,46 @@ test('update route rejects non-local hosts', async () => {
   await updateHandler(request('POST', 'evil.example.com:3080'), res)
   assert.equal(res.status, 403)
 })
+
+test('successful update runs the onUpdateSuccess hook and appends its note to output', async () => {
+  const events = []
+  setSelfUpdateHooks({
+    run: async () => ({ ok: true, output: 'done' }),
+    onUpdateSuccess: () => { events.push('success'); return '桌面模式已自动关闭' },
+    resolveInstall: () => ({ mode: 'registry', profileDir: EXISTING_DIR, version: '0.3.3' }),
+  })
+  const res = responseRecorder()
+  await updateHandler(request('POST'), res)
+  assert.equal(res.status, 200)
+  const body = JSON.parse(res.body)
+  assert.equal(body.ok, true)
+  assert.ok(body.output.includes('桌面模式已自动关闭'))
+  assert.deepEqual(events, ['success'])
+})
+
+test('a failed update does not run the onUpdateSuccess hook', async () => {
+  let called = 0
+  setSelfUpdateHooks({
+    run: async () => ({ ok: false, output: 'EPERM' }),
+    onUpdateSuccess: () => { called += 1 },
+    resolveInstall: () => ({ mode: 'registry', profileDir: EXISTING_DIR, version: '0.3.3' }),
+  })
+  const res = responseRecorder()
+  await updateHandler(request('POST'), res)
+  assert.equal(res.status, 500)
+  assert.equal(called, 0)
+})
+
+test('an unexpected error inside the handler becomes a 500 instead of crashing', async () => {
+  setSelfUpdateHooks({
+    stopDesktopWindow: null,
+    resolveInstall: () => ({ mode: 'registry', profileDir: EXISTING_DIR, version: '0.3.3' }),
+    run: async () => { throw new Error('pnpm vanished mid-flight') },
+  })
+  const res = responseRecorder()
+  await updateHandler(request('POST'), res)
+  assert.equal(res.status, 500)
+  const body = JSON.parse(res.body)
+  assert.equal(body.ok, false)
+  assert.ok(body.output.includes('pnpm vanished mid-flight'))
+})

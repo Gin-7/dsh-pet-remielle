@@ -25,7 +25,7 @@ import { DesktopWindow } from './desktop-window.js'
 import { ensureElectronRuntime } from './electron-fetch.mjs'
 import {
   CHECK_ENDPOINT, UPDATE_ENDPOINT, INFO_ENDPOINT,
-  checkHandler, updateHandler, infoHandler, setSelfUpdateHooks,
+  checkHandler, updateHandler, infoHandler, setSelfUpdateHooks, killActiveUpdate,
 } from './self-update.js'
 import {
   DEFAULT_PET_ID,
@@ -997,6 +997,16 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           await w?.stop(reason)
           if (w && desktopActive) { desktopActive = false; hub.broadcast() }
         },
+        // 更新成功后收尾：包内下载的 Electron 运行时已被 pnpm 替换掉，
+        // 桌面模式继续开着会让重启后“双端皆无宠物”。自动切回网页宠物；
+        // 返回的说明文字会展示在更新卡片里。
+        onUpdateSuccess: () => {
+          if (settings.get().desktopMode !== false) {
+            void settings.update({ desktopMode: false })
+            return '检测到桌面悬浮模式：其 Electron 运行时随更新被移除，已自动切回网页宠物；重启后可重新开启（将重新下载运行时）。'
+          }
+          return null
+        },
       })
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: CHECK_ENDPOINT, handler: checkHandler }),
@@ -1013,6 +1023,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       httpCtx.effect(() => () => {
         unwatchDesktop()
         stopDesktop('dsh-host-stop')
+        // 宿主退出时终止进行中的 pnpm/git：孤儿进程会把 node_modules 改成
+        // 半成品，下一次启动插件加载直接崩溃
+        killActiveUpdate()
       })
     })
   }

@@ -235,6 +235,7 @@ export function run(cmd, args, cwd) {
     const finish = (ok, output) => {
       if (settled) return
       settled = true
+      if (activeChild === child) activeChild = null
       resolvePromise({ ok, output })
     }
     let child
@@ -250,6 +251,7 @@ export function run(cmd, args, cwd) {
       finish(false, String(err))
       return
     }
+    activeChild = child
     let out = ''
     child.stdout?.on('data', (d) => (out += String(d)))
     child.stderr?.on('data', (d) => (out += String(d)))
@@ -258,6 +260,25 @@ export function run(cmd, args, cwd) {
     // hard cap so a hung git/pnpm never wedges the request
     setTimeout(() => finish(false, out + '\n[timeout after 90s]'), 90000).unref()
   })
+}
+
+/** 进行中的更新子进程（pnpm/git）。宿主退出时 killActiveUpdate() 终止它——
+ *  否则孤儿进程继续改写 node_modules，半成品包会让下一次启动崩溃。 */
+let activeChild = null
+export function killActiveUpdate() {
+  const child = activeChild
+  if (!child || child.exitCode !== null) return
+  try {
+    if (isWin && child.pid) {
+      // shell:true 包了层 cmd.exe，taskkill /T 连树一起杀，避免 pnpm.exe 孤儿
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+      killer.on?.('error', () => { try { child.kill() } catch { /* ignore */ } })
+    } else {
+      child.kill()
+    }
+  } catch {
+    try { child.kill() } catch { /* ignore */ }
+  }
 }
 
 export function localHostOk(req) {
@@ -271,26 +292,30 @@ function json(res, code, payload) {
 }
 
 export function infoHandler(_req, res) {
-  const info = resolveInstall()
-  const needsReinstall = needsCleanReinstallFor(info.version)
-  const cmd = needsReinstall
-    ? '（版本低于 0.3.0：包名已变更，需彻底卸载后重新安装）'
-    : info.mode === 'link' && info.repoDir
-      ? `cd /d "${info.repoDir}" && git pull`
-      : info.profileDir
-        ? `cd /d "${info.profileDir}" && pnpm update --latest ${PKG}`
-        : ''
-  json(res, 200, {
-    pkg: PKG,
-    repo: REPO,
-    github: GITHUB,
-    mode: info.mode,
-    version: info.version,
-    profileDir: info.profileDir || null,
-    repoDir: info.repoDir || null,
-    needsCleanReinstall: needsReinstall,
-    updateCommand: cmd,
-  })
+  try {
+    const info = resolveInstall()
+    const needsReinstall = needsCleanReinstallFor(info.version)
+    const cmd = needsReinstall
+      ? '（版本低于 0.3.0：包名已变更，需彻底卸载后重新安装）'
+      : info.mode === 'link' && info.repoDir
+        ? `cd /d "${info.repoDir}" && git pull`
+        : info.profileDir
+          ? `cd /d "${info.profileDir}" && pnpm update --latest ${PKG}`
+          : ''
+    json(res, 200, {
+      pkg: PKG,
+      repo: REPO,
+      github: GITHUB,
+      mode: info.mode,
+      version: info.version,
+      profileDir: info.profileDir || null,
+      repoDir: info.repoDir || null,
+      needsCleanReinstall: needsReinstall,
+      updateCommand: cmd,
+    })
+  } catch (err) {
+    json(res, 500, { ok: false, error: String(err && err.message ? err.message : err) })
+  }
 }
 
 export async function checkHandler(req, res) {
@@ -298,26 +323,30 @@ export async function checkHandler(req, res) {
     json(res, 403, { ok: false, error: 'forbidden: check route is local-only' })
     return
   }
-  const remote = await fetchRemoteLatest()
-  if (!remote) {
-    const reachable = await githubReachable()
-    if (reachable) {
-      json(res, 200, { ok: false, error: 'no version yet', reachable: true })
+  try {
+    const remote = await fetchRemoteLatest()
+    if (!remote) {
+      const reachable = await githubReachable()
+      if (reachable) {
+        json(res, 200, { ok: false, error: 'no version yet', reachable: true })
+        return
+      }
+      let direct = false
+      let proxiesUp = []
+      try {
+        await fetch('https://api.github.com', { signal: AbortSignal.timeout(3000) })
+        direct = true
+      } catch { /* direct blocked */ }
+      for (const hp of proxyCandidates()) {
+        if (await isProxyUp(hp)) proxiesUp.push(hp)
+      }
+      json(res, 200, { ok: false, error: 'network unreachable', direct, proxiesUp })
       return
     }
-    let direct = false
-    let proxiesUp = []
-    try {
-      await fetch('https://api.github.com', { signal: AbortSignal.timeout(3000) })
-      direct = true
-    } catch { /* direct blocked */ }
-    for (const hp of proxyCandidates()) {
-      if (await isProxyUp(hp)) proxiesUp.push(hp)
-    }
-    json(res, 200, { ok: false, error: 'network unreachable', direct, proxiesUp })
-    return
+    json(res, 200, { ok: true, ...remote, needsCleanReinstall: needsCleanReinstallFor(resolveInstall().version) })
+  } catch (err) {
+    json(res, 500, { ok: false, error: 'check failed: ' + String(err && err.message ? err.message : err) })
   }
-  json(res, 200, { ok: true, ...remote, needsCleanReinstall: needsCleanReinstallFor(resolveInstall().version) })
 }
 
 // ---- 注入点（宿主注册路由时设置，测试可覆盖）----
@@ -325,10 +354,18 @@ export async function checkHandler(req, res) {
 //   electron.exe 就住在插件包目录里（vendor/electron-win32-x64），进程不退出时
 //   Windows 会锁住文件——pnpm/git 替换包内容直接 EPERM。未注入（单测/无桌面窗）则跳过。
 // - run / resolveInstall：测试注入假实现用。
-const hooks = { stopDesktopWindow: null, run, resolveInstall }
+const hooks = {
+  stopDesktopWindow: null,
+  onUpdateSuccess: null,
+  run,
+  resolveInstall,
+}
 export function setSelfUpdateHooks(next = {}) {
   if ('stopDesktopWindow' in next) {
     hooks.stopDesktopWindow = typeof next.stopDesktopWindow === 'function' ? next.stopDesktopWindow : null
+  }
+  if ('onUpdateSuccess' in next) {
+    hooks.onUpdateSuccess = typeof next.onUpdateSuccess === 'function' ? next.onUpdateSuccess : null
   }
   if ('run' in next) hooks.run = typeof next.run === 'function' ? next.run : run
   if ('resolveInstall' in next) {
@@ -346,30 +383,44 @@ export async function updateHandler(req, res) {
     json(res, 403, { ok: false, output: 'forbidden: update route is local-only' })
     return
   }
-  const info = hooks.resolveInstall()
-  // 仅版本 < 0.3.0（包名已变更）需彻底卸载重装；>= 0.3.0 的 link 与 registry 安装
-  // 都支持一键增量更新（link→git pull，registry→pnpm update --latest）。
-  if (needsCleanReinstallFor(info.version)) {
-    json(res, 500, {
-      ok: false,
-      needsCleanReinstall: true,
-      output: '版本低于 0.3.0，包名/行 id 已变更，无法自动增量更新。\n请先卸载当前安装、再重装最新版：\n  · 若旧版为 0.2.0 及之前：dsh plugin --profile web remove @dsh-external/dsh-client-ui-pet-remielle\n  · 若旧版为 0.2.0–0.3.0：dsh plugin --profile web remove dsh-pet-remielle\n  然后：dsh plugin --profile web add dsh-pet-remielle\n（详见 README 的升级说明。）',
-    })
-    return
+  // 全量兜底：更新链路上任何意外异常（如包目录正处于被替换的中间态）
+  // 都必须落成 500 响应——异步路由抛未处理拒绝会直接拖垮宿主进程
+  try {
+    const info = hooks.resolveInstall()
+    // 仅版本 < 0.3.0（包名已变更）需彻底卸载重装；>= 0.3.0 的 link 与 registry 安装
+    // 都支持一键增量更新（link→git pull，registry→pnpm update --latest）。
+    if (needsCleanReinstallFor(info.version)) {
+      json(res, 500, {
+        ok: false,
+        needsCleanReinstall: true,
+        output: '版本低于 0.3.0，包名/行 id 已变更，无法自动增量更新。\n请先卸载当前安装、再重装最新版：\n  · 若旧版为 0.2.0 及之前：dsh plugin --profile web remove @dsh-external/dsh-client-ui-pet-remielle\n  · 若旧版为 0.2.0–0.3.0：dsh plugin --profile web remove dsh-pet-remielle\n  然后：dsh plugin --profile web add dsh-pet-remielle\n（详见 README 的升级说明。）',
+      })
+      return
+    }
+    // 先停掉桌面宠物窗并等待其退出：electron.exe 运行中会锁住插件目录内的文件，
+    // 否则 pnpm/git 替换包内容时报 EPERM（link 模式的 git pull 同理）
+    await quiesceDesktopWindow()
+    let result
+    if (info.mode === 'link' && info.repoDir) {
+      result = await hooks.run('git', ['-C', info.repoDir, 'pull'], info.repoDir)
+    } else if (info.profileDir && existsSync(info.profileDir)) {
+      // --latest：跨出 package.json 里可能被钉死的精确版本号（如 "0.3.3"）。
+      // 普通 pnpm update 只在声明范围内升级，精确锁会永远原地重装旧版却报成功。
+      result = await hooks.run('pnpm', ['update', '--latest', PKG], info.profileDir)
+    } else {
+      json(res, 500, { ok: false, output: 'unknown install shape' })
+      return
+    }
+    // 成功后置回调：宿主借此收尾（如关闭桌面模式——运行时已随更新被移除）。
+    // 返回字符串则追加到输出里展示给用户。
+    if (result.ok && typeof hooks.onUpdateSuccess === 'function') {
+      try {
+        const note = hooks.onUpdateSuccess()
+        if (typeof note === 'string' && note) result = { ok: true, output: result.output + '\n' + note }
+      } catch { /* 收尾失败不影响更新结果 */ }
+    }
+    json(res, result.ok ? 200 : 500, { ok: result.ok, output: result.output.slice(-6000) })
+  } catch (err) {
+    try { json(res, 500, { ok: false, output: 'update failed: ' + String(err && err.message ? err.message : err) }) } catch { /* response already sent */ }
   }
-  // 先停掉桌面宠物窗并等待其退出：electron.exe 运行中会锁住插件目录内的文件，
-  // 否则 pnpm/git 替换包内容时报 EPERM（link 模式的 git pull 同理）
-  await quiesceDesktopWindow()
-  let result
-  if (info.mode === 'link' && info.repoDir) {
-    result = await hooks.run('git', ['-C', info.repoDir, 'pull'], info.repoDir)
-  } else if (info.profileDir && existsSync(info.profileDir)) {
-    // --latest：跨出 package.json 里可能被钉死的精确版本号（如 "0.3.3"）。
-    // 普通 pnpm update 只在声明范围内升级，精确锁会永远原地重装旧版却报成功。
-    result = await hooks.run('pnpm', ['update', '--latest', PKG], info.profileDir)
-  } else {
-    json(res, 500, { ok: false, output: 'unknown install shape' })
-    return
-  }
-  json(res, result.ok ? 200 : 500, { ok: result.ok, output: result.output.slice(-6000) })
 }
