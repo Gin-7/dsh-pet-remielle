@@ -35,6 +35,16 @@ function debugLog(message) {
 const url = process.env.DSH_PET_URL
 const parentPid = Number(process.env.DSH_PET_PARENT_PID || 0)
 
+// 该 vendor 运行时在部分 100% 缩放的机器上会把 scaleFactor 误报为 1.1，
+// 导致 DIP↔物理换算有损：窗口随每次定位按 ~1.1 倍膨胀、拖动坐标漂移。
+// 真实屏幕缩放由系统决定；这里强制按 1 处理，使所有边界换算无损。
+app.commandLine.appendSwitch('force-device-scale-factor', '1')
+
+// 拖动定位时同时锁定的内容尺寸（与 BrowserWindow 创建参数一致），
+// 防止任何 bounds 往返误差累积改变窗口大小。
+const PET_CONTENT_W = 400
+const PET_CONTENT_H = 520
+
 if (!url) {
   console.error('dsh-pet-window: missing DSH_PET_URL')
   app.exit(1)
@@ -42,8 +52,8 @@ if (!url) {
 
 app.whenReady().then(() => {
   const win = new BrowserWindow({
-    width: 400,
-    height: 520,
+    width: PET_CONTENT_W,
+    height: PET_CONTENT_H,
     transparent: true,
     frame: false,
     alwaysOnTop: true,
@@ -177,7 +187,7 @@ app.whenReady().then(() => {
     drag.tx = nx
     drag.ty = ny
     debugLog(`drag-move cursor=${pt.x},${pt.y} -> ${nx},${ny}`)
-    win.setPosition(nx, ny)
+    win.setBounds({ x: nx, y: ny, width: PET_CONTENT_W, height: PET_CONTENT_H })
   })
   ipcMain.on('drag-end', () => {
     debugLog('drag-end')
