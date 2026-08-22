@@ -16,11 +16,21 @@
 
 const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const path = require('node:path')
+const fs = require('node:fs')
 
 // Isolate the pet window's userData: sharing the default %APPDATA%/Electron
 // with the harness shell locks the disk cache and can serve stale cached
 // responses (the page kept running the old right-click-to-close logic).
 app.setPath('userData', path.join(app.getPath('temp'), 'dsh-pet-remielle'))
+
+// 拖动漂移诊断：把窗口移动来源写入日志（临时排查用，定位后移除）。
+const DRAG_DEBUG_LOG = path.join(app.getPath('temp'), 'dsh-pet-remielle', 'drag-debug.log')
+let lastMoveLog = 0
+function debugLog(message) {
+  try {
+    fs.appendFileSync(DRAG_DEBUG_LOG, `${new Date().toISOString()} ${message}\n`)
+  } catch { /* 日志失败不影响功能 */ }
+}
 
 const url = process.env.DSH_PET_URL
 const parentPid = Number(process.env.DSH_PET_PARENT_PID || 0)
@@ -147,6 +157,7 @@ app.whenReady().then(() => {
     const sx = clientX > 4 && Math.abs(physical.x - dipX) > 1 ? clamp(physical.x / dipX) : 1
     const sy = clientY > 4 && Math.abs(physical.y - dipY) > 1 ? clamp(physical.y / dipY) : 1
     drag = { ox: clientX, oy: clientY, sx: sx, sy: sy }
+    debugLog(`drag-start client=${clientX},${clientY} pos=${x},${y} cursor=${physical.x},${physical.y} scale=${sx.toFixed(3)},${sy.toFixed(3)} dsf=${screen.getPrimaryDisplay().scaleFactor}`)
   })
   ipcMain.on('drag-move', () => {
     if (!drag) return
@@ -154,10 +165,23 @@ app.whenReady().then(() => {
     const nx = Math.round(pt.x / drag.sx - drag.ox)
     const ny = Math.round(pt.y / drag.sy - drag.oy)
     const [x, y] = win.getPosition()
-    if (nx !== x || ny !== y) win.setPosition(nx, ny)
+    if (nx !== x || ny !== y) {
+      debugLog(`drag-move cursor=${pt.x},${pt.y} ${x},${y} -> ${nx},${ny}`)
+      win.setPosition(nx, ny)
+    }
   })
   ipcMain.on('drag-end', () => {
+    debugLog('drag-end')
     drag = null
+  })
+  // 任何"不是 drag-move 发起"的窗口移动都会出现在这里，用于定位漂移来源。
+  win.on('move', () => {
+    const now = Date.now()
+    if (now - lastMoveLog < 150) return
+    lastMoveLog = now
+    if (!win || win.isDestroyed()) return
+    const [x, y] = win.getContentBounds()
+    debugLog(`window-move -> ${Math.round(x)},${Math.round(y)} dragging=${Boolean(drag)}`)
   })
 
   // Return current window position for persistence.
@@ -241,6 +265,7 @@ app.whenReady().then(() => {
 
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true })
+  debugLog(`boot electron=${process.versions.electron} dsf=${screen.getPrimaryDisplay().scaleFactor} displays=${screen.getAllDisplays().map((d) => d.scaleFactor).join(',')}`)
 
   win.loadURL(url)
   win.webContents.on('did-finish-load', () => console.log('[pet] loaded:', win.webContents.getURL()))
