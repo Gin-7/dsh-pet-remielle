@@ -1,6 +1,6 @@
 {
   "name": "dsh-pet-remielle",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "蕾米埃尔（Remielle）桌宠 for DeepSeek Harness (DSH): session-event-driven sticker pet with status bubbles, SSE live updates, and a desktop floating window",
   "private": false,
   "type": "module",
