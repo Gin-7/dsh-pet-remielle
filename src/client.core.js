@@ -1520,7 +1520,9 @@ function mountPet(ctx) {
               state: 'SUCCESS',
               completed: true,
               completionNotification: true,
-              message: item.displayTitle || item.title || '任务已完成',
+              // 标题统一用固定文案：displayTitle/title 是会话首条用户消息原文，
+              // 直接上泡会把原始提问文本泄漏到气泡第一行。
+              message: '任务已完成',
               detail: (item.cwd && String(item.cwd).split(/[\\/]/).filter(Boolean).pop())
                 ? '已完成 · ' + String(item.cwd).split(/[\\/]/).filter(Boolean).pop()
                 : '已完成',
