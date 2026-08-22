@@ -193,6 +193,7 @@ var updCard = window.__rm2UpdateUi.card
 // 更新流程状态：null=空闲；running=请求进行中（禁止点外关闭）；done=成功待重启
 var updateState = null
 var lastUpdateError = ''
+var updatePollTimer = 0
 function closeUpdateCard() { updCard.style.display = 'none' }
 function setLatestUpdate(info, isNew) {
   latestInfo = info
@@ -257,28 +258,62 @@ function openUpdateCard() {
   if (!latestInfo) return
   renderUpdateCard()
 }
+function stopUpdateWatchdog() {
+  if (updatePollTimer) { window.clearInterval(updatePollTimer); updatePollTimer = 0 }
+}
+function finishUpdateSuccess(output) {
+  stopUpdateWatchdog()
+  updateState = { phase: 'done', output: output || '' }
+  updBubble.style.display = 'none'
+  renderUpdateCard()
+}
+function failUpdate(message) {
+  stopUpdateWatchdog()
+  lastUpdateError = message
+  updateState = null
+  renderUpdateCard()
+}
+// 看门狗：更新请求的响应可能因代理/连接问题丢失，导致卡片永远停在“正在更新”。
+// 更新期间每 2s 查一次 /info——只要已安装版本 ≠ 页面构建版本，即可判定更新
+// 实际已完成；超过 3 分钟仍无变化则给出超时提示（可重试）。
+function startUpdateWatchdog() {
+  stopUpdateWatchdog()
+  var startedAt = Date.now()
+  var pageVersion = typeof RM_PLUGIN_VERSION !== 'undefined' ? RM_PLUGIN_VERSION : ''
+  updatePollTimer = window.setInterval(function () {
+    fetchJson(INFO_ENDPOINT + '?t=' + Date.now())
+      .then(function (info) {
+        if (!updateState || updateState.phase !== 'running') { stopUpdateWatchdog(); return }
+        if (info && info.version && info.version !== pageVersion) {
+          finishUpdateSuccess('检测到已安装版本 ' + info.version + '（更新请求的响应未送达，以实际安装结果为准）。')
+        } else if (Date.now() - startedAt > 180000) {
+          failUpdate('等待更新结果超时。若 DSH 控制台已显示成功请直接重启 DSH；否则可重试。')
+        }
+      })
+      .catch(function () { /* 单次查询失败忽略，下个周期再查 */ })
+  }, 2000)
+}
 function runSelfUpdate() {
   if (updateState && updateState.phase === 'running') return
   lastUpdateError = ''
   updateState = { phase: 'running', output: '' }
   renderUpdateCard()
+  startUpdateWatchdog()
   fetch(UPDATE_ENDPOINT, { method: 'POST' })
     .then(function (r) { return r.json().catch(function () { return null }).then(function (j) { return { ok: r.ok, j: j } }) })
     .then(function (res) {
       if (res.ok && res.j && res.j.ok) {
-        updateState = { phase: 'done', output: res.j.output || '' }
-        updBubble.style.display = 'none'
+        finishUpdateSuccess(res.j.output || '')
       } else {
         // 失败：回到常规视图（保留重试按钮），错误信息进 notes
-        lastUpdateError = (res.j && res.j.output) || ('请求失败' + (res.ok ? '' : '（HTTP 错误）'))
-        updateState = null
+        failUpdate((res.j && res.j.output) || ('请求失败' + (res.ok ? '' : '（HTTP 错误）')))
       }
-      renderUpdateCard()
     })
     .catch(function (err) {
-      lastUpdateError = String(err)
-      updateState = null
-      renderUpdateCard()
+      // 响应丢失不打死结论：看门狗继续轮询 /info，以实际安装结果为准
+      if (!updateState || updateState.phase !== 'running') return
+      stopUpdateWatchdog()
+      startUpdateWatchdog()
     })
 }
 
@@ -2326,6 +2361,7 @@ function mountPet(ctx) {
     if (unsubBalance) { try { unsubBalance() } catch (e) { /* ignore */ } unsubBalance = null }
     if (balanceWaitTimer) window.clearInterval(balanceWaitTimer)
     if (pulseFallbackTimer) window.clearTimeout(pulseFallbackTimer)
+    if (updatePollTimer) window.clearInterval(updatePollTimer)
     if (desktopHideTimer) { window.clearTimeout(desktopHideTimer); desktopHideTimer = null }
     for (const el of bubbleEls.values()) clearBubbleTitleTimer(el)
     bubbleEls.clear()
