@@ -52,13 +52,14 @@ app.whenReady().then(() => {
     },
   })
 
-  // Click-through: the transparent margins must not block the desktop behind
-  // the pet. The page toggles this as the cursor moves between the pet image
-  // (interactive) and the empty window area (pass-through). Windows/macOS
-  // forward mouse-move events even when pass-through is on, so the page can
-  // detect the cursor re-entering the pet and switch back.
+  // Click-through: transparent margins must not block the desktop. Renderer
+  // mousemove + { forward: true } does not work on Windows when only the
+  // wallpaper is behind the window, so the main process polls the cursor
+  // against hit rects reported by the page.
   let clickThrough = false
-  ipcMain.on('set-click-through', (_event, on) => {
+  let forceInteractive = false
+  let hitRects = null
+  function applyIgnore(on) {
     on = Boolean(on)
     if (on === clickThrough) return
     clickThrough = on
@@ -67,7 +68,54 @@ app.whenReady().then(() => {
     } catch {
       win.setIgnoreMouseEvents(on)
     }
+  }
+  function cursorHits() {
+    if (forceInteractive) return true
+    if (!hitRects || hitRects.length === 0) return false
+    const pt = screen.getCursorScreenPoint()
+    const b = win.getContentBounds()
+    const x = pt.x - b.x
+    const y = pt.y - b.y
+    for (const r of hitRects) {
+      if (x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h) return true
+    }
+    return false
+  }
+  function syncIgnore() {
+    if (!win || win.isDestroyed()) return
+    if (forceInteractive) {
+      applyIgnore(false)
+      return
+    }
+    // Only recover interactivity. Leaving the pet is driven by renderer
+    // mousemove; Windows will not forward those events over the wallpaper.
+    if (clickThrough && cursorHits()) applyIgnore(false)
+  }
+  ipcMain.on('set-click-through', (_event, on) => {
+    if (forceInteractive) return
+    applyIgnore(Boolean(on))
   })
+  ipcMain.on('force-interactive', (_event, on) => {
+    forceInteractive = Boolean(on)
+    if (forceInteractive) applyIgnore(false)
+    else syncIgnore()
+  })
+  ipcMain.on('hit-rects', (_event, rects) => {
+    if (!Array.isArray(rects)) return
+    hitRects = []
+    for (const r of rects) {
+      if (!r) continue
+      const x = Number(r.x)
+      const y = Number(r.y)
+      const w = Number(r.w)
+      const h = Number(r.h)
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue
+      if (w < 1 || h < 1) continue
+      hitRects.push({ x, y, w, h })
+    }
+    syncIgnore()
+  })
+  const hitTimer = setInterval(syncIgnore, 16)
 
   // JS-driven dragging from the pet image: move the window by deltas.
   ipcMain.on('move-window', (_event, dx, dy) => {
@@ -152,7 +200,10 @@ app.whenReady().then(() => {
   win.webContents.on('did-fail-load', (_e, code, desc, furl) => console.log('[pet] FAIL:', code, desc, furl))
   win.webContents.on('console-message', (_e, level, msg) => console.log('[pet-console]', level, String(msg).slice(0, 160)))
   win.once('ready-to-show', () => { console.log('[pet] ready-to-show'); win.show() })
-  win.on('closed', () => app.quit())
+  win.on('closed', () => {
+    clearInterval(hitTimer)
+    app.quit()
+  })
 
   // Watchdog: when the DSH host process goes away, take the pet with it.
   if (parentPid) {

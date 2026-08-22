@@ -361,17 +361,24 @@ test('ask_user_question tool/call -> WAITING sticker 05, result restores', () =>
 
 test('approval/asked -> WAITING, approval/decided restores WORKING', () => {
   const reducer = new PetReducer()
-  const sess = session()
+  const sess = session('s1', { header: { cwd: 'C:\\work\\dsh-pet-remielle' } })
   const messages = collect(reducer, sess, [
     event('turn/start'),
-    event('tool/call', { callId: 'c', name: 'bash' }, 2),
-    event('approval/asked', { id: 'a1', toolName: 'bash' }, 3),
+    event('tool/call', { callId: 'c', name: 'bash', arguments: JSON.stringify({ command: 'pnpm test' }) }, 2),
+    event('approval/asked', {
+      id: 'a1',
+      toolName: 'bash',
+      callId: 'c',
+      reason: 'escalate sandbox to danger-full-access: 同步插件',
+    }, 3),
   ])
   const states = messages.filter((m) => m.kind === PetMessageKind.STATE)
   const waiting = states.find((m) => m.phase === 'approval')
   assert.equal(waiting.state, PetState.WAITING)
   assert.equal(waiting.mood, '05')
+  assert.equal(waiting.detail, 'dsh-pet-remielle · escalate sandbox to danger-full-access: 同步插件')
   assert.equal(reducer.states()[0].approval, true)
+  assert.equal(reducer.states()[0].detail, 'dsh-pet-remielle · escalate sandbox to danger-full-access: 同步插件')
   const tail = collect(reducer, sess, [
     event('approval/decided', { id: 'a1', outcome: 'allow' }, 4),
     event('tool/result', { callId: 'c' }, 5),

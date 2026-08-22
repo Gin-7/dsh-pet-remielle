@@ -222,7 +222,7 @@ test('sessions defaults to an empty array when no states feed is provided', () =
   assert.deepEqual(snapshot.sessions, [])
 })
 
-test('persistent completion remains separate from later live state', () => {
+test('live session suppresses its own completion reminder', () => {
   const snapshot = snapshotWith({
     latest: idle,
     getStates: () => [{
@@ -241,14 +241,10 @@ test('persistent completion remains separate from later live state', () => {
       updatedAt: 12,
     }],
   })
-  assert.equal(snapshot.sessions.length, 2)
-  const live = snapshot.sessions.find((entry) => entry.sessionId === 'done-1')
-  assert.equal(live.state, PetState.THINKING)
-  const reminder = snapshot.sessions.find((entry) => entry.sessionId === 'completion:done-1')
-  assert.equal(reminder.targetSessionId, 'done-1')
-  assert.equal(reminder.state, PetState.SUCCESS)
-  assert.equal(reminder.completionNotification, true)
-  assert.equal(reminder.message, '任务已完成')
+  assert.equal(snapshot.sessions.length, 1)
+  assert.equal(snapshot.sessions[0].sessionId, 'done-1')
+  assert.equal(snapshot.sessions[0].state, PetState.THINKING)
+  assert.equal(snapshot.sessions.some((entry) => entry.sessionId === 'completion:done-1'), false)
 })
 
 test('completion acknowledgement deletes one reminder and broadcasts', async () => {

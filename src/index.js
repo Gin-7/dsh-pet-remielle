@@ -419,16 +419,15 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       })
     }
     for (const completion of completionsOf()) {
-      const activePulseIndex = sessions.findIndex((entry) => (
-        entry.sessionId === completion.sessionId
-        && entry.state === PetState.SUCCESS
-        && entry.pulseUntil > now
-      ))
-      if (activePulseIndex >= 0) {
-        sessions[activePulseIndex] = {
-          ...sessions[activePulseIndex],
-          targetSessionId: completion.sessionId,
-          completionNotification: true,
+      const liveIndex = sessions.findIndex((entry) => entry.sessionId === completion.sessionId)
+      if (liveIndex >= 0) {
+        const live = sessions[liveIndex]
+        if (live.state === PetState.SUCCESS && live.pulseUntil > now) {
+          sessions[liveIndex] = {
+            ...live,
+            targetSessionId: completion.sessionId,
+            completionNotification: true,
+          }
         }
         continue
       }
@@ -631,6 +630,13 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     }
     if (message.kind === PetMessageKind.STATE) {
       latest = message
+      if (
+        message.sessionId
+        && message.state !== PetState.IDLE
+        && message.state !== PetState.DISCONNECTED
+      ) {
+        completionQueue.delete(message.sessionId)
+      }
     }
   }
 

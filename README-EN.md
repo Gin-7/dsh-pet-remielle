@@ -125,7 +125,7 @@ dsh plugin --profile web add dsh-pet-remielle
 `desktopMode` is off by default. When enabled, a **transparent, always-on-top, frameless** Electron window displays the pet.
 
 - Window supports dragging (position remembered), scroll-wheel zoom, double-click drawing, right-click menu.
-- Status/balance bubbles match the web pet: stacked session cards and a single toggle dot. Clicking a card opens that conversation in the web UI (`✓` still clicks Allow once).
+- Status/balance bubbles match the web pet: stacked session cards and a single toggle dot. Desktop card clicks do not navigate; `✓` still clicks Allow once. The in-page pet still opens the conversation.
 - Double-click drawing: artwork appears in a **desktop top-right** independent window, brush-reveal along the diagonal, then "Pleased → fade-out".
 - Right-click menu: switch to web mode, lock, bubble toggle, size, drawing, etc.
 - Closing/switching returns to the in-page pet automatically; window closes when DSH host exits.

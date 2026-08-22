@@ -220,36 +220,46 @@
   var lastBubbleMood = ''
   var lastBubbleText = ''
   var lastBubbleDetail = ''
-  var clickThrough = false
   var dragState = null
   var menuOpen = false
   var lockedNow = false
   var moodOverride = null
   var menuEl = document.getElementById('menu')
 
-  // --- click-through: transparent window margins must not block the desktop ---
-  // The pet image (and a popped artwork) is interactive; everything else lets
-  // the cursor pass through to whatever is behind the window. The main process
-  // forwards mouse moves while pass-through is on, so hovering back onto the
-  // pet flips it off again.
+  // --- click-through: transparent margins must not block the desktop ---
+  // Windows does not forward mouse-moves onto a click-through window when the
+  // wallpaper is behind it, so the main process polls the cursor against these
+  // rects instead of trusting renderer mousemove.
+  function reportHitRects() {
+    if (!window.petBridge || !window.petBridge.setHitRects) return
+    var rects = []
+    function add(el) {
+      if (!el) return
+      var r = el.getBoundingClientRect()
+      if (r.width < 1 || r.height < 1) return
+      rects.push({ x: r.left - 4, y: r.top - 4, w: r.width + 8, h: r.height + 8 })
+    }
+    add(imgEl)
+    add(bubbleStack)
+    add(bubbleEl)
+    if (menuOpen) add(menuEl)
+    if (picEl && picEl.style.display !== 'none') add(picEl)
+    window.petBridge.setHitRects(rects)
+  }
+  function setForceInteractive(on) {
+    if (window.petBridge && window.petBridge.setForceInteractive) window.petBridge.setForceInteractive(on)
+  }
   function hitInteractive(e) {
     var el = document.elementFromPoint(e.clientX, e.clientY)
     if (!el || !el.closest) return false
-    // pet image, artwork popup, stacked/status/balance bubble, or the
-    // right-click menu — anything else passes through
     return Boolean(el.closest('img') || el.closest('#menu') || el.closest('.rm2-pet-bubble') || el.closest('.rm2-pet-bubbles'))
   }
   function syncClickThrough(e) {
-    if (dragState) return // keep the window interactive while dragging
-    if (menuOpen) {
-      if (!clickThrough) { clickThrough = true; if (window.petBridge) window.petBridge.setClickThrough(false) }
-      return
-    }
-    var on = !hitInteractive(e)
-    if (on === clickThrough) return
-    clickThrough = on
-    if (window.petBridge) window.petBridge.setClickThrough(on)
+    if (dragState || menuOpen) return
+    if (window.petBridge) window.petBridge.setClickThrough(!hitInteractive(e))
   }
+  imgEl.addEventListener('load', reportHitRects)
+  window.addEventListener('resize', reportHitRects)
   window.addEventListener('mousemove', syncClickThrough, { passive: true })
 
   // --- right-click menu (same shape as the in-page pet) ---
@@ -378,9 +388,7 @@
   function openMenuAt() {
     buildMenu()
     menuEl.style.display = 'block'
-    // 菜单打开时强制窗口可交互（关闭点击穿透），否则外部点击会落到桌面
-    clickThrough = false
-    if (window.petBridge) window.petBridge.setClickThrough(false)
+    setForceInteractive(true)
     var mw = menuEl.offsetWidth
     var mh = menuEl.offsetHeight
     var W = window.innerWidth || 380
@@ -400,10 +408,13 @@
     menuEl.style.left = left + 'px'
     menuEl.style.top = top + 'px'
     menuOpen = true
+    reportHitRects()
   }
   function closeMenu() {
     menuOpen = false
     menuEl.style.display = 'none'
+    setForceInteractive(false)
+    reportHitRects()
   }
   document.addEventListener('pointerdown', function (e) {
     if (menuOpen && !menuEl.contains(e.target)) closeMenu()
@@ -421,10 +432,11 @@
     if (e.button !== 0 || lockedNow) return
     dragState = { x: e.screenX, y: e.screenY, moved: false }
     imgEl.style.cursor = 'grabbing'
+    setForceInteractive(true)
   })
   window.addEventListener('mousemove', function (e) {
     if (!dragState) return
-    if (!(e.buttons & 1)) { dragState = null; syncCursor(); return } // mouse released outside
+    if (!(e.buttons & 1)) { dragState = null; if (!menuOpen) setForceInteractive(false); syncCursor(); return }
     var dx = e.screenX - dragState.x
     var dy = e.screenY - dragState.y
     if (Math.abs(dx) + Math.abs(dy) > 6) dragState.moved = true
@@ -443,6 +455,7 @@
       apply(lastSnapshot)
     }
     dragState = null
+    if (!menuOpen) setForceInteractive(false)
     syncCursor()
   })
 
@@ -490,14 +503,6 @@
       return priority || (b.updatedAt || 0) - (a.updatedAt || 0)
     })
   }
-  function openSession(sessionId, completed) {
-    if (!sessionId) return
-    fetch(SESSION_OPEN_ENDPOINT, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId: sessionId, approve: false, completed: completed === true }),
-    }).catch(function () {})
-  }
   function approveSession(sessionId) {
     if (!sessionId) return
     fetch(SESSION_OPEN_ENDPOINT, {
@@ -543,14 +548,11 @@
     var activate = function (event) {
       event.preventDefault()
       event.stopPropagation()
-      if (el.node.dataset.idlePlaceholder === 'true') return
-      openSession(el.targetSessionId, el.completed)
     }
     action.addEventListener('click', function (event) {
       event.preventDefault()
       event.stopPropagation()
       if (el.canApprove) approveSession(el.targetSessionId)
-      else openSession(el.targetSessionId, false)
     })
     node.addEventListener('pointerdown', function (event) { event.stopPropagation() })
     node.addEventListener('click', activate)
@@ -827,6 +829,7 @@
     }
     applyTransform(mood, snapshot)
     imgEl.style.opacity = String(snapshot.opacity ?? 1)
+    reportHitRects()
   }
 
   var source
