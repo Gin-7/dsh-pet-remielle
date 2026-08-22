@@ -241,6 +241,8 @@ export function createSessionOpenHandler({ notify }) {
         kind: 'session-action',
         sessionId,
         approve: body.approve === true,
+        // 完成卡点击：网页端需要 completed 决定是否顺带 ack
+        completed: body.completed === true,
       }) > 0
       jsonResponse(res, 200, { ok: true, delivered })
     } catch (error) {

@@ -341,6 +341,14 @@ test('desktop session open notifies the browser client and reports delivery', as
   assert.equal(body.ok, true)
   assert.equal(body.delivered, true)
 
+  // 完成卡点击：completed 必须透传给网页端（决定是否顺带 ack）
+  const completedRes = responseRecorder()
+  await handler(request('POST', { sessionId: 's1c', approve: false, completed: true }), completedRes)
+  assert.equal(notified[1].kind, 'session-action')
+  assert.equal(notified[1].sessionId, 's1c')
+  assert.equal(notified[1].approve, false)
+  assert.equal(notified[1].completed, true)
+
   // 没有网页客户端订阅时（notify 返回 0）：仍 200，但 delivered=false
   const silentHandler = createSessionOpenHandler({ notify: () => 0 })
   const silentRes = responseRecorder()
