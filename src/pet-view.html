@@ -684,11 +684,16 @@
     el.completed = completed
     // 与网页端语义对齐（src/client.core.js updateBubbles）：当前会话弹出完成通知时
     // 自动 acknowledgeCompletion，无需用户点击。acknowledgeCompletion 自带
-    // completionAckPending 去重与退避重试；此处再用 el.completionAcked 标记位保证
-    // 同一张卡只在 completed 成立时触发一次，避免每帧重复 POST。
-    if (completed && el.targetSessionId === currentSessionId && !el.completionAcked) {
-      el.completionAcked = true
-      acknowledgeCompletion(el.targetSessionId)
+    // completionAckPending 去重与退避重试；el.completionAcked 标记位保证同一轮
+    // 完成只 POST 一次（避免每帧重复），completed 不成立时复位标记位——
+    // el 按 sessionId 复用，不复位会导致同一会话第二轮完成不再自动 ack。
+    if (completed && el.targetSessionId === currentSessionId) {
+      if (!el.completionAcked) {
+        el.completionAcked = true
+        acknowledgeCompletion(el.targetSessionId)
+      }
+    } else {
+      el.completionAcked = false
     }
     var actionNotif = approval || (attention && !completed)
     if (actionNotif) {
@@ -900,7 +905,10 @@
   }
 
   var source
-  try { source = new EventSource('/plugins/dsh-pet-remielle/stream') } catch (e) { /* fallback to polling */ }
+  // ?client=pet：向宿主表明这是桌宠窗口的订阅（与 index.js wantsPendingReplay
+  // 的约定一致）——宿主据此把它排除在 session-action 重放计数之外，避免桌宠
+  // 抢收导致"无网页在线"判定永远不成立。
+  try { source = new EventSource('/plugins/dsh-pet-remielle/stream?client=pet') } catch (e) { /* fallback to polling */ }
   if (source) {
     source.onmessage = function (e) {
       try { apply(JSON.parse(e.data)) } catch (err) { /* ignore malformed frame */ }

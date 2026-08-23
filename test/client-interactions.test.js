@@ -572,6 +572,25 @@ test('approval tier change still surfaces above a stabilized top-2 deck', () => 
   assert.ok(rankOf('等待确认') < rankOf('w1 的消息'), 'tier change overrides top-2 hysteresis')
 })
 
+test('current-session uplink fires on mount/select and clears on page unload', () => {
+  const harness = createHarness()
+  const currentPosts = () => harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/session/current'))
+  // 挂载时即上报当前会话（fire-and-forget，宿主随下次快照带出）
+  assert.ok(currentPosts().length >= 1, 'mount should report the current session')
+  assert.equal(JSON.parse(currentPosts().at(-1).options.body).sessionId, 'other')
+  // 切换会话时重新上报
+  harness.select('ws9')
+  assert.ok(currentPosts().length >= 2, 'selecting a session should re-report')
+  assert.equal(JSON.parse(currentPosts().at(-1).options.body).sessionId, 'ws9')
+  // 卸载清空：注册 pagehide/beforeunload 上报，sendBeacon 优先、fetch keepalive 兜底
+  // （harness 的 window 不派发卸载事件，此处对 lib 产物做静态断言）
+  const code = readFileSync(CLIENT, 'utf8')
+  assert.match(code, /addEventListener\('pagehide',\s*clearReportedCurrentSession\)/)
+  assert.match(code, /addEventListener\('beforeunload',\s*clearReportedCurrentSession\)/)
+  assert.match(code, /navigator\.sendBeacon/)
+  assert.match(code, /keepalive:\s*true/)
+})
+
 test('desktop bubble click (session-action without approve) opens its conversation only', () => {
   const harness = createHarness()
   harness.send({ kind: 'session-action', sessionId: 'desk-9', approve: false })
