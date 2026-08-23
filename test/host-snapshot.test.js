@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, createCompletionAckHandler, createSessionOpenHandler, createStateSnapshot } from '../src/index.js'
+import { applyCompletionAck, createCompletionAckHandler, createSessionCurrentHandler, createSessionOpenHandler, createStateSnapshot } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -367,4 +367,57 @@ test('desktop session open rejects missing session ids and non-POST methods', as
   const wrongMethod = responseRecorder()
   await handler(request('GET'), wrongMethod)
   assert.equal(wrongMethod.status, 405)
+})
+
+test('session current uplink stores and clears the reported session id', async () => {
+  let stored = ''
+  const handler = createSessionCurrentHandler({ accept: (id) => { stored = id } })
+  const res = responseRecorder()
+  await handler(request('POST', { sessionId: 's1' }), res)
+  assert.equal(res.status, 200)
+  assert.equal(JSON.parse(res.body).ok, true)
+  assert.equal(stored, 's1')
+  // 空串=清除（用户关掉所有对话/页面卸载时上报）
+  const cleared = responseRecorder()
+  await handler(request('POST', { sessionId: '' }), cleared)
+  assert.equal(cleared.status, 200)
+  assert.equal(stored, '')
+})
+
+test('session current uplink rejects non-string ids and non-POST methods', async () => {
+  let stored = 'untouched'
+  const handler = createSessionCurrentHandler({ accept: (id) => { stored = id } })
+  const bad = responseRecorder()
+  await handler(request('POST', { sessionId: 42 }), bad)
+  assert.equal(bad.status, 400)
+  assert.equal(stored, 'untouched')
+  const wrongMethod = responseRecorder()
+  await handler(request('GET'), wrongMethod)
+  assert.equal(wrongMethod.status, 405)
+})
+
+test('snapshot carries the reported current session id', () => {
+  const snapshot = createStateSnapshot({
+    getLatest: () => idle,
+    getPulse: () => null,
+    getConfig: () => ({}),
+    getPetId: () => DEFAULT_PET_ID,
+    getCurrent: () => 's1',
+  })()
+  assert.equal(snapshot.currentSessionId, 's1')
+})
+
+test('snapshot omits currentSessionId when unset or cleared', () => {
+  const unset = snapshotWith({ latest: idle })
+  assert.equal(unset.currentSessionId, undefined)
+  // 空串（清除态）同样回落为缺失：JSON 序列化后字段不存在
+  const cleared = createStateSnapshot({
+    getLatest: () => idle,
+    getPulse: () => null,
+    getConfig: () => ({}),
+    getPetId: () => DEFAULT_PET_ID,
+    getCurrent: () => '',
+  })()
+  assert.equal(cleared.currentSessionId, undefined)
+  assert.equal('currentSessionId' in JSON.parse(JSON.stringify(cleared)), false)
 })

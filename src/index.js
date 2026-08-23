@@ -49,6 +49,7 @@ export const STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
 export const STREAM_ENDPOINT = '/plugins/dsh-pet-remielle/stream'
 export const COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
 export const SESSION_OPEN_ENDPOINT = '/plugins/dsh-pet-remielle/session/open'
+export const SESSION_CURRENT_ENDPOINT = '/plugins/dsh-pet-remielle/session/current'
 export const PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 export const ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 export const PET_VIEW_ENDPOINT = '/plugins/dsh-pet-remielle/pet-view'
@@ -252,6 +253,29 @@ export function createSessionOpenHandler({ notify }) {
 }
 
 /**
+ * Web-client current-session uplink: POST { sessionId } (empty string clears).
+ * Fire-and-forget — the host only remembers the id; the next snapshot or SSE
+ * push carries it to every client, so no broadcast happens here.
+ */
+export function createSessionCurrentHandler({ accept }) {
+  return async (req, res) => {
+    if (!localOnly(req, res)) return
+    if (req.method !== 'POST') {
+      jsonResponse(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    try {
+      const body = await readJsonBody(req)
+      if (typeof body.sessionId !== 'string') throw new Error('sessionId must be a string')
+      accept(body.sessionId)
+      jsonResponse(res, 200, { ok: true })
+    } catch (error) {
+      jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+}
+
+/**
  * Scan assets/pets/ for pet directories and their GIF files.
  * @param root - the absolute assets/pets directory.
  * @returns discovery entries `[{ id, gifs }]`.
@@ -380,12 +404,13 @@ export function createAssetsHandler(petsRoot) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates, getCompletions }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates, getCompletions, getCurrent }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
   const activePetOf = typeof getActivePet === 'function' ? getActivePet : () => undefined
   const statesOf = typeof getStates === 'function' ? getStates : () => []
   const completionsOf = typeof getCompletions === 'function' ? getCompletions : () => []
+  const currentOf = typeof getCurrent === 'function' ? getCurrent : () => undefined
   return () => {
     const config = publicConfig(getConfig())
     const now = Date.now()
@@ -481,6 +506,8 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       desktopActive: desktopActiveOf(),
       desktopMode: config.desktopMode === true,
       petId: petIdOf() ?? DEFAULT_PET_ID,
+      // 网页端上报的「用户正在看的会话」；空串=清除，回落为缺失（JSON 序列化时省略该字段）
+      currentSessionId: currentOf() || undefined,
       posX: config.posX ?? null,
       posY: config.posY ?? null,
       pics: activePetOf()?.pics ?? 0,
@@ -618,6 +645,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     detail: 'DSH · 等待下一次任务',
   })
   let pulse = null
+  // 网页端上报的当前会话 id（空串=清除）：只存内存，随下次快照/SSE 自然带出，
+  // 上报本身 fire-and-forget，不触发 broadcast。
+  let reportedCurrentSessionId = ''
   // Completed turns stay visible until the user opens their conversation.
   const completionQueue = new Map()
 
@@ -706,6 +736,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
     getStates: () => reducer.states(),
     getCompletions: () => [...completionQueue.values()],
+    getCurrent: () => reportedCurrentSessionId,
   })
 
   const hub = createStreamHub({ serve: serveState })
@@ -911,6 +942,16 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           }),
         }),
         'dsh-pet-remielle: desktop session open/approve bridge',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: SESSION_CURRENT_ENDPOINT,
+          handler: createSessionCurrentHandler({
+            accept: (sessionId) => { reportedCurrentSessionId = sessionId },
+          }),
+        }),
+        'dsh-pet-remielle: web client current-session uplink',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: BALANCE_ENDPOINT, handler: async (req, res) => {

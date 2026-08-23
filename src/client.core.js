@@ -23,6 +23,7 @@
 var CONFIG_ENDPOINT = '/plugins/dsh-pet-remielle/config'
 var STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
 var COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
+var SESSION_CURRENT_ENDPOINT = '/plugins/dsh-pet-remielle/session/current'
 var PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 var ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 var DESKTOP_ENDPOINT = '/plugins/dsh-pet-remielle/desktop'
@@ -1234,6 +1235,14 @@ function mountPet(ctx) {
   function orderSessions(sessions) {
     return __order.orderSessions(sessions, currentSessionId)
   }
+  // 当前会话上报：fire-and-forget，宿主只存内存并随下次快照带出（空串=清除）
+  function reportCurrentSession(id) {
+    fetch(SESSION_CURRENT_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: id || '' }),
+    }).catch(function () {})
+  }
   var completionAckPending = new Set()
   function acknowledgeCompletion(sessionId, attempt) {
     if (!sessionId) return
@@ -1632,11 +1641,13 @@ function mountPet(ctx) {
   if (ctx && ctx.sessions && ctx.sessions.list && typeof ctx.effect === 'function') {
     var sessionList = ctx.sessions.list
     currentSessionId = typeof sessionList.getSnapshot === 'function' ? sessionList.getSnapshot().current : undefined
+    reportCurrentSession(currentSessionId)
     ctx.effect(function () {
       return sessionList.subscribe(function () {
         var next = typeof sessionList.getSnapshot === 'function' ? sessionList.getSnapshot().current : undefined
         if (next !== currentSessionId) {
           currentSessionId = next
+          reportCurrentSession(next)
           if (next && lastSnapshot && Array.isArray(lastSnapshot.sessions)) {
             var openedCompletion = lastSnapshot.sessions.some(function (entry) {
               return entry && targetSessionOf(entry) === next && completionOf(entry)

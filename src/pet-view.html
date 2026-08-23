@@ -780,6 +780,8 @@
   function apply(snapshot) {
     if (!snapshot || snapshot.kind) return
     lastSnapshot = snapshot
+    // 网页端经宿主快照上报的当前会话；空串/缺失视为无（判空后回落 undefined）
+    currentSessionId = snapshot.currentSessionId || undefined
     if (window.__petBalance) {
       // 用量子开关关闭时停掉 60s 轮询（与网页端一致）
       window.__petBalance.setEnabled(snapshot.showBubble !== false && snapshot.showBubbleUsage === true)
