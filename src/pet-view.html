@@ -76,21 +76,6 @@
   .rm2-bubble-balance { box-sizing: border-box; height: 68px; min-height: 68px; max-width: 330px; }
   .rm2-bubble-balance .rm2-pet-bubble-title { line-height: 22px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   img { width: 180px; height: auto; display: block; }
-  @media (prefers-color-scheme: dark) {
-    .rm2-pet-bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
-    .rm2-pet-bubble-title { color: #ffd6e4; }
-    .rm2-pet-bubble-detail { color: #f0a8c0; }
-    .rm2-pet-bubble.top { border-color: #ffb3c9; }
-    .rm2-pet-bubble.attention { border-color: #ff6fa8; }
-    .menu { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
-    .menu-item:hover { background: rgba(255, 150, 185, .16); }
-    .menu-item .tick { color: #ffb3c9; }
-    .menu-item .mute { color: #f0a8c0; }
-    .menu-sep { background: rgba(255, 150, 185, .25); }
-    /* 深色菜单上的下拉框：压过内联浅色样式，保证可读 */
-    .menu select { color: #ffd6e4 !important; background: rgba(255, 150, 185, .12) !important; }
-    .menu select option { color: #8a2f52; background: #fff0f5; }
-  }
   /* Right-click menu — pink palette, matching the status bubble and the
      in-page pet menu (both sides use the same hardcoded pink values). */
   .menu {
@@ -111,6 +96,26 @@
   .menu-item .mute { color: #c2607f; font-size: 12px; }
   .menu-sep { height: 1px; background: rgba(240, 120, 160, .25); margin: 5px 6px; }
   .menu-status { opacity: .85; cursor: default; }
+  /* 深色适配放在浅色基础规则之后：同特异性靠源顺序取胜，
+     否则下方的 .menu 浅色底会盖回深色壳，仅 select 的 !important
+     字色残留，出现浅粉字配浅粉底的不可读组合 */
+  @media (prefers-color-scheme: dark) {
+    .rm2-pet-bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
+    .rm2-pet-bubble-title { color: #ffd6e4; }
+    .rm2-pet-bubble-detail { color: #f0a8c0; }
+    .rm2-pet-bubble.top { border-color: #ffb3c9; }
+    .rm2-pet-bubble.attention { border-color: #ff6fa8; }
+    .menu { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
+    .menu-item:hover { background: rgba(255, 150, 185, .16); }
+    .menu-item .tick { color: #ffb3c9; }
+    .menu-item .mute { color: #f0a8c0; }
+    .menu-sep { background: rgba(255, 150, 185, .25); }
+    /* 深色菜单上的下拉框：压过内联浅色样式，保证可读 */
+    .menu select { color: #ffd6e4 !important; background: rgba(255, 150, 185, .12) !important; }
+    /* 展开的选项列表：深酒红底 + 浅粉字，贴合菜单壳；
+       用实色而非半透明，原生下拉不会透出白底层 */
+    .menu select option { color: #ffd6e4; background: #48142a; }
+  }
 </style>
 </head>
 <body>
