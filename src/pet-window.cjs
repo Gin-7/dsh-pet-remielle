@@ -16,6 +16,7 @@
 
 const { app, BrowserWindow, ipcMain, screen, shell } = require('electron')
 const path = require('node:path')
+const { execFileSync } = require('node:child_process')
 
 // Isolate the pet window's userData: sharing the default %APPDATA%/Electron
 // with the harness shell locks the disk cache and can serve stale cached
@@ -35,6 +36,27 @@ app.commandLine.appendSwitch('force-device-scale-factor', '1')
 const PET_CONTENT_W = 400
 const PET_CONTENT_H = 520
 
+// 从注册表读真实系统 DPI 缩放（96=100%），任何失败返回 null 由调用方回退。
+// 为什么不能信 screen API：上方 appendSwitch('force-device-scale-factor','1')
+// 生效后，screen.getPrimaryDisplay().scaleFactor 会被一起钉成 1（实测 200%
+// 屏上无此开关返回 2、加上开关变成 1），拿它算补偿恒为 1、完全失效——
+// 这正是高缩放屏上桌宠物理尺寸减半的根因。因此改读注册表的 AppliedDPI
+// （REG_DWORD，十六进制如 0xc0=192），它不受 force-dsf 开关影响。
+function readSystemScaleFactor() {
+  try {
+    const out = execFileSync(
+      'reg.exe',
+      ['query', 'HKCU\\Control Panel\\Desktop\\WindowMetrics', '/v', 'AppliedDPI'],
+      { encoding: 'utf8' }
+    )
+    const m = /AppliedDPI\s+REG_DWORD\s+(0x[0-9a-fA-F]+)/i.exec(out)
+    const dpi = m ? Number.parseInt(m[1], 16) : NaN
+    return Number.isFinite(dpi) && dpi > 0 ? dpi / 96 : null
+  } catch {
+    return null
+  }
+}
+
 if (!url) {
   console.error('dsh-pet-window: missing DSH_PET_URL')
   app.exit(1)
@@ -42,14 +64,28 @@ if (!url) {
 
 app.whenReady().then(() => {
   // UI 缩放补偿：上方 force-device-scale-factor=1 把渲染钉在 100%，而系统
-  // 缩放（如 110%）下网页端按真实 dsf 渲染，桌宠会整体偏小约一成。这里读取
-  // 主屏真实 scaleFactor，用 webContents zoom 放大内容、同时把窗口做大同样
-  // 倍数，恢复与网页一致的物理尺寸（CSS 布局视口保持 400x520 不变）。
-  // 不采用「去掉 force-dsf 让 Electron 按真实缩放渲染」的做法：非整数缩放
-  // 下 DIP↔物理往返有截断误差，拖拽闭环会复发持续漂移（见 drag-move 去重
-  // 注释）；保持 dsf=1 的无损换算再 zoom 补偿，拖拽与命中判定只需在两处
-  // 乘回 uiZoom。局限：多显示器缩放不同时以主屏为准，不做跨屏动态切换。
-  const uiZoom = Math.min(2, Math.max(0.5, screen.getPrimaryDisplay().scaleFactor || 1))
+  // 缩放（如 110%）下网页端按真实 dsf 渲染，桌宠整体会偏小。设系统真实缩放
+  // 为 R，补偿分两层且共用系数 uiZoom = R²：
+  // 1) 窗口外框：bounds-probe 受控实测（vendor Electron，200% 屏）表明
+  //    force-dsf=1 下窗口创建/读写 bounds 与 OS 物理呈「物理 = API / R」的
+  //    镜像关系（创建 400x520@(100,100)，GetWindowRect 读回物理
+  //    200x260@(50,50)），故创建尺寸须乘 R² 才落回「视觉DIP×R」的基线物理；
+  // 2) 页面内容：setZoomFactor(uiZoom) 后 CSS 视口 = 窗口API/(dsf×uiZoom) =
+  //    PET_CONTENT 原尺寸（布局不变），元素物理大小恢复与网页端一致，内容
+  //    位图恰好铺满放大后的窗口表面。
+  // R 不能取自 screen API：force-dsf=1 会把 scaleFactor 一起钉成 1（见
+  // readSystemScaleFactor 注释），故优先从注册表读真实值，读不到才回退主屏
+  // scaleFactor；对 R 按 [0.5,2] 夹取后再平方（等价于对 uiZoom 夹取
+  // [0.25,4]，200%=R²=4 不受影响）。不采用「去掉 force-dsf 让 Electron 按
+  // 真实缩放渲染」的做法：非整数缩放下 DIP↔物理往返有截断误差，拖拽闭环会
+  // 复发持续漂移（见 drag-move 去重注释）；保持 dsf=1 的无损换算再补偿。
+  // 坐标系注记（geo-probe 实测，200% 屏）：display bounds/workArea 直通物理
+  // 值（workArea 3200x1904 = 物理分辨率减任务栏）；而光标 getCursorScreenPoint
+  // 与窗口 bounds 同属「物理×R」镜像世界（Win32 GetCursorPos=(695,760) 时
+  // Electron 读数=(1390,1520)，恒 ×R）。三者换算分别见构造后补尺寸、
+  // cursorHits 与 artwork-open。局限：多显示器缩放不同时以主屏为准，不做跨屏动态切换。
+  const scaleRoot = Math.min(2, Math.max(0.5, readSystemScaleFactor() || screen.getPrimaryDisplay().scaleFactor || 1))
+  const uiZoom = scaleRoot * scaleRoot
   const petW = Math.round(PET_CONTENT_W * uiZoom)
   const petH = Math.round(PET_CONTENT_H * uiZoom)
   const win = new BrowserWindow({
@@ -72,6 +108,15 @@ app.whenReady().then(() => {
       preload: path.join(__dirname, 'pet-preload.cjs'),
     },
   })
+  // geo-probe 实测：构造不带 x/y 时 Electron 会把窗口自动 fit 进 workArea，
+  // 而 force-dsf=1 下 workArea 属物理直通坐标（200% 屏高 1904），与镜像世界
+  // 的构造高度 2080 跨系比较被误钳成 1904 → 物理只剩 952、内容底部被裁。
+  // setBounds 显式坐标不受此钳制（实测 y=-640 也原样落地），故创建后立即
+  // 按当前位置补回完整尺寸。
+  {
+    const [px, py] = win.getPosition()
+    win.setBounds({ x: px, y: py, width: petW, height: petH })
+  }
   win.webContents.setZoomFactor(uiZoom)
 
   // Click-through: transparent margins must not block the desktop. Renderer
@@ -108,7 +153,8 @@ app.whenReady().then(() => {
     if (!hitRects || hitRects.length === 0) return false
     const pt = screen.getCursorScreenPoint()
     const b = win.getContentBounds()
-    // hitRects 由渲染层按 CSS px 上报；内容被放大 uiZoom 后需换算回 CSS 坐标
+    // hitRects 由渲染层按 CSS px 上报。geo-probe 实测光标与窗口 bounds 同属
+    // 「物理×scaleRoot」镜像世界，可直接相减求窗口内偏移，再除 uiZoom 回 CSS。
     const x = (pt.x - b.x) / uiZoom
     const y = (pt.y - b.y) / uiZoom
     for (const r of hitRects) {
@@ -163,10 +209,13 @@ app.whenReady().then(() => {
     clientY = Number(clientY) || 0
     const [x, y] = win.getPosition()
     const physical = screen.getCursorScreenPoint()
-    // 抓取偏移按 CSS px 上报，内容放大 uiZoom 后实际物理偏移要乘回来
+    // 抓取偏移按 CSS px 上报，乘 uiZoom 换算到窗口 API 世界（与 bounds 同系）
     const dipX = x + clientX * uiZoom
     const dipY = y + clientY * uiZoom
-    const clamp = (v) => Math.min(4, Math.max(0.5, v))
+    // geo-probe 实测光标与 bounds 同属镜像世界，physical/dipX 恒为 1；此
+    // 自校准降级为跨 Electron/Windows 构建差异的兜底（见 drag-start 英文注释），
+    // 下限留 0.25 余量即可覆盖各种情形。
+    const clamp = (v) => Math.min(4, Math.max(0.25, v))
     // 比例按轴独立实测；抓取点太靠边（除数过小）时该轴退回 1。
     const sx = clientX > 4 && Math.abs(physical.x - dipX) > 1 ? clamp(physical.x / dipX) : 1
     const sy = clientY > 4 && Math.abs(physical.y - dipY) > 1 ? clamp(physical.y / dipY) : 1
@@ -236,8 +285,10 @@ app.whenReady().then(() => {
     artWin = new BrowserWindow({
       width: w,
       height: h,
-      x: Math.round(work.x + work.width - w - 24),
-      y: Math.round(work.y + 24),
+      // workArea 属物理直通坐标：先按物理算停靠点（右上留 24 物理间隙），
+      // 再乘 scaleRoot 换算成窗口定位用的 API 坐标（w/h 已是 API 尺寸）。
+      x: Math.round((work.x + work.width - 24) * scaleRoot - w),
+      y: Math.round((work.y + 24) * scaleRoot),
       transparent: true,
       frame: false,
       alwaysOnTop: true,
