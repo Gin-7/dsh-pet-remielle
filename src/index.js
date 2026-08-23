@@ -839,6 +839,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   // turn/end{kind:'aborted'} 复用现有收尾路径回 IDLE「已停止」（不传 seq，
   // record.lastSeq 保持不变；stopped 文案种子经 status-copy 的 seedNumber 稳定回落）。
   // WAITING/ERROR 可合法等待很久（审批/等待回答），不判悬挂。
+  // turn 序号硬编码 0 是安全的：reducer 的 aborted 分支只读 reason.kind、
+  // 不校验 turn 序号（见 pet-reducer.js 的 turn/end 分支）。
   const watchdog = createTurnWatchdog()
   const watchdogTimer = setInterval(() => {
     for (const sessionId of watchdog.tick(reducer.states())) {

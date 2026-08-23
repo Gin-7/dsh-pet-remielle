@@ -2,6 +2,9 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<!-- 页面资源全部同源（fetch/SSE 相对路径、favicon.svg）+ dataURL 图像 + 内联
+     script/style；声明 CSP 同时消除 Electron 的无 CSP 开发警告。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'">
 <title>蕾米埃尔桌宠</title>
 <style>
   html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }

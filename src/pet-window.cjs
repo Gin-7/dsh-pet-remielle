@@ -73,7 +73,8 @@ app.whenReady().then(() => {
   // CSS 视口 = 物理/R = PET_CONTENT（布局不变）、元素物理 = CSS×R 与网页一致。
   // R 不能取自 screen API：force-dsf=1 会把 scaleFactor 一起钉成 1（见
   // readSystemScaleFactor 注释），故优先从注册表读真实值，读不到才回退主屏
-  // scaleFactor；对 R 按 [0.5,2] 夹取。不采用「去掉 force-dsf 让 Electron 按
+  // scaleFactor；对 R 按 [0.5,2] 夹取（上限防极端缩放下窗口超出常规显示器）。
+// 不采用「去掉 force-dsf 让 Electron 按
   // 真实缩放渲染」的做法：非整数缩放下 DIP↔物理往返有截断误差，拖拽闭环会
   // 复发持续漂移（见 drag-move 去重注释）；保持 dsf=1 的无损换算再补偿。
   // 局限：多显示器缩放不同时以主屏为准，不做跨屏动态切换。
@@ -107,7 +108,6 @@ app.whenReady().then(() => {
   {
     const [px, py] = win.getPosition()
     win.setBounds({ x: px, y: py, width: petW, height: petH })
-    console.log('[pet-geo:init]', JSON.stringify({ scaleRoot, uiZoom, petW, petH, pos: { x: px, y: py }, bounds: win.getBounds() }))
   }
 
   // Click-through: transparent margins must not block the desktop. Renderer
@@ -211,8 +211,6 @@ app.whenReady().then(() => {
     const sx = clientX > 4 && Math.abs(physical.x - dipX) > 1 ? clamp(physical.x / dipX) : 1
     const sy = clientY > 4 && Math.abs(physical.y - dipY) > 1 ? clamp(physical.y / dipY) : 1
     drag = { ox: clientX * uiZoom, oy: clientY * uiZoom, sx: sx, sy: sy, tx: NaN, ty: NaN }
-    // 临时诊断：拖动自校准现场值（定位「大距离跳动」用，收尾后移除）
-    console.log('[pet-drag]', JSON.stringify({ clientX, clientY, wx: x, wy: y, dipX, dipY, cursor: { x: physical.x, y: physical.y }, sx, sy }))
   })
   ipcMain.on('drag-move', () => {
     if (!drag) return
@@ -346,14 +344,12 @@ app.whenReady().then(() => {
     console.log('[pet] ready-to-show')
     win.show()
     // show 时 Electron 可能对超出 workArea 的窗口再做一次 fit 钳制；显示稳定
-    // 后重申完整尺寸兜底，并输出前后 bounds 便于现场核对。
+    // 后重申完整尺寸兜底。
     setTimeout(() => {
       if (win.isDestroyed()) return
       try {
-        const before = win.getBounds()
         const [lx, ly] = win.getPosition()
         win.setBounds({ x: lx, y: ly, width: petW, height: petH })
-        console.log('[pet-geo:show]', JSON.stringify({ before, after: win.getBounds() }))
       } catch { /* 窗口销毁竞态，忽略 */ }
     }, 250)
   })
