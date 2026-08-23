@@ -116,6 +116,7 @@ app.whenReady().then(() => {
   {
     const [px, py] = win.getPosition()
     win.setBounds({ x: px, y: py, width: petW, height: petH })
+    console.log('[pet-geo:init]', JSON.stringify({ scaleRoot, uiZoom, petW, petH, pos: { x: px, y: py }, bounds: win.getBounds() }))
   }
   win.webContents.setZoomFactor(uiZoom)
 
@@ -220,6 +221,8 @@ app.whenReady().then(() => {
     const sx = clientX > 4 && Math.abs(physical.x - dipX) > 1 ? clamp(physical.x / dipX) : 1
     const sy = clientY > 4 && Math.abs(physical.y - dipY) > 1 ? clamp(physical.y / dipY) : 1
     drag = { ox: clientX * uiZoom, oy: clientY * uiZoom, sx: sx, sy: sy, tx: NaN, ty: NaN }
+    // 临时诊断：拖动自校准现场值（定位「大距离跳动」用，收尾后移除）
+    console.log('[pet-drag]', JSON.stringify({ clientX, clientY, wx: x, wy: y, dipX, dipY, cursor: { x: physical.x, y: physical.y }, sx, sy }))
   })
   ipcMain.on('drag-move', () => {
     if (!drag) return
@@ -344,7 +347,22 @@ app.whenReady().then(() => {
   win.webContents.on('did-finish-load', () => console.log('[pet] loaded:', win.webContents.getURL()))
   win.webContents.on('did-fail-load', (_e, code, desc, furl) => console.log('[pet] FAIL:', code, desc, furl))
   win.webContents.on('console-message', (_e, level, msg) => console.log('[pet-console]', level, String(msg).slice(0, 160)))
-  win.once('ready-to-show', () => { console.log('[pet] ready-to-show'); win.show() })
+  win.once('ready-to-show', () => {
+    console.log('[pet] ready-to-show')
+    win.show()
+    // 活体验证发现：show 时 Electron 会对「底边超出 workArea」的窗口再做一次
+    // fit 钳制（geo-probe 用隐藏窗口未覆盖此路径），高度被打回 1904→物理 952。
+    // 显示稳定后重申完整尺寸兜底，并输出前后 bounds 便于现场核对。
+    setTimeout(() => {
+      if (win.isDestroyed()) return
+      try {
+        const before = win.getBounds()
+        const [lx, ly] = win.getPosition()
+        win.setBounds({ x: lx, y: ly, width: petW, height: petH })
+        console.log('[pet-geo:show]', JSON.stringify({ before, after: win.getBounds() }))
+      } catch { /* 窗口销毁竞态，忽略 */ }
+    }, 250)
+  })
   win.on('closed', () => {
     stopHitTimer()
     app.quit()
