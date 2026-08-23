@@ -202,25 +202,35 @@ test('generated CSS fixes active and idle heights without margin animation', () 
   assert.doesNotMatch(css, /transition:[^;}]*margin/)
 })
 
-test('multi-session updates keep one eight-pixel summary backboard stable', () => {
+test('multi-session deck renders an inert backboard with a dynamic click target', () => {
   const harness = createHarness('first')
   const sessions = [
     { sessionId: 'first', state: 'WORKING', phase: 'tool-call', message: '正在继续处理任务呢', detail: '.dsh · 调用工具', updatedAt: 3 },
     { sessionId: 'second', state: 'THINKING', phase: 'think', message: '让我想想最优解是什么', detail: '.dsh · 分析阶段', updatedAt: 2 },
     { sessionId: 'third', state: 'THINKING', phase: 'think', message: '正在检查剩余问题', detail: '.dsh · 检查阶段', updatedAt: 1 },
   ]
+  const hasCard = (t) => harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === t)
   harness.send({ ...base, sessions })
+  // 首层刷新不影响背板：+N 保持，第二层一律不渲染第 2 名的文字/图标。
   harness.send({ ...base, sessions: [{ ...sessions[0], message: '正在读取文件' }, sessions[1], sessions[2]] })
 
-  const background = harness.card('让我想想最优解是什么')
-  const writes = harness.styleWrites.filter(({ element, key }) => element === background && key === 'marginTop')
-  assert.ok(writes.length >= 2)
-  assert.deepEqual(new Set(writes.map(({ value }) => value)), new Set(['-60px']))
-  assert.equal(background.offsetHeight - Math.abs(Number.parseInt(writes.at(-1).value, 10)), 8)
-  assert.equal(background.children.find((node) => node.className === 'rm2-pet-bubble-stack-count').textContent, '+2')
-  assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '正在检查剩余问题'), false)
-  harness.click(background)
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  assert.ok(backboard, 'backboard card should exist')
+  const writes = harness.styleWrites.filter(({ element, key }) => element === backboard && key === 'marginTop')
+  assert.ok(writes.length >= 1)
+  assert.equal(backboard.offsetHeight - Math.abs(Number.parseInt(writes.at(-1).value, 10)), 8)
+  assert.equal(backboard.children.find((node) => node.className === 'rm2-pet-bubble-stack-count').textContent, '+2')
+  assert.equal(hasCard('让我想想最优解是什么'), false)
+  assert.equal(hasCard('正在检查剩余问题'), false)
+  // 点击背板：按当帧排序动态解析第 2 名（second）并跳转。
+  harness.click(backboard)
   assert.deepEqual(harness.opened, ['second'])
+  // 同级轮转（third 刷出更大 updatedAt）后，同一张背板的跳转目标跟着排序走。
+  // 先把当前会话复位回 first：上一次跳转已让 second 成为当前会话并占据首层。
+  harness.select('first')
+  harness.send({ ...base, sessions: [sessions[0], sessions[1], { ...sessions[2], updatedAt: 5 }] })
+  harness.click(backboard)
+  assert.deepEqual(harness.opened, ['second', 'third'])
 })
 
 test('title clipping ignores long detail text for short approval titles', () => {
@@ -264,10 +274,14 @@ test('question and error action symbols open their own conversations', () => {
     ],
   })
   const questionAction = harness.card('等待回答').children[0].children.find((node) => node.className === 'rm2-pet-bubble-action')
-  const errorAction = harness.card('需要处理').children[0].children.find((node) => node.className === 'rm2-pet-bubble-action')
-  harness.click(errorAction)
   harness.click(questionAction)
-  assert.deepEqual(harness.opened, ['error', 'question'])
+  assert.deepEqual(harness.opened, ['question'])
+  // ERROR 卡（stateRank 低于 WAITING）排第二，落入假背板：无真卡无图标，
+  // 点击背板动态跳到它。
+  assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '需要处理'), false)
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  harness.click(backboard)
+  assert.deepEqual(harness.opened, ['question', 'error'])
 })
 
 test('completion card waits for confirmed selection before acknowledgement', async () => {
@@ -487,71 +501,70 @@ test('deck order puts approval above ask above completion', () => {
   const titles = harness.elements
     .filter((node) => node.className === 'rm2-pet-bubble-title' && node.textContent)
     .map((node) => node.textContent)
-  // MAX_BUBBLES = 2：完成卡被挤出可视栈，但旧排序下它（updatedAt 最大）会占首位。
-  assert.deepEqual(titles, ['等待确认', '等待回答'])
+  // 牌叠只渲染首层真卡：approval 居首，ask/completion 都收进假背板的 +N。
+  assert.deepEqual(titles, ['等待确认'])
 })
 
 test('same-tier streaming sessions keep the top card stable (no width flapping)', () => {
   const harness = createHarness()
   const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
   // 视觉顺序由 style.order 决定（DOM 顺序不变），因此断言卡片节点的 order 值。
-  const rankOf = (t) => {
-    const node = harness.card(t)
+  const lastOrder = (node) => {
     let last = Infinity
     for (const w of harness.styleWrites) {
       if (w.element === node && w.key === 'order') last = Number(w.value)
     }
     return last
   }
+  const titleCount = (t) => harness.elements.filter((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === t).length
   harness.send({ ...base, sessions: [mk('w1', 10), mk('w2', 5)] })
-  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'w1 starts on top')
+  const topNode = harness.card('w1 的消息')
+  assert.equal(lastOrder(topNode), 0, 'w1 starts on top')
   // w2 的 chunk 刷出更大的 updatedAt，但两者完全同级：顶层保持 w1，宽度不再抖动。
   harness.send({ ...base, sessions: [mk('w1', 10), mk('w2', 20)] })
-  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'hysteresis keeps w1 on top')
   harness.send({ ...base, sessions: [mk('w1', 40), mk('w2', 30)] })
-  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'hysteresis still keeps w1 on top')
-  // 层级变化（approval）不受滞回影响，照常上位。
+  // 滞回失效的话 w1 会掉到第二层并被销毁重建（title 节点出现两份）。
+  assert.equal(titleCount('w1 的消息'), 1, 'top card is never unmounted by same-tier rotation')
+  assert.equal(lastOrder(topNode), 0, 'hysteresis keeps w1 on top')
+  // 层级变化（approval）不受滞回影响，照常上位；w1 让出顶层。
   harness.send({
     ...base,
     sessions: [mk('w1', 50), { sessionId: 'w2', state: 'WAITING', phase: 'approval', message: '等待确认', approval: true, attention: true, updatedAt: 60 }],
   })
-  assert.ok(rankOf('等待确认') < rankOf('w1 的消息'), 'tier change overrides hysteresis')
+  assert.equal(lastOrder(harness.card('等待确认')), 0, 'tier change overrides hysteresis')
 })
 
-test('top-2 hysteresis keeps the first two cards stable across three streaming sessions', () => {
+test('deck keeps one real top card plus the backboard across three streaming sessions', () => {
   const harness = createHarness()
   const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
-  // 视觉顺序由 style.order 决定（DOM 顺序不变），因此断言卡片节点的 order 值。
-  const rankOf = (t) => {
-    const node = harness.card(t)
+  const lastOrder = (node) => {
     let last = Infinity
     for (const w of harness.styleWrites) {
       if (w.element === node && w.key === 'order') last = Number(w.value)
     }
     return last
   }
+  const titleCount = (t) => harness.elements.filter((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === t).length
   harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 50), mk('w3', 10)] })
-  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'w1 leads w2 initially')
-  // 三个 WORKING 会话在场，前两名轮流刷新 updatedAt：前两名顺序保持稳定，宽度不抖动。
+  assert.equal(lastOrder(harness.card('w1 的消息')), 0, 'w1 leads initially')
+  // 三个 WORKING 会话在场，前两名轮流刷新 updatedAt：滞回让 w1 始终守在顶层。
   harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 150), mk('w3', 10)] })
-  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'top-2 hysteresis keeps w1 above w2')
   harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 150), mk('w3', 10)] })
-  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'top-2 hysteresis survives w1 refresh')
   harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 300), mk('w3', 10)] })
-  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'top-2 hysteresis keeps w1 above w2 again')
-  // 第三名刷出更大的 updatedAt：新会话照常进入顶层（滞回只锁互为倒序的相邻对）。
+  assert.equal(lastOrder(harness.card('w1 的消息')), 0, 'top-2 hysteresis keeps w1 on top')
+  assert.equal(titleCount('w1 的消息'), 1, 'rotation never unmounts and rebuilds the top card')
+  // 第三名刷出更大的 updatedAt：新会话照常接管顶层（滞回只锁互为倒序的相邻对）。
   harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 300), mk('w3', 400)] })
-  assert.ok(rankOf('w3 的消息') < rankOf('w2 的消息'), 'a third same-tier session may take over the top')
-  // 随后新的前两名（w3/w2）轮流刷新，顺序同样保持稳定（w1 已被 MAX_BUBBLES 挤出可视栈）。
+  assert.equal(lastOrder(harness.card('w3 的消息')), 0, 'a third same-tier session may take over the top')
+  // 随后新的前两名轮流刷新，顶层同样保持稳定（w1 已收进背板的 +N）。
   harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 500), mk('w3', 400)] })
-  assert.ok(rankOf('w3 的消息') < rankOf('w2 的消息'), 'new top pair stays stable too')
+  assert.equal(lastOrder(harness.card('w3 的消息')), 0, 'new top stays stable too')
 })
 
-test('approval tier change still surfaces above a stabilized top-2 deck', () => {
+test('approval tier change still surfaces above a stabilized deck', () => {
   const harness = createHarness()
   const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
-  const rankOf = (t) => {
-    const node = harness.card(t)
+  const lastOrder = (node) => {
     let last = Infinity
     for (const w of harness.styleWrites) {
       if (w.element === node && w.key === 'order') last = Number(w.value)
@@ -560,7 +573,7 @@ test('approval tier change still surfaces above a stabilized top-2 deck', () => 
   }
   harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 50)] })
   harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 150)] })
-  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'deck is stabilized by top-2 hysteresis')
+  assert.equal(lastOrder(harness.card('w1 的消息')), 0, 'deck is stabilized by top-2 hysteresis')
   // 层级变化（WAITING+approval）不受滞回影响，照常上位到第一名。
   harness.send({
     ...base,
@@ -569,64 +582,19 @@ test('approval tier change still surfaces above a stabilized top-2 deck', () => 
       { sessionId: 'appr-1', state: 'WAITING', phase: 'approval', message: '等待确认', approval: true, attention: true, updatedAt: 60 },
     ],
   })
-  assert.ok(rankOf('等待确认') < rankOf('w1 的消息'), 'tier change overrides top-2 hysteresis')
+  assert.equal(lastOrder(harness.card('等待确认')), 0, 'tier change overrides top-2 hysteresis')
 })
 
-test('deck freezes the second-layer occupant against same-tier rotation', () => {
+test('single-session deck renders no backboard', () => {
   const harness = createHarness()
-  const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
-  const rankOf = (t) => {
-    const node = harness.card(t)
-    let last = Infinity
-    for (const w of harness.styleWrites) {
-      if (w.element === node && w.key === 'order') last = Number(w.value)
-    }
-    return last
-  }
-  const hasCard = (t) => harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === t)
-  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 50), mk('w3', 10)] })
-  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'w1 leads w2 initially')
-  // w3 刷出介于 w1/w2 之间的 updatedAt：纯排序会把 w3 顶到第二，
-  // 第二层冻结让 w2 守住背板位，w3 不闪进牌叠。
-  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 50), mk('w3', 60)] })
-  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'frozen second stays behind the top')
-  assert.equal(hasCard('w3 的消息'), false, 'third session does not flash into the deck')
-  // 例外 2：冻结会话离场后立即换人，不渲染幽灵卡。
-  harness.send({ ...base, sessions: [mk('w1', 100), mk('w3', 60)] })
-  assert.ok(hasCard('w3 的消息'), 'departed frozen session is replaced immediately')
-})
-
-test('deck freeze yields to higher-tier sessions and top changes', () => {
-  const harness = createHarness()
-  const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
-  const appr = () => ({ sessionId: 'appr', state: 'WAITING', phase: 'approval', message: '等待确认', approval: true, attention: true, updatedAt: 9 })
-  const rankOf = (t) => {
-    const node = harness.card(t)
-    let last = Infinity
-    for (const w of harness.styleWrites) {
-      if (w.element === node && w.key === 'order') last = Number(w.value)
-    }
-    return last
-  }
-  // 建立牌叠：appr 顶层，w2 冻结在第二层。
-  harness.send({ ...base, sessions: [appr(), mk('w2', 50), mk('w3', 10)] })
-  assert.ok(rankOf('等待确认') < rankOf('w2 的消息'), 'approval leads, w2 holds the back slot')
-  // 例外 3：attention 会话要上位到第 2，不被 w2 的冻结压制。
   harness.send({
     ...base,
-    sessions: [
-      appr(),
-      mk('w2', 50),
-      { sessionId: 'att-1', state: 'WAITING', phase: 'tool-error', message: '需要处理', attention: true, updatedAt: 1 },
-      mk('w3', 10),
-    ],
+    sessions: [{ sessionId: 'only', state: 'WORKING', phase: 'tool-call', message: '独自工作中', detail: '', updatedAt: 1 }],
   })
-  assert.ok(rankOf('等待确认') < rankOf('需要处理'), 'attention session takes the back slot')
-  assert.equal(rankOf('需要处理'), 1, 'attention holds the back slot')
-  // att-1 离场后：冻结对象消失触发重选，w2 守回背板位（同级轮转继续被吸收）。
-  harness.send({ ...base, sessions: [appr(), mk('w2', 50), mk('w3', 10)] })
-  assert.equal(rankOf('等待确认'), 0, 'approval keeps the top')
-  assert.equal(rankOf('w2 的消息'), 1, 'w2 returns to the back slot after the higher tier departs')
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  assert.equal(backboard, undefined, 'no backboard for a single session')
+  harness.click(harness.card('独自工作中'))
+  assert.deepEqual(harness.opened, ['only'])
 })
 
 test('current-session uplink fires on mount/select and clears on page unload', () => {

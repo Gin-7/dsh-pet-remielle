@@ -1216,7 +1216,9 @@ function mountPet(ctx) {
    *  occasionally), and updates immediately when the mood/phase changes. */
   var BUBBLE_TITLE_MS = 2000
   var prevBubbleVisible = false
-  var MAX_BUBBLES = 2
+  // 牌叠第二层假背板的固定 sessionId（不对应真实会话，仅承载 +N 与点击跳转）。
+  var BUBBLE_BACKBOARD_ID = '__pet_backboard__'
+  var backboardTarget = ''
   // Same-mood titles refresh at most once per interval (upstream 0.3.1 lock),
   // so think/working copy does not flip on every chunk. Mood / waiting / error
   // / success still update immediately. Pending text flushes when the interval elapses.
@@ -1386,6 +1388,11 @@ function mountPet(ctx) {
       event.preventDefault()
       event.stopPropagation()
       if (el.node.dataset.idlePlaceholder === 'true') return
+      // 假背板：点击时按当帧排序动态解析第 2 名会话并跳转。
+      if (el.targetSessionId === BUBBLE_BACKBOARD_ID) {
+        if (backboardTarget) openSession(backboardTarget, false)
+        return
+      }
       openSession(el.targetSessionId, el.completed)
     }
     action.addEventListener('click', function (event) {
@@ -1458,6 +1465,24 @@ function mountPet(ctx) {
   function renderBubble(el, entry, index) {
     var text = entry.message || ''
     var detail = entry.detail || ''
+    if (entry.backboard) {
+      // 假背板：固定高度空方框，仅展示 +N；点击由 activate 动态解析第二层。
+      commitBubbleTitle(el, '', '')
+      el.detail.style.display = 'none'
+      el.action.style.display = 'none'
+      el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
+      el.node.className = 'rm2-pet-bubble backboard' + (entry.summaryCount ? ' summary-backboard' : '')
+      el.node.setAttribute('aria-disabled', 'false')
+      el.node.style.cursor = 'pointer'
+      el.node.title = ''
+      el.node.style.zIndex = String(100 - index)
+      el.node.style.order = String(index)
+      el.node.style.marginTop = '-60px'
+      el.node.style.width = '100%'
+      el.node.style.opacity = String(Math.max(0.46, 0.82 - index * 0.1))
+      el.node.style.display = 'block'
+      return
+    }
     if (!text && !detail) {
       commitBubbleTitle(el, '', entry.mood || '')
       el.node.style.display = 'none'
@@ -1597,9 +1622,24 @@ function mountPet(ctx) {
     // Pet body follows the top bubble's mood; the turn-end "得意中" flash
     // below also keys off the top entry's state.
     if (lastTopEntry && lastTopEntry.mood) snapshot.mood = lastTopEntry.mood
-    var visibleEntries = ordered.slice(0, MAX_BUBBLES)
-    if (visibleEntries.length > 1) {
-      visibleEntries[1] = { ...visibleEntries[1], summaryCount: ordered.length - 1 }
+    // 牌叠只渲染首层真卡；第二层是无内容的假背板（仅 +N），不渲染第 2 名的
+    // 文字与图标——同级会话的 updatedAt 轮转因此不会造成背景卡闪换。
+    // 点击背板时按当帧排序动态解析第 2 名并跳转，这里只需记住它是谁。
+    var visibleEntries = ordered.slice(0, 1)
+    if (ordered.length > 1) {
+      visibleEntries.push({
+        sessionId: BUBBLE_BACKBOARD_ID,
+        state: 'IDLE',
+        message: '',
+        detail: '',
+        phase: '',
+        updatedAt: 0,
+        backboard: true,
+        summaryCount: ordered.length - 1,
+      })
+      backboardTarget = targetSessionOf(ordered[1]) || ''
+    } else {
+      backboardTarget = ''
     }
     var count = visibleEntries.length
     var seen = new Set()

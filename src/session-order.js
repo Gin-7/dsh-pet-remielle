@@ -47,7 +47,6 @@
   // 堆叠卡宽度由最上层决定，否则方框宽度会在两会话间高频抖动。
   // 记住上一次的前两名 id 序列；本次纯排序若恰好互为倒序则交换回来。
   // 审批/回答/完成/attention 等层级变化不受影响，照常上位。
-  // ≥3 个同级会话的轮转由下方的第二层冻结（stabilizeDeckSecond）兜底。
   var lastTopIds = []
   function orderSessions(sessions, currentSessionId) {
     var ranked = sessions.slice().sort(function (a, b) {
@@ -70,8 +69,6 @@
         ranked[1] = first
       }
     }
-    // 第二层冻结后再记录展示用的前两名，保证滞回记住的顺序与实际渲染一致。
-    stabilizeDeckSecond(ranked, currentSessionId)
     lastTopIds = [
       ranked.length > 0 ? String(targetSessionOf(ranked[0]) || '') : '',
       ranked.length > 1 ? String(targetSessionOf(ranked[1]) || '') : '',
@@ -82,54 +79,6 @@
     return tierOf(a) === tierOf(b)
       && (a.sessionId === currentSessionId ? 1 : 0) === (b.sessionId === currentSessionId ? 1 : 0)
       && stateRank(a.state) === stateRank(b.state)
-  }
-
-  // 牌叠第二层冻结：首层未变时锁定第二层的「人选」，吸收同级会话间因
-  // updatedAt 轮转造成的背景卡闪换。只锁选人不锁内容——冻结会话的
-  // message/state 照常逐帧更新，信息不失效。仅三种情况重选：
-  //   1) 首层变化（换人则整叠重排）；
-  //   2) 冻结的会话已不在活跃列表（IDLE/DISCONNECTED/移除）；
-  //   3) 层级更高的会话要上位到第 2（完成/attention/ask 等提醒卡必须
-  //      及时露脸，不能被冻结压制）——同级轮转才冻结。
-  var lastDeckTopId = ''
-  var lastDeckSecondId = ''
-  function deckRankKey(entry, currentSessionId) {
-    return [tierOf(entry), entry.sessionId === currentSessionId ? 1 : 0, stateRank(entry.state)]
-  }
-  function rankKeyGreater(a, b) {
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] !== b[i]) return a[i] > b[i]
-    }
-    return false
-  }
-  function stabilizeDeckSecond(ordered, currentSessionId) {
-    var topId = ordered.length > 0 ? String(targetSessionOf(ordered[0]) || '') : ''
-    var freshSecondId = ordered.length > 1 ? String(targetSessionOf(ordered[1]) || '') : ''
-    if (topId !== lastDeckTopId || !lastDeckSecondId || freshSecondId === lastDeckSecondId) {
-      lastDeckTopId = topId
-      lastDeckSecondId = freshSecondId
-      return
-    }
-    var frozenIdx = -1
-    for (var i = 1; i < ordered.length; i++) {
-      if (String(targetSessionOf(ordered[i]) || '') === lastDeckSecondId) {
-        frozenIdx = i
-        break
-      }
-    }
-    // 冻结会话已离场，或有层级更高的会话顶到第 2：放弃冻结，照常重选。
-    if (frozenIdx < 1
-      || rankKeyGreater(deckRankKey(ordered[1], currentSessionId), deckRankKey(ordered[frozenIdx], currentSessionId))) {
-      lastDeckTopId = topId
-      lastDeckSecondId = freshSecondId
-      return
-    }
-    // 首层未变且无上位者：把冻结的会话提回第二层（若被挤到更后面）。
-    if (frozenIdx > 1) {
-      var displaced = ordered[1]
-      ordered[1] = ordered[frozenIdx]
-      ordered[frozenIdx] = displaced
-    }
   }
 
   global.__rm2SessionOrder = {
