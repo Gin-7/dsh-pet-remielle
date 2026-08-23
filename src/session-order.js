@@ -47,6 +47,10 @@
   // 堆叠卡宽度由最上层决定，否则方框宽度会在两会话间高频抖动。
   // 记住上一次的前两名 id 序列；本次纯排序若恰好互为倒序则交换回来。
   // 审批/回答/完成/attention 等层级变化不受影响，照常上位。
+  // 已知取舍：只保护「前两名恰好互为倒序」的两卡互换；≥3 个完全同级
+  // 会话竞争时，第 3 名可凭 updatedAt 轮转进出前二，滞回无法覆盖，
+  // 表现为背景卡短暂闪换（顶层受层级/当前会话保护基本不受影响）。
+  // 牌叠只显示两层，此瑕疵罕见且轻微，不值得为它维护完整历史序列。
   var lastTopIds = []
   function orderSessions(sessions, currentSessionId) {
     var ranked = sessions.slice().sort(function (a, b) {
