@@ -42,11 +42,12 @@
     if (attentionOf(entry)) return 2
     return 0
   }
-  // 顶层滞回：两个会话完全同级（tier/current/stateRank 都相同）时，
-  // 不因 updatedAt（每个流式 chunk 都会刷新）互换第一名——
+  // 前 2 名滞回：两个会话完全同级（tier/current/stateRank 都相同）时，
+  // 不因 updatedAt（每个流式 chunk 都会刷新）互换前两名的顺序——
   // 堆叠卡宽度由最上层决定，否则方框宽度会在两会话间高频抖动。
+  // 记住上一次的前两名 id 序列；本次纯排序若恰好互为倒序则交换回来。
   // 审批/回答/完成/attention 等层级变化不受影响，照常上位。
-  var lastTopId = ''
+  var lastTopIds = []
   function orderSessions(sessions, currentSessionId) {
     var ranked = sessions.slice().sort(function (a, b) {
       var aTier = tierOf(a)
@@ -58,19 +59,20 @@
       var priority = stateRank(b.state) - stateRank(a.state)
       return priority || (b.updatedAt || 0) - (a.updatedAt || 0)
     })
-    var topId = ranked.length ? String(targetSessionOf(ranked[0]) || '') : ''
-    if (lastTopId && topId && topId !== lastTopId) {
-      var prevTop = null
-      for (var i = 0; i < ranked.length; i++) {
-        if (String(targetSessionOf(ranked[i]) || '') === lastTopId) { prevTop = ranked[i]; break }
-      }
-      if (prevTop && sameRankKey(prevTop, ranked[0], currentSessionId)) {
-        ranked.splice(ranked.indexOf(prevTop), 1)
-        ranked.unshift(prevTop)
-        topId = lastTopId
+    if (lastTopIds.length === 2 && ranked.length >= 2) {
+      var first = ranked[0]
+      var second = ranked[1]
+      if (String(targetSessionOf(second) || '') === lastTopIds[0]
+        && String(targetSessionOf(first) || '') === lastTopIds[1]
+        && sameRankKey(first, second, currentSessionId)) {
+        ranked[0] = second
+        ranked[1] = first
       }
     }
-    lastTopId = topId
+    lastTopIds = [
+      ranked.length > 0 ? String(targetSessionOf(ranked[0]) || '') : '',
+      ranked.length > 1 ? String(targetSessionOf(ranked[1]) || '') : '',
+    ]
     return ranked
   }
   function sameRankKey(a, b, currentSessionId) {

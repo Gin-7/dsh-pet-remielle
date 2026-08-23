@@ -518,6 +518,60 @@ test('same-tier streaming sessions keep the top card stable (no width flapping)'
   assert.ok(rankOf('等待确认') < rankOf('w1 的消息'), 'tier change overrides hysteresis')
 })
 
+test('top-2 hysteresis keeps the first two cards stable across three streaming sessions', () => {
+  const harness = createHarness()
+  const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
+  // 视觉顺序由 style.order 决定（DOM 顺序不变），因此断言卡片节点的 order 值。
+  const rankOf = (t) => {
+    const node = harness.card(t)
+    let last = Infinity
+    for (const w of harness.styleWrites) {
+      if (w.element === node && w.key === 'order') last = Number(w.value)
+    }
+    return last
+  }
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 50), mk('w3', 10)] })
+  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'w1 leads w2 initially')
+  // 三个 WORKING 会话在场，前两名轮流刷新 updatedAt：前两名顺序保持稳定，宽度不抖动。
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 150), mk('w3', 10)] })
+  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'top-2 hysteresis keeps w1 above w2')
+  harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 150), mk('w3', 10)] })
+  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'top-2 hysteresis survives w1 refresh')
+  harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 300), mk('w3', 10)] })
+  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'top-2 hysteresis keeps w1 above w2 again')
+  // 第三名刷出更大的 updatedAt：新会话照常进入顶层（滞回只锁互为倒序的相邻对）。
+  harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 300), mk('w3', 400)] })
+  assert.ok(rankOf('w3 的消息') < rankOf('w2 的消息'), 'a third same-tier session may take over the top')
+  // 随后新的前两名（w3/w2）轮流刷新，顺序同样保持稳定（w1 已被 MAX_BUBBLES 挤出可视栈）。
+  harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 500), mk('w3', 400)] })
+  assert.ok(rankOf('w3 的消息') < rankOf('w2 的消息'), 'new top pair stays stable too')
+})
+
+test('approval tier change still surfaces above a stabilized top-2 deck', () => {
+  const harness = createHarness()
+  const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
+  const rankOf = (t) => {
+    const node = harness.card(t)
+    let last = Infinity
+    for (const w of harness.styleWrites) {
+      if (w.element === node && w.key === 'order') last = Number(w.value)
+    }
+    return last
+  }
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 50)] })
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 150)] })
+  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'deck is stabilized by top-2 hysteresis')
+  // 层级变化（WAITING+approval）不受滞回影响，照常上位到第一名。
+  harness.send({
+    ...base,
+    sessions: [
+      mk('w1', 100),
+      { sessionId: 'appr-1', state: 'WAITING', phase: 'approval', message: '等待确认', approval: true, attention: true, updatedAt: 60 },
+    ],
+  })
+  assert.ok(rankOf('等待确认') < rankOf('w1 的消息'), 'tier change overrides top-2 hysteresis')
+})
+
 test('desktop bubble click (session-action without approve) opens its conversation only', () => {
   const harness = createHarness()
   harness.send({ kind: 'session-action', sessionId: 'desk-9', approve: false })
