@@ -63,29 +63,22 @@ if (!url) {
 }
 
 app.whenReady().then(() => {
-  // UI 缩放补偿：上方 force-device-scale-factor=1 把渲染钉在 100%，而系统
-  // 缩放（如 110%）下网页端按真实 dsf 渲染，桌宠整体会偏小。设系统真实缩放
-  // 为 R，补偿分两层且共用系数 uiZoom = R²：
-  // 1) 窗口外框：bounds-probe 受控实测（vendor Electron，200% 屏）表明
-  //    force-dsf=1 下窗口创建/读写 bounds 与 OS 物理呈「物理 = API / R」的
-  //    镜像关系（创建 400x520@(100,100)，GetWindowRect 读回物理
-  //    200x260@(50,50)），故创建尺寸须乘 R² 才落回「视觉DIP×R」的基线物理；
-  // 2) 页面内容：setZoomFactor(uiZoom) 后 CSS 视口 = 窗口API/(dsf×uiZoom) =
-  //    PET_CONTENT 原尺寸（布局不变），元素物理大小恢复与网页端一致，内容
-  //    位图恰好铺满放大后的窗口表面。
+  // UI 缩放补偿：上方 force-device-scale-factor=1 把渲染钉在 100%，高缩放屏
+  // （真实缩放 R，如 200%）上网页端元素物理大小 = CSS×R，桌宠若不补偿就只有
+  // 一半。坐标系事实（Per-Monitor-V2 感知进程实测，200% 屏）：force-dsf=1 下
+  // BrowserWindow bounds、getCursorScreenPoint、display.workArea 全部同属
+  // 物理像素世界、1:1 直通——此前「bounds = 物理×R 的镜像世界」结论是
+  // DPI-unaware 测量进程被 Windows 按 ÷R 虚拟化读数造成的假象，已废弃。
+  // 因此 zoom 因子取 R 即可同时满足：窗口物理 = PET_CONTENT×R（网页端基线）、
+  // CSS 视口 = 物理/R = PET_CONTENT（布局不变）、元素物理 = CSS×R 与网页一致。
   // R 不能取自 screen API：force-dsf=1 会把 scaleFactor 一起钉成 1（见
   // readSystemScaleFactor 注释），故优先从注册表读真实值，读不到才回退主屏
-  // scaleFactor；对 R 按 [0.5,2] 夹取后再平方（等价于对 uiZoom 夹取
-  // [0.25,4]，200%=R²=4 不受影响）。不采用「去掉 force-dsf 让 Electron 按
+  // scaleFactor；对 R 按 [0.5,2] 夹取。不采用「去掉 force-dsf 让 Electron 按
   // 真实缩放渲染」的做法：非整数缩放下 DIP↔物理往返有截断误差，拖拽闭环会
   // 复发持续漂移（见 drag-move 去重注释）；保持 dsf=1 的无损换算再补偿。
-  // 坐标系注记（geo-probe 实测，200% 屏）：display bounds/workArea 直通物理
-  // 值（workArea 3200x1904 = 物理分辨率减任务栏）；而光标 getCursorScreenPoint
-  // 与窗口 bounds 同属「物理×R」镜像世界（Win32 GetCursorPos=(695,760) 时
-  // Electron 读数=(1390,1520)，恒 ×R）。三者换算分别见构造后补尺寸、
-  // cursorHits 与 artwork-open。局限：多显示器缩放不同时以主屏为准，不做跨屏动态切换。
+  // 局限：多显示器缩放不同时以主屏为准，不做跨屏动态切换。
   const scaleRoot = Math.min(2, Math.max(0.5, readSystemScaleFactor() || screen.getPrimaryDisplay().scaleFactor || 1))
-  const uiZoom = scaleRoot * scaleRoot
+  const uiZoom = scaleRoot
   const petW = Math.round(PET_CONTENT_W * uiZoom)
   const petH = Math.round(PET_CONTENT_H * uiZoom)
   const win = new BrowserWindow({
@@ -108,17 +101,14 @@ app.whenReady().then(() => {
       preload: path.join(__dirname, 'pet-preload.cjs'),
     },
   })
-  // geo-probe 实测：构造不带 x/y 时 Electron 会把窗口自动 fit 进 workArea，
-  // 而 force-dsf=1 下 workArea 属物理直通坐标（200% 屏高 1904），与镜像世界
-  // 的构造高度 2080 跨系比较被误钳成 1904 → 物理只剩 952、内容底部被裁。
-  // setBounds 显式坐标不受此钳制（实测 y=-640 也原样落地），故创建后立即
-  // 按当前位置补回完整尺寸。
+  // 实测：构造不带 x/y 时 Electron 会把窗口自动 fit 进 workArea；窗口高超过
+  // 工作区时会被钳制裁底。setBounds 显式坐标不受此钳制，故创建后立即按当前
+  // 位置补回完整尺寸。
   {
     const [px, py] = win.getPosition()
     win.setBounds({ x: px, y: py, width: petW, height: petH })
     console.log('[pet-geo:init]', JSON.stringify({ scaleRoot, uiZoom, petW, petH, pos: { x: px, y: py }, bounds: win.getBounds() }))
   }
-  win.webContents.setZoomFactor(uiZoom)
 
   // Click-through: transparent margins must not block the desktop. Renderer
   // mousemove + { forward: true } does not work on Windows when only the
@@ -154,8 +144,8 @@ app.whenReady().then(() => {
     if (!hitRects || hitRects.length === 0) return false
     const pt = screen.getCursorScreenPoint()
     const b = win.getContentBounds()
-    // hitRects 由渲染层按 CSS px 上报。geo-probe 实测光标与窗口 bounds 同属
-    // 「物理×scaleRoot」镜像世界，可直接相减求窗口内偏移，再除 uiZoom 回 CSS。
+    // hitRects 由渲染层按 CSS px 上报；光标与 bounds 同为物理像素（force-dsf=1
+    // 直通），相减得窗口内物理偏移，除 uiZoom 回 CSS。
     const x = (pt.x - b.x) / uiZoom
     const y = (pt.y - b.y) / uiZoom
     for (const r of hitRects) {
@@ -210,12 +200,12 @@ app.whenReady().then(() => {
     clientY = Number(clientY) || 0
     const [x, y] = win.getPosition()
     const physical = screen.getCursorScreenPoint()
-    // 抓取偏移按 CSS px 上报，乘 uiZoom 换算到窗口 API 世界（与 bounds 同系）
+    // 抓取偏移按 CSS px 上报，乘 uiZoom 换算到物理像素世界（与 bounds 同系）
     const dipX = x + clientX * uiZoom
     const dipY = y + clientY * uiZoom
-    // geo-probe 实测光标与 bounds 同属镜像世界，physical/dipX 恒为 1；此
-    // 自校准降级为跨 Electron/Windows 构建差异的兜底（见 drag-start 英文注释），
-    // 下限留 0.25 余量即可覆盖各种情形。
+    // force-dsf=1 下光标与 bounds 同为物理像素，physical/dipX 恒为 1；此自校准
+    // 仅作为跨 Electron/Windows 构建差异的兜底（见 drag-start 英文注释），
+    // 夹取 [0.25,4] 防异常测量值放大位移。
     const clamp = (v) => Math.min(4, Math.max(0.25, v))
     // 比例按轴独立实测；抓取点太靠边（除数过小）时该轴退回 1。
     const sx = clientX > 4 && Math.abs(physical.x - dipX) > 1 ? clamp(physical.x / dipX) : 1
@@ -288,10 +278,9 @@ app.whenReady().then(() => {
     artWin = new BrowserWindow({
       width: w,
       height: h,
-      // workArea 属物理直通坐标：先按物理算停靠点（右上留 24 物理间隙），
-      // 再乘 scaleRoot 换算成窗口定位用的 API 坐标（w/h 已是 API 尺寸）。
-      x: Math.round((work.x + work.width - 24) * scaleRoot - w),
-      y: Math.round((work.y + 24) * scaleRoot),
+      // workArea 与窗口定位同为物理像素，直接算停靠点（右上留 24 物理间隙）。
+      x: Math.round(work.x + work.width - 24 - w),
+      y: Math.round(work.y + 24),
       transparent: true,
       frame: false,
       alwaysOnTop: true,
@@ -344,15 +333,20 @@ app.whenReady().then(() => {
   win.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true })
 
   win.loadURL(url)
-  win.webContents.on('did-finish-load', () => console.log('[pet] loaded:', win.webContents.getURL()))
+  // zoom 必须在导航完成后设置：loadURL 之前调用的 setZoomFactor 会在导航提交
+  // 时被重置回 1（活体实测：内容未放大、图案只剩一半大，且拖动自校准随之测出
+  // ~0.54 的错误系数，位移被放大近一倍、一拖就冲出屏幕），故挂在导航完成后。
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.setZoomFactor(uiZoom)
+    console.log('[pet] loaded:', win.webContents.getURL())
+  })
   win.webContents.on('did-fail-load', (_e, code, desc, furl) => console.log('[pet] FAIL:', code, desc, furl))
   win.webContents.on('console-message', (_e, level, msg) => console.log('[pet-console]', level, String(msg).slice(0, 160)))
   win.once('ready-to-show', () => {
     console.log('[pet] ready-to-show')
     win.show()
-    // 活体验证发现：show 时 Electron 会对「底边超出 workArea」的窗口再做一次
-    // fit 钳制（geo-probe 用隐藏窗口未覆盖此路径），高度被打回 1904→物理 952。
-    // 显示稳定后重申完整尺寸兜底，并输出前后 bounds 便于现场核对。
+    // show 时 Electron 可能对超出 workArea 的窗口再做一次 fit 钳制；显示稳定
+    // 后重申完整尺寸兜底，并输出前后 bounds 便于现场核对。
     setTimeout(() => {
       if (win.isDestroyed()) return
       try {

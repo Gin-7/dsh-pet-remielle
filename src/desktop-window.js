@@ -177,7 +177,9 @@ export class DesktopWindow {
     }
     const child = this.spawnImpl(this.backend.command, this.backend.args, {
       cwd: dirname(this.backend.command),
-      stdio: 'ignore',
+      // inherit：让 pet 进程的诊断日志（[pet-geo:*]/[pet-drag] 等）直达宿主
+      // 控制台；此前 'ignore' 曾把现场取证所需的全部输出吞掉。
+      stdio: 'inherit',
       windowsHide: false,
       env: {
         ...process.env,
