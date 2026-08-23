@@ -179,7 +179,7 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   assert.match(html, /idle-placeholder/)
   assert.match(html, /clearPulse:\s*true/)
   // SSE 订阅带 ?client=pet：宿主据此把桌宠窗口排除在 session-action 重放计数之外
-  // （与 index.js wantsPendingReplay 的约定一致），否则"无网页在线"判定永远不成立。
+  // （与 index.js streamClientOf 的约定一致），否则"无网页在线"判定永远不成立。
   assert.match(html, /\/plugins\/dsh-pet-remielle\/stream\?client=pet/)
   // 当前会话完成卡自动 ack（与网页端 client.core.js 语义对齐）：
   // completed 且 targetSessionOf(entry) === currentSessionId 时触发一次 acknowledgeCompletion，

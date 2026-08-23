@@ -81,13 +81,13 @@
       && stateRank(a.state) === stateRank(b.state)
   }
 
+  // 导出面只保留两端消费端实际解构的符号（stateRank/askOf/tierOf 仅供模块
+  // 内部排序使用，不对外暴露）。
   global.__rm2SessionOrder = {
-    stateRank: stateRank,
     attentionOf: attentionOf,
     completionOf: completionOf,
     targetSessionOf: targetSessionOf,
     approvalOf: approvalOf,
-    askOf: askOf,
     orderSessions: orderSessions,
   }
 })(typeof window !== 'undefined' ? window : globalThis)

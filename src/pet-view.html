@@ -463,7 +463,15 @@
   })
   window.addEventListener('mousemove', function (e) {
     if (!dragState) return
-    if (!(e.buttons & 1)) { dragState = null; if (!menuOpen) setForceInteractive(false); syncCursor(); return }
+    if (!(e.buttons & 1)) {
+      // 左键已在窗外释放：渲染层与主进程的拖动状态一并复位，
+      // 否则主进程 drag 残留到下一次 dragStart 才被覆盖。
+      dragState = null
+      if (window.petBridge && window.petBridge.dragEnd) window.petBridge.dragEnd()
+      if (!menuOpen) setForceInteractive(false)
+      syncCursor()
+      return
+    }
     var dx = e.screenX - dragState.x
     var dy = e.screenY - dragState.y
     if (Math.abs(dx) + Math.abs(dy) > 6) dragState.moved = true
@@ -497,7 +505,6 @@
   // 排序逻辑与网页客户端共用 src/session-order.js（宿主 /session-order.js 提供）：
   // 审批 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
   var __order = window.__rm2SessionOrder
-  var stateRank = __order.stateRank
   var attentionOf = __order.attentionOf
   var completionOf = __order.completionOf
   var targetSessionOf = __order.targetSessionOf
@@ -598,6 +605,10 @@
     var activate = function (event) {
       event.preventDefault()
       event.stopPropagation()
+      // 与网页端一致（src/client.core.js activate）：占位卡不可交互，
+      // 否则点击「待命中」会以 __pet_idle__ 广播打开不存在的会话，
+      // 无网页在线时还会误触 openDshPage 弹出浏览器。
+      if (el.node.dataset.idlePlaceholder === 'true') return
       // 假背板：点击时按当帧排序动态解析第 2 名会话并跳转。
       if (el.targetSessionId === BUBBLE_BACKBOARD_ID) {
         if (backboardTarget) requestSessionOpen(backboardTarget, false)
@@ -952,7 +963,7 @@
   }
 
   var source
-  // ?client=pet：向宿主表明这是桌宠窗口的订阅（与 index.js wantsPendingReplay
+  // ?client=pet：向宿主表明这是桌宠窗口的订阅（与 index.js streamClientOf
   // 的约定一致）——宿主据此把它排除在 session-action 重放计数之外，避免桌宠
   // 抢收导致"无网页在线"判定永远不成立。
   try { source = new EventSource('/plugins/dsh-pet-remielle/stream?client=pet') } catch (e) { /* fallback to polling */ }

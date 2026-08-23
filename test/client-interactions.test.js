@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 const CLIENT = new URL('../lib/client.js', import.meta.url)
+const CLIENT_CORE = new URL('../src/client.core.js', import.meta.url)
+const STATUS_COPY = new URL('../src/status-copy.js', import.meta.url)
 
 function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = []) {
   const elements = []
@@ -630,5 +632,23 @@ test('desktop completion-card click opens the conversation and acknowledges', as
   assert.deepEqual(harness.allowClicks, [])
   await Promise.resolve()
   assert.ok(harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'done-9' })))
+})
+
+test('内联 SUCCESS_COPY_POOL 与 status-copy.js 的 success 池逐字一致（防漂移护栏）', () => {
+  // 网页包不含 status-copy 模块，client.core.js 内联了 success 文案池；
+  // 两处必须同步维护，这里静态断言内容一致，防止后续只改一处导致漂移。
+  const core = readFileSync(CLIENT_CORE, 'utf8')
+  const copySource = readFileSync(STATUS_COPY, 'utf8')
+  // 从源码字面量中提取全部单引号字符串，得到字符串数组
+  const parsePool = (literal) => {
+    const items = [...literal.matchAll(/'([^']*)'/g)].map((match) => match[1])
+    assert.ok(items.length >= 1, `文案池不应为空：${literal}`)
+    return items
+  }
+  const inlineMatch = core.match(/\bSUCCESS_COPY_POOL\s*=\s*(\[[^\]]*\])/)
+  assert.ok(inlineMatch, 'client.core.js 中应存在内联 SUCCESS_COPY_POOL 字面量')
+  const statusMatch = copySource.match(/\bsuccess:\s*(\[[^\]]*\])/)
+  assert.ok(statusMatch, 'status-copy.js 中应存在 success 池字面量')
+  assert.deepEqual(parsePool(inlineMatch[1]), parsePool(statusMatch[1]))
 })
 

@@ -202,7 +202,10 @@ app.whenReady().then(() => {
   // 会落到错误页面；当前部署为根路径，待真有子路径需求再传 base path。
   ipcMain.handle('open-dsh-page', () => {
     try {
-      return shell.openExternal(new URL('/', url).origin)
+      const target = new URL('/', url)
+      // 只放行 http(s)：DSH_PET_URL 异常时不把其他协议的 URL 交给系统浏览器
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') return false
+      return shell.openExternal(target.origin)
     } catch {
       return Promise.resolve(false)
     }
@@ -224,8 +227,10 @@ app.whenReady().then(() => {
     artWin.webContents.executeJavaScript(`document.getElementById('art').src = ${JSON.stringify(dataUrl)}`).catch(() => {})
   }
   ipcMain.on('artwork-open', (_event, w, h) => {
-    w = Math.max(60, Math.round(Number(w) || 220))
-    h = Math.max(60, Math.round(Number(h) || 220))
+    // 渲染层按 CSS px 上报尺寸；force-dsf=1 下 artWin 内容 1 CSS px = 1 物理
+    // 像素，不乘 uiZoom 会在高缩放屏上比网页端显示偏小，与主窗口同倍放大。
+    w = Math.max(60, Math.round((Number(w) || 220) * uiZoom))
+    h = Math.max(60, Math.round((Number(h) || 220) * uiZoom))
     if (artWin && !artWin.isDestroyed()) { artWin.setBounds({ width: w, height: h }); return }
     const work = screen.getPrimaryDisplay().workArea
     artWin = new BrowserWindow({

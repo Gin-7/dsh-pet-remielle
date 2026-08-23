@@ -1231,7 +1231,6 @@ function mountPet(ctx) {
   // 排序逻辑与桌面悬浮窗共用 src/session-order.js（构建时由 scripts/build-client.mjs
   // 拼接到本文件之前）：审批 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
   var __order = window.__rm2SessionOrder
-  var stateRank = __order.stateRank
   var attentionOf = __order.attentionOf
   var completionOf = __order.completionOf
   var targetSessionOf = __order.targetSessionOf

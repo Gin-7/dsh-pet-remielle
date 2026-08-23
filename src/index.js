@@ -1028,7 +1028,13 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           if (client !== 'pet') {
             const replay = pendingActions.take()
             if (replay) {
-              try { res.write(`data: ${JSON.stringify(replay)}\n\n`) } catch { /* 客户端已断开 */ }
+              try {
+                res.write(`data: ${JSON.stringify(replay)}\n\n`)
+              } catch {
+                // 客户端已断开：回滚暂存，动作留给下一个网页订阅者，
+                // 避免先 take 后 write 失败导致动作静默丢失。
+                pendingActions.stash(replay)
+              }
             }
           }
         } }),
