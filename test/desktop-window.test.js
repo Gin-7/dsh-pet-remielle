@@ -178,4 +178,8 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   assert.match(html, /height:\s*68px/)
   assert.match(html, /idle-placeholder/)
   assert.match(html, /clearPulse:\s*true/)
+  // 当前会话完成卡自动 ack（与网页端 client.core.js 语义对齐）：
+  // completed 且 targetSessionOf(entry) === currentSessionId 时触发一次 acknowledgeCompletion。
+  assert.match(html, /completed && el\.targetSessionId === currentSessionId && !el\.completionAcked/)
+  assert.match(html, /el\.completionAcked = true/)
 })

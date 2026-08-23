@@ -579,7 +579,7 @@
     node.appendChild(header)
     node.appendChild(detail)
     node.appendChild(stackCount)
-    var el = { node: node, header: header, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
+    var el = { node: node, header: header, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, completed: false, completionAcked: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
     var activate = function (event) {
       event.preventDefault()
       event.stopPropagation()
@@ -673,6 +673,14 @@
     el.targetSessionId = targetSessionOf(entry)
     el.canApprove = approval
     el.completed = completed
+    // 与网页端语义对齐（src/client.core.js updateBubbles）：当前会话弹出完成通知时
+    // 自动 acknowledgeCompletion，无需用户点击。acknowledgeCompletion 自带
+    // completionAckPending 去重与退避重试；此处再用 el.completionAcked 标记位保证
+    // 同一张卡只在 completed 成立时触发一次，避免每帧重复 POST。
+    if (completed && el.targetSessionId === currentSessionId && !el.completionAcked) {
+      el.completionAcked = true
+      acknowledgeCompletion(el.targetSessionId)
+    }
     var actionNotif = approval || (attention && !completed)
     if (actionNotif) {
       var glyph = approval ? '✓' : entry.phase === 'ask' ? '?' : '!'
