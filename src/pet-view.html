@@ -747,7 +747,8 @@
     // 是 0.3.4 桌面点卡片不跳转时代的遗留，与 title 提示和实际行为矛盾。
     el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
     el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
-    el.node.title = approval ? '允许一次：点击圆形勾号直接确认' : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
+    // 占位卡不可交互（activate 有守卫），title 不能落进「点击跳转」兜底文案
+    el.node.title = entry.idlePlaceholder ? '' : approval ? '允许一次：点击圆形勾号直接确认' : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
     el.node.style.zIndex = String(100 - index)
     el.node.style.order = String(index)
     el.node.style.marginTop = index === 0 ? '0px' : '-60px'
