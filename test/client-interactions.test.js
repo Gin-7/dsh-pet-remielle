@@ -572,6 +572,63 @@ test('approval tier change still surfaces above a stabilized top-2 deck', () => 
   assert.ok(rankOf('等待确认') < rankOf('w1 的消息'), 'tier change overrides top-2 hysteresis')
 })
 
+test('deck freezes the second-layer occupant against same-tier rotation', () => {
+  const harness = createHarness()
+  const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
+  const rankOf = (t) => {
+    const node = harness.card(t)
+    let last = Infinity
+    for (const w of harness.styleWrites) {
+      if (w.element === node && w.key === 'order') last = Number(w.value)
+    }
+    return last
+  }
+  const hasCard = (t) => harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === t)
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 50), mk('w3', 10)] })
+  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'w1 leads w2 initially')
+  // w3 刷出介于 w1/w2 之间的 updatedAt：纯排序会把 w3 顶到第二，
+  // 第二层冻结让 w2 守住背板位，w3 不闪进牌叠。
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 50), mk('w3', 60)] })
+  assert.ok(rankOf('w1 的消息') < rankOf('w2 的消息'), 'frozen second stays behind the top')
+  assert.equal(hasCard('w3 的消息'), false, 'third session does not flash into the deck')
+  // 例外 2：冻结会话离场后立即换人，不渲染幽灵卡。
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w3', 60)] })
+  assert.ok(hasCard('w3 的消息'), 'departed frozen session is replaced immediately')
+})
+
+test('deck freeze yields to higher-tier sessions and top changes', () => {
+  const harness = createHarness()
+  const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
+  const appr = () => ({ sessionId: 'appr', state: 'WAITING', phase: 'approval', message: '等待确认', approval: true, attention: true, updatedAt: 9 })
+  const rankOf = (t) => {
+    const node = harness.card(t)
+    let last = Infinity
+    for (const w of harness.styleWrites) {
+      if (w.element === node && w.key === 'order') last = Number(w.value)
+    }
+    return last
+  }
+  // 建立牌叠：appr 顶层，w2 冻结在第二层。
+  harness.send({ ...base, sessions: [appr(), mk('w2', 50), mk('w3', 10)] })
+  assert.ok(rankOf('等待确认') < rankOf('w2 的消息'), 'approval leads, w2 holds the back slot')
+  // 例外 3：attention 会话要上位到第 2，不被 w2 的冻结压制。
+  harness.send({
+    ...base,
+    sessions: [
+      appr(),
+      mk('w2', 50),
+      { sessionId: 'att-1', state: 'WAITING', phase: 'tool-error', message: '需要处理', attention: true, updatedAt: 1 },
+      mk('w3', 10),
+    ],
+  })
+  assert.ok(rankOf('等待确认') < rankOf('需要处理'), 'attention session takes the back slot')
+  assert.equal(rankOf('需要处理'), 1, 'attention holds the back slot')
+  // att-1 离场后：冻结对象消失触发重选，w2 守回背板位（同级轮转继续被吸收）。
+  harness.send({ ...base, sessions: [appr(), mk('w2', 50), mk('w3', 10)] })
+  assert.equal(rankOf('等待确认'), 0, 'approval keeps the top')
+  assert.equal(rankOf('w2 的消息'), 1, 'w2 returns to the back slot after the higher tier departs')
+})
+
 test('current-session uplink fires on mount/select and clears on page unload', () => {
   const harness = createHarness()
   const currentPosts = () => harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/session/current'))
