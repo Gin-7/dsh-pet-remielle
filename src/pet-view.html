@@ -742,7 +742,10 @@
     el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
     el.node.className = 'rm2-pet-bubble' + (index === 0 ? ' top' : '') + (attention ? ' attention' : '') + (approval ? ' approval' : '') + (completed ? ' completed' : '') + (entry.idlePlaceholder ? ' idle-placeholder' : '') + (entry.summaryCount ? ' summary-backboard' : '')
     el.node.setAttribute('aria-disabled', entry.idlePlaceholder ? 'true' : 'false')
-    el.node.style.cursor = (entry.idlePlaceholder || (!approval && !completed)) ? 'default' : 'pointer'
+    // 光标策略与网页端对齐（src/client.core.js）：点击行为统一为整卡跳转后，
+    // 工作卡同样可点，仅待机占位卡显示 default；旧的「非审批/完成即 default」
+    // 是 0.3.4 桌面点卡片不跳转时代的遗留，与 title 提示和实际行为矛盾。
+    el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
     el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
     el.node.title = approval ? '允许一次：点击圆形勾号直接确认' : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
     el.node.style.zIndex = String(100 - index)
