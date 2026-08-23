@@ -41,6 +41,7 @@ import {
 } from './pets.js'
 import { createBalanceService, normalizeUsageMode } from './balance.js'
 import { statusCopy } from './status-copy.js'
+import { TURN_WATCHDOG_INTERVAL_MS, createTurnWatchdog } from './turn-watchdog.js'
 
 export const name = 'dsh-pet-remielle'
 export const inject = ['sessions', 'credentials']
@@ -813,6 +814,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   }
   const offEvent = eventCtx.on('session/event', (session, event) => {
     const eventType = String(event?.type ?? '')
+    // 看门狗活跃度：任何事件都刷新该会话的「最近活动」时间戳；
+    // turn/end 已收尾回合，条目随之移除，不再参与悬挂判定。
+    watchdog.feed(completionSessionIdOf(session))
+    if (eventType === 'turn/end') watchdog.end(completionSessionIdOf(session))
     if (eventType === 'turn/start' || eventType === 'tool/call') dropCompletion(session)
     for (const message of reducer.handle(session, event)) {
       onMessage(message)
@@ -821,11 +826,34 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   }, { global: true })
   const offDisposed = eventCtx.on('session/disposed', (session) => {
     dropCompletion(session)
+    watchdog.end(completionSessionIdOf(session))
     for (const message of reducer.disposeSession(session)) {
       onMessage(message)
       hub.broadcast()
     }
   }, { global: true })
+
+  // Turn 悬挂看门狗：GUI 强杀会话时 DSH 不向 live 总线补发 turn/end（仅
+  // 冷读日志时 repair），事件流戛然而止，reducer 永远停在 THINKING「分析阶段」。
+  // 每 30 秒扫描一次：THINKING/WORKING 的会话超过 3 分钟无任何事件，即合成
+  // turn/end{kind:'aborted'} 复用现有收尾路径回 IDLE「已停止」（不传 seq，
+  // record.lastSeq 保持不变；stopped 文案种子经 status-copy 的 seedNumber 稳定回落）。
+  // WAITING/ERROR 可合法等待很久（审批/等待回答），不判悬挂。
+  const watchdog = createTurnWatchdog()
+  const watchdogTimer = setInterval(() => {
+    for (const sessionId of watchdog.tick(reducer.states())) {
+      watchdog.end(sessionId)
+      logger.info?.(`dsh-pet-remielle: turn hung with no events, force-ending session ${sessionId} as aborted`)
+      for (const message of reducer.handle(
+        { header: { id: sessionId } },
+        { type: 'turn/end', data: { turn: 0, reason: { kind: 'aborted' } } },
+      )) {
+        onMessage(message)
+        hub.broadcast()
+      }
+    }
+  }, TURN_WATCHDOG_INTERVAL_MS)
+  watchdogTimer.unref?.() // 双保险：即使宿主未走下方 dispose 钩子也不阻止进程退出
 
   const unwatch = settings.watch((next) => {
     for (const message of reducer.setIncludeSubagents(next.includeSubagents === true)) {
@@ -1175,6 +1203,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   }
 
   ctx.effect(() => () => {
+    clearInterval(watchdogTimer)
     offEvent?.()
     offDisposed?.()
     unwatch()

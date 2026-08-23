@@ -12,6 +12,8 @@
 - 桌面右键菜单显示当前心情文字；工具提示措辞与网页端统一。
 
 ### Fixes
+- 高缩放屏上桌宠仍偏小一半：force-dsf=1 会把 screen API 的 scaleFactor 一并钉成 1，「按主屏 scaleFactor 做 zoom 补偿」（本版 Features 第 5 条）恒得 1、完全失效——改从注册表 AppliedDPI 读真实系统缩放 R，内容 zoom 与窗口几何共用 uiZoom=R² 双层补偿；geo-probe 受控实验另定标两处坐标换算并顺带修复：构造窗口无坐标时被 Electron 按 workArea（物理直通系）跨系误钳高度（物理 952→1040）、点击命中判定误乘 scaleRoot。
+- GUI 强行终止会话后桌宠永久卡在「分析阶段」：DSH 强杀轮次时不向 live 事件总线补发 turn/end（仅冷读日志时 repair），插件侧事件流戛然而止——新增 turn 悬挂看门狗（每 30 秒扫描），THINKING/WORKING 超 3 分钟无任何事件即合成 aborted 收尾回 IDLE「已停止」；等待确认/等待回答可合法久等，不误杀。
 - 打开 DSH 网页时右下角宠物闪现一下后消失：初始渲染改为快照驱动的显隐，挂载即隐藏。
 - 桌面「待命中」占位卡可被点击：误广播打开不存在的会话、无网页在线时还会弹出浏览器——补齐与网页端一致的守卫。
 - 桌宠窗口常驻 SSE 订阅曾让 session-action 永远“已送达”，暂存兜底形同虚设——订阅者区分 pet/web，delivered 只计网页端。
