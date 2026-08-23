@@ -692,8 +692,13 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   })
   let pulse = null
   // 网页端上报的当前会话 id（空串=清除）：只存内存，随下次快照/SSE 自然带出，
-  // 上报本身 fire-and-forget，不触发 broadcast。
+  // 上报本身 fire-and-forget，不触发 broadcast。附带 TTL：页面崩溃/被杀时
+  // pagehide 清空上报不会执行，陈旧的 currentSessionId 会让桌面端持续误置顶、
+  // 并对用户没看过的完成卡误自动 ack——超过时效后回落为「无当前会话」，
+  // 用户下次任意操作即重新上报恢复。TTL 取 10 分钟，远大于正常浏览间隔。
+  const CURRENT_SESSION_TTL_MS = 10 * 60 * 1000
   let reportedCurrentSessionId = ''
+  let reportedCurrentSessionAt = 0
   // Completed turns stay visible until the user opens their conversation.
   const completionQueue = new Map()
 
@@ -703,8 +708,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       if (message.state === PetState.SUCCESS && message.sessionId) {
         completionQueue.set(message.sessionId, {
           sessionId: message.sessionId,
-          // 与 reducer 的 SUCCESS 文案同池（status-copy.js success），缺省也走随机固定文案。
-          message: message.message ?? statusCopy('success', Date.now()),
+          // 与 reducer 的 SUCCESS 文案同池（status-copy.js success）；种子取
+          // sessionId 保持确定性（Date.now() 每次随机）。允许与 reducer/client
+          // 端变体不同，池一致性由防漂移测试保证。
+          message: message.message ?? statusCopy('success', message.sessionId ?? ''),
           detail: message.detail ?? '任务已完成',
           project: message.project,
           task: message.task,
@@ -782,7 +789,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
     getStates: () => reducer.states(),
     getCompletions: () => [...completionQueue.values()],
-    getCurrent: () => reportedCurrentSessionId,
+    getCurrent: () => (Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''),
   })
 
   const hub = createStreamHub({ serve: serveState })
@@ -997,7 +1004,11 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           kind: 'exact',
           path: SESSION_CURRENT_ENDPOINT,
           handler: createSessionCurrentHandler({
-            accept: (sessionId) => { reportedCurrentSessionId = sessionId },
+            accept: (sessionId) => {
+              reportedCurrentSessionId = sessionId
+              // 空串（清除上报）同样刷新时间戳：清除态本身也是一种有效状态
+              reportedCurrentSessionAt = Date.now()
+            },
           }),
         }),
         'dsh-pet-remielle: web client current-session uplink',

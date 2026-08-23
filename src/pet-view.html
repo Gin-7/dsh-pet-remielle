@@ -145,6 +145,8 @@
   // 牌叠第二层假背板的固定 sessionId（不对应真实会话，仅承载 +N 与点击跳转）。
   var BUBBLE_BACKBOARD_ID = '__pet_backboard__'
   var backboardTarget = ''
+  // 当前会话完成卡的自动 ack 标记（sessionId -> true）：见 updateBubbles 内说明
+  var autoAckedCompletions = new Map()
   var currentSessionId = undefined
   var lastTopEntry = null
   var bubbleEls = new Map()
@@ -505,6 +507,8 @@
   // 排序逻辑与网页客户端共用 src/session-order.js（宿主 /session-order.js 提供）：
   // 审批 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
   var __order = window.__rm2SessionOrder
+  // 宿主 /session-order.js 加载失败时早失败并给出可定位的成因（与网页端一致）
+  if (!__order) throw new Error('__rm2SessionOrder is missing: session-order.js script failed to load')
   var attentionOf = __order.attentionOf
   var completionOf = __order.completionOf
   var targetSessionOf = __order.targetSessionOf
@@ -601,7 +605,7 @@
     node.appendChild(header)
     node.appendChild(detail)
     node.appendChild(stackCount)
-    var el = { node: node, header: header, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, completed: false, completionAcked: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
+    var el = { node: node, header: header, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, completed: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
     var activate = function (event) {
       event.preventDefault()
       event.stopPropagation()
@@ -725,19 +729,6 @@
     el.targetSessionId = targetSessionOf(entry)
     el.canApprove = approval
     el.completed = completed
-    // 与网页端语义对齐（src/client.core.js updateBubbles）：当前会话弹出完成通知时
-    // 自动 acknowledgeCompletion，无需用户点击。acknowledgeCompletion 自带
-    // completionAckPending 去重与退避重试；el.completionAcked 标记位保证同一轮
-    // 完成只 POST 一次（避免每帧重复），completed 不成立时复位标记位——
-    // el 按 sessionId 复用，不复位会导致同一会话第二轮完成不再自动 ack。
-    if (completed && el.targetSessionId === currentSessionId) {
-      if (!el.completionAcked) {
-        el.completionAcked = true
-        acknowledgeCompletion(el.targetSessionId)
-      }
-    } else {
-      el.completionAcked = false
-    }
     var actionNotif = approval || (attention && !completed)
     if (actionNotif) {
       var glyph = approval ? '✓' : entry.phase === 'ask' ? '?' : '!'
@@ -784,6 +775,22 @@
     var ordered = orderSessions(sessions)
     lastTopEntry = ordered[0] || null
     if (lastTopEntry && lastTopEntry.mood) snapshot.mood = lastTopEntry.mood
+    // 自动 ack 与网页端同构（src/client.core.js updateBubbles）：在数据层对全量
+    // ordered 检查「当前会话是否有完成通知」，而不是只在渲染的顶层卡上检查——
+    // 完成卡被审批/回答压到假背板之下（不渲染）时同样要自动消除提醒。
+    // autoAckedCompletions 保证同一轮完成只 POST 一次；完成被宿主清除后该会话
+    // 的检查转为 false，标记随即删除，同一会话第二轮完成可再次 ack。
+    if (currentSessionId) {
+      var currentHasCompletion = ordered.some(function (entry) {
+        return completionOf(entry) && targetSessionOf(entry) === currentSessionId
+      })
+      if (currentHasCompletion && !autoAckedCompletions.get(currentSessionId)) {
+        autoAckedCompletions.set(currentSessionId, true)
+        acknowledgeCompletion(currentSessionId)
+      } else if (!currentHasCompletion) {
+        autoAckedCompletions.delete(currentSessionId)
+      }
+    }
     // 牌叠只渲染首层真卡；第二层是无内容的假背板（仅 +N），不渲染第 2 名的
     // 文字与图标——同级会话的 updatedAt 轮转因此不会造成背景卡闪换。
     // 点击背板时按当帧排序动态解析第 2 名并跳转，这里只需记住它是谁。

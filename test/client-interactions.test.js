@@ -114,12 +114,25 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     constructor() { stream = this }
     close() {}
   }
+  const windowListeners = new Map()
+  const beacons = []
+  class BlobStub {
+    constructor(parts) { this.parts = parts }
+  }
+  const navigatorStub = {
+    // sendBeacon 记录请求体；测试可通过置空 sendBeacon 验证 keepalive fetch 兜底
+    sendBeacon: (url, blob) => { beacons.push({ url, body: String(blob?.parts?.[0] ?? '') }); return true },
+  }
   const window = {
     __ModuleLoader__: { load(entry) { window.factory = entry.factory } },
     innerWidth: 1280,
     innerHeight: 800,
     localStorage: { setItem() {} },
-    addEventListener() {},
+    addEventListener(name, listener) {
+      const listeners = windowListeners.get(name) ?? []
+      listeners.push(listener)
+      windowListeners.set(name, listeners)
+    },
     removeEventListener() {},
     setInterval() { return 1 },
     clearInterval() {},
@@ -136,7 +149,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
   }
 
   const code = readFileSync(CLIENT, 'utf8')
-  new Function('window', 'document', 'EventSource', 'fetch', code)(window, document, EventSourceStub, fetch)
+  new Function('window', 'document', 'EventSource', 'fetch', 'navigator', 'Blob', code)(window, document, EventSourceStub, fetch, navigatorStub, BlobStub)
   const moduleExports = window.factory((id) => {
     if (id === 'react') return { createElement: () => ({}), Fragment: Symbol('Fragment') }
     throw new Error(`unexpected require: ${id}`)
@@ -181,7 +194,10 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     const queued = timers.splice(0)
     for (const listener of queued) listener()
   }
-  return { allowClicks, card, click, elements, fetches, opened, select, send, styleWrites, flushTitleTimers }
+  function dispatchWindowEvent(name) {
+    for (const listener of windowListeners.get(name) ?? []) listener({})
+  }
+  return { allowClicks, beacons, card, click, dispatchWindowEvent, elements, fetches, navigator: navigatorStub, opened, select, send, styleWrites, flushTitleTimers }
 }
 
 const base = {
@@ -650,5 +666,42 @@ test('内联 SUCCESS_COPY_POOL 与 status-copy.js 的 success 池逐字一致（
   const statusMatch = copySource.match(/\bsuccess:\s*(\[[^\]]*\])/)
   assert.ok(statusMatch, 'status-copy.js 中应存在 success 池字面量')
   assert.deepEqual(parsePool(inlineMatch[1]), parsePool(statusMatch[1]))
+})
+
+test('lib bundle inlines session-order ahead of mountPet（拼接顺序护栏）', () => {
+  // __rm2SessionOrder 必须在 mountPet 定义前就位，否则消费端早失败守卫会抛错、
+  // 宠物模块整体失效。此断言防止 build-client.mjs 的前置拼接被意外破坏。
+  const code = readFileSync(CLIENT, 'utf8')
+  const orderAt = code.indexOf('__rm2SessionOrder')
+  assert.notEqual(orderAt, -1, 'lib/client.js 应包含 session-order 拼接产物')
+  const mountAt = code.indexOf('function mountPet')
+  assert.notEqual(mountAt, -1, 'lib/client.js 应包含 mountPet 定义')
+  assert.ok(orderAt < mountAt, 'session-order 必须拼接在 mountPet 之前')
+})
+
+test('unloading clears the reported current session via beacon or keepalive fetch（行为验证）', async () => {
+  // sendBeacon 可用：pagehide 清空上报走 sendBeacon
+  const harness = createHarness()
+  harness.select('ws9')
+  harness.dispatchWindowEvent('pagehide')
+  assert.equal(harness.beacons.length, 1)
+  assert.equal(JSON.parse(harness.beacons[0].body).sessionId, '')
+  assert.ok(String(harness.beacons[0].url).endsWith('/plugins/dsh-pet-remielle/session/current'))
+
+  // beforeunload 同样清空（重复清空无副作用）
+  harness.select('ws8')
+  harness.dispatchWindowEvent('beforeunload')
+  assert.equal(harness.beacons.length, 2)
+  assert.equal(JSON.parse(harness.beacons[1].body).sessionId, '')
+
+  // sendBeacon 不可用：兜底为 keepalive fetch
+  harness.navigator.sendBeacon = undefined
+  harness.select('ws7')
+  const before = harness.fetches.length
+  harness.dispatchWindowEvent('pagehide')
+  const fallback = harness.fetches.slice(before).find(({ url, options }) =>
+    String(url).endsWith('/session/current') && options.keepalive === true)
+  assert.ok(fallback, 'should fall back to keepalive fetch when sendBeacon is unavailable')
+  assert.equal(JSON.parse(fallback.options.body).sessionId, '')
 })
 
