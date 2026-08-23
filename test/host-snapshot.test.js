@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStateSnapshot } from '../src/index.js'
+import { applyCompletionAck, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -32,6 +32,17 @@ function request(method, body) {
   req.headers = { host: '127.0.0.1:3080' }
   req.socket = { remoteAddress: '127.0.0.1' }
   return req
+}
+
+function stubStreamRes() {
+  const writes = []
+  const res = {
+    writes,
+    write(chunk) { writes.push(String(chunk)); return true },
+    end() {},
+    on() { return res },
+  }
+  return res
 }
 
 const idle = createMessage(PetMessageKind.STATE, {
@@ -401,7 +412,7 @@ test('delivered session-action is not stashed and only the latest one is kept', 
   const store = createPendingActionStore()
   const handler = createSessionOpenHandler({ notify: () => 0, onUndelivered: (a) => store.stash(a) })
   await handler(request('POST', { sessionId: 'old' }), responseRecorder())
-  await handler(request('POST', { sessionId: 'new', approve: true }), responseRecorder())
+  await handler(request('POST', { sessionId: 'new' }), responseRecorder())
   // 只保留最新一条
   assert.equal(store.take().sessionId, 'new')
 })
@@ -412,6 +423,58 @@ test('pending action store starts empty and clears after take', () => {
   store.stash({ sessionId: 's1' })
   assert.equal(store.take().sessionId, 's1')
   assert.equal(store.take(), null)
+})
+
+test('approval actions are never stashed for delayed replay', async () => {
+  const store = createPendingActionStore()
+  const handler = createSessionOpenHandler({ notify: () => 0, onUndelivered: (a) => store.stash(a) })
+  const res = responseRecorder()
+  await handler(request('POST', { sessionId: 's1', approve: true }), res)
+  assert.equal(res.status, 200)
+  assert.equal(JSON.parse(res.body).delivered, false)
+  // 审批时效性强：不暂存，避免网页长时间离线后重连握手时自动批准过时请求
+  assert.equal(store.take(), null)
+})
+
+test('pending replay skips pet-window subscribers (?client=pet)', () => {
+  // 桌宠窗口订阅带 ?client=pet 且丢弃带 kind 的帧，绝不能让它抢收重放
+  assert.equal(streamClientOf('/plugins/dsh-pet-remielle/stream?client=pet'), 'pet')
+  // 网页端不带参数（或带其他值）照常重放
+  assert.equal(streamClientOf('/plugins/dsh-pet-remielle/stream'), 'web')
+  assert.equal(streamClientOf('/plugins/dsh-pet-remielle/stream?client=web'), 'web')
+  // 异常 url 兜底为网页订阅者
+  assert.equal(streamClientOf(undefined), 'web')
+})
+
+test('hub notify counts only web clients as delivered', () => {
+  const hub = createStreamHub({ serve: () => ({ state: 'IDLE' }) })
+  const pet = stubStreamRes()
+  const web = stubStreamRes()
+  hub.add(pet, { client: 'pet' })
+  hub.add(web)
+  assert.equal(hub.size, 2)
+  // 桌宠常驻订阅不再把 session-action 顶成“已送达”
+  assert.equal(hub.notify({ kind: 'session-action', sessionId: 's1' }), 1)
+  // pet 窗口仍收到帧（其页面自行忽略带 kind 的帧），但不计数
+  assert.ok(pet.writes.join('').includes('"sessionId":"s1"'))
+  assert.equal(hub.notify({ kind: 'session-action' }), 1)
+  hub.close()
+})
+
+test('desktop-only subscription keeps the click fallback alive end to end', async () => {
+  const store = createPendingActionStore()
+  const hub = createStreamHub({ serve: () => ({ state: 'IDLE' }) })
+  const handler = createSessionOpenHandler({
+    notify: (payload) => hub.notify(payload),
+    onUndelivered: (action) => store.stash(action),
+  })
+  // 只有桌宠窗口在线：delivered=false，动作必须进暂存而不是被顶成已送达
+  hub.add(stubStreamRes(), { client: 'pet' })
+  const res = responseRecorder()
+  await handler(request('POST', { sessionId: 's9', approve: false }), res)
+  assert.equal(JSON.parse(res.body).delivered, false)
+  assert.equal(store.take()?.sessionId, 's9')
+  hub.close()
 })
 
 test('session current uplink stores and clears the reported session id', async () => {

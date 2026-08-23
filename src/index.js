@@ -239,6 +239,20 @@ export function createPendingActionStore() {
   }
 }
 
+/**
+ * Subscriber type from a stream request url. The desktop pet window
+ * identifies itself with ?client=pet; everything else (including malformed
+ * urls) is treated as a web client.
+ * @param reqUrl - raw request url (path + query).
+ */
+export function streamClientOf(reqUrl) {
+  try {
+    return new URL(reqUrl ?? '/', 'http://localhost').searchParams.get('client') === 'pet' ? 'pet' : 'web'
+  } catch {
+    return 'web'
+  }
+}
+
 export function createSessionOpenHandler({ notify, onUndelivered }) {
   return async (req, res) => {
     if (!localOnly(req, res)) return
@@ -262,7 +276,10 @@ export function createSessionOpenHandler({ notify, onUndelivered }) {
       // 广播无人接收——调用方可以此区分成功与静默丢失。
       const delivered = notify(action) > 0
       // 没人在线：暂存最新一条，下一个 SSE 订阅者握手时重放（拉起兜底）。
-      if (!delivered && typeof onUndelivered === 'function') onUndelivered(action)
+      // approve:true 不暂存——审批动作时效性强，网页长时间离线后重连时
+      // 自动批准可能已过时的请求，风险大于收益；宁可不重放（桌面端可重新
+      // 发起），也不延迟执行。跳转类（approve:false）无此风险，照常暂存。
+      if (!delivered && !action.approve && typeof onUndelivered === 'function') onUndelivered(action)
       jsonResponse(res, 200, { ok: true, delivered })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -552,9 +569,15 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
  * EventSource handshake doubles as a state read), then every `broadcast()`
  * pushes the latest snapshot. Heartbeat comment frames keep proxies from
  * timing the connection out; `close()` ends every client.
+ *
+ * Subscribers carry a client type: `add(res, { client: 'pet' })` marks the
+ * desktop pet window, which keeps a permanent subscription but drops any
+ * frame carrying a `kind` field. `notify()` therefore counts only web
+ * clients as delivered — otherwise a running desktop window would make
+ * every session-action look delivered and starve the pending-action replay.
  */
 export function createStreamHub({ serve }) {
-  const clients = new Set()
+  const clients = new Map() // res -> { client: 'pet' | 'web' }
   const send = (res, payload) => {
     try {
       res.write(`data: ${JSON.stringify(payload)}\n\n`)
@@ -563,7 +586,7 @@ export function createStreamHub({ serve }) {
     }
   }
   const heartbeat = setInterval(() => {
-    for (const res of clients) {
+    for (const res of [...clients.keys()]) {
       try {
         res.write(': ping\n\n')
       } catch {
@@ -573,8 +596,8 @@ export function createStreamHub({ serve }) {
   }, 25000)
   heartbeat.unref?.()
   return {
-    add(res) {
-      clients.add(res)
+    add(res, { client } = {}) {
+      clients.set(res, { client: client === 'pet' ? 'pet' : 'web' })
       try {
         res.write('retry: 3000\n\n')
         send(res, serve())
@@ -586,15 +609,20 @@ export function createStreamHub({ serve }) {
     },
     broadcast() {
       const payload = serve()
-      for (const res of [...clients]) send(res, payload)
+      for (const res of [...clients.keys()]) send(res, payload)
     },
-    /** Push an arbitrary message (e.g. download progress) to every client. */
+    /**
+     * Push an arbitrary message (e.g. download progress / session-action) to
+     * every client. Returns the number of WEB clients reached — pet-window
+     * subscribers still receive the frame (their page ignores kind frames)
+     * but never count as delivered.
+     */
     notify(payload) {
       let delivered = 0
-      for (const res of [...clients]) {
+      for (const [res, meta] of [...clients]) {
         try {
           res.write(`data: ${JSON.stringify(payload)}\n\n`)
-          delivered++
+          if (meta.client !== 'pet') delivered++
         } catch {
           clients.delete(res)
         }
@@ -606,7 +634,7 @@ export function createStreamHub({ serve }) {
     },
     close() {
       clearInterval(heartbeat)
-      for (const res of [...clients]) {
+      for (const res of [...clients.keys()]) {
         try {
           res.end()
         } catch {
@@ -990,12 +1018,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         () => httpCtx.webServer.register({ kind: 'exact', path: STREAM_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return
           sseHeaders(res)
-          hub.add(res)
-          // 无网页在线时点卡的动作在此重放：新订阅者握手即补收最新一条
-          // session-action（网页端 applySnapshot 会照常跳转/审批）。
-          const replay = pendingActions.take()
-          if (replay) {
-            try { res.write(`data: ${JSON.stringify(replay)}\n\n`) } catch { /* 客户端已断开 */ }
+          // 订阅者类型入 hub：?client=pet（桌宠窗口）不参与 delivered 计数，
+          // 否则它常驻订阅会让 session-action 永远“已送达”，暂存兜底成死代码。
+          const client = streamClientOf(req.url)
+          hub.add(res, { client })
+          // 无网页在线时点卡的动作在此重放：新网页订阅者握手即补收最新一条
+          // session-action。桌宠窗口会丢弃带 kind 的帧——跳过重放，防止
+          // 它断线重连时把暂存动作抢收吞掉。
+          if (client !== 'pet') {
+            const replay = pendingActions.take()
+            if (replay) {
+              try { res.write(`data: ${JSON.stringify(replay)}\n\n`) } catch { /* 客户端已断开 */ }
+            }
           }
         } }),
         'dsh-pet-remielle: local state stream endpoint',
