@@ -14,7 +14,7 @@
  * closing DSH tears the pet down without leaving a stray process.
  */
 
-const { app, BrowserWindow, ipcMain, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, screen, shell } = require('electron')
 const path = require('node:path')
 
 // Isolate the pet window's userData: sharing the default %APPDATA%/Electron
@@ -180,6 +180,16 @@ app.whenReady().then(() => {
   ipcMain.handle('get-position', () => {
     const [x, y] = win.getPosition()
     return { x: Math.round(x), y: Math.round(y) }
+  })
+
+  // 无网页客户端在线时点击气泡卡：渲染层只发信号，URL 由这里从宿主给的
+  // DSH_PET_URL 推导（同源根路径即 DSH 网页端），用系统默认浏览器拉到前台。
+  ipcMain.handle('open-dsh-page', () => {
+    try {
+      return shell.openExternal(new URL('/', url).origin)
+    } catch {
+      return Promise.resolve(false)
+    }
   })
 
   // Draw-artwork popup: a separate transparent always-on-top window parked at

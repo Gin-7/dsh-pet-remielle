@@ -522,7 +522,16 @@
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sessionId: sessionId, approve: false, completed: completed === true }),
-    }).catch(function () {})
+    })
+      .then(function (r) { return r.ok ? r.json() : null })
+      .then(function (data) {
+        // delivered=false：没有网页客户端在线——请宿主把浏览器拉到前台兜底
+        // （动作已由宿主暂存，网页端 SSE 握手后会重放并直达该对话）。
+        if (data && data.delivered === false && window.petBridge && window.petBridge.openDshPage) {
+          window.petBridge.openDshPage()
+        }
+      })
+      .catch(function () {})
   }
   // 与网页端一致：去重 + 有限退避重试，网络抖动时绿点不至于消不掉
   var completionAckPending = new Set()

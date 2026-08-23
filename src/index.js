@@ -224,7 +224,22 @@ export function createCompletionAckHandler({ acknowledge, broadcast = () => {} }
   }
 }
 
-export function createSessionOpenHandler({ notify }) {
+/**
+ * Slot for the latest undelivered session-action: when no web client was
+ * online (`delivered === 0`), a desktop bubble-card click would be silently
+ * lost. The action is stashed here and replayed exactly once to the next SSE
+ * subscriber (stream handshake), so the browser still lands on the chat.
+ */
+export function createPendingActionStore() {
+  let pending = null
+  return {
+    stash: (action) => { pending = action },
+    /** Take-and-clear: returns the stashed action or null. */
+    take: () => { const action = pending; pending = null; return action },
+  }
+}
+
+export function createSessionOpenHandler({ notify, onUndelivered }) {
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method !== 'POST') {
@@ -235,16 +250,19 @@ export function createSessionOpenHandler({ notify }) {
       const body = await readJsonBody(req)
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
       if (!sessionId) throw new Error('sessionId must be a non-empty string')
-      // delivered=false：当前没有任何网页客户端订阅 SSE，桌面“允许一次”的
-      // 广播无人接收——调用方可以此区分成功与静默丢失。
-      const delivered = notify({
+      const action = {
         protocolVersion: 1,
         kind: 'session-action',
         sessionId,
         approve: body.approve === true,
         // 完成卡点击：网页端需要 completed 决定是否顺带 ack
         completed: body.completed === true,
-      }) > 0
+      }
+      // delivered=false：当前没有任何网页客户端订阅 SSE，桌面“允许一次”的
+      // 广播无人接收——调用方可以此区分成功与静默丢失。
+      const delivered = notify(action) > 0
+      // 没人在线：暂存最新一条，下一个 SSE 订阅者握手时重放（拉起兜底）。
+      if (!delivered && typeof onUndelivered === 'function') onUndelivered(action)
       jsonResponse(res, 200, { ok: true, delivered })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -740,6 +758,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   })
 
   const hub = createStreamHub({ serve: serveState })
+  // 无网页在线时的点击卡兜底：只保留最新一条，下一个 SSE 订阅者握手时重放
+  const pendingActions = createPendingActionStore()
 
   let desktopActive = false
 
@@ -939,6 +959,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           path: SESSION_OPEN_ENDPOINT,
           handler: createSessionOpenHandler({
             notify: (payload) => hub.notify(payload),
+            onUndelivered: (action) => pendingActions.stash(action),
           }),
         }),
         'dsh-pet-remielle: desktop session open/approve bridge',
@@ -970,6 +991,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           if (!localOnly(req, res)) return
           sseHeaders(res)
           hub.add(res)
+          // 无网页在线时点卡的动作在此重放：新订阅者握手即补收最新一条
+          // session-action（网页端 applySnapshot 会照常跳转/审批）。
+          const replay = pendingActions.take()
+          if (replay) {
+            try { res.write(`data: ${JSON.stringify(replay)}\n\n`) } catch { /* 客户端已断开 */ }
+          }
         } }),
         'dsh-pet-remielle: local state stream endpoint',
       )

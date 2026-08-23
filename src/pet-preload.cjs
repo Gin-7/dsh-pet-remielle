@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('petBridge', {
   dragMove: () => ipcRenderer.send('drag-move'),
   dragEnd: () => ipcRenderer.send('drag-end'),
   getPosition: () => ipcRenderer.invoke('get-position'),
+  // 无网页在线时点击卡片：请主进程用系统浏览器打开 DSH 网页端（URL 由主进程决定）
+  openDshPage: () => ipcRenderer.invoke('open-dsh-page'),
   // 绘画作品：独立窗口显示在桌面右上角（不遮气泡）
   artworkOpen: (w, h) => ipcRenderer.send('artwork-open', Number(w) || 240, Number(h) || 240),
   artworkSet: (dataUrl) => ipcRenderer.send('artwork-set', String(dataUrl)),

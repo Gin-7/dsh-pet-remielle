@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, createCompletionAckHandler, createSessionCurrentHandler, createSessionOpenHandler, createStateSnapshot } from '../src/index.js'
+import { applyCompletionAck, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStateSnapshot } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -367,6 +367,51 @@ test('desktop session open rejects missing session ids and non-POST methods', as
   const wrongMethod = responseRecorder()
   await handler(request('GET'), wrongMethod)
   assert.equal(wrongMethod.status, 405)
+})
+
+test('undelivered session-action is stashed for replay when no web client is online', async () => {
+  const store = createPendingActionStore()
+  const handler = createSessionOpenHandler({
+    notify: () => 0,
+    onUndelivered: (action) => store.stash(action),
+  })
+  const res = responseRecorder()
+  await handler(request('POST', { sessionId: 's1', approve: false, completed: true }), res)
+  assert.equal(res.status, 200)
+  assert.equal(JSON.parse(res.body).delivered, false)
+  // 完整动作被暂存：SSE 订阅处 take() 后原样下发，网页端 applySnapshot 可直接消费
+  assert.deepEqual(store.take(), {
+    protocolVersion: 1,
+    kind: 'session-action',
+    sessionId: 's1',
+    approve: false,
+    completed: true,
+  })
+  // take 即清空：不重复重放
+  assert.equal(store.take(), null)
+})
+
+test('delivered session-action is not stashed and only the latest one is kept', async () => {
+  const stashed = []
+  const deliveredHandler = createSessionOpenHandler({ notify: () => 2, onUndelivered: (a) => stashed.push(a) })
+  const okRes = responseRecorder()
+  await deliveredHandler(request('POST', { sessionId: 's1' }), okRes)
+  assert.equal(stashed.length, 0)
+
+  const store = createPendingActionStore()
+  const handler = createSessionOpenHandler({ notify: () => 0, onUndelivered: (a) => store.stash(a) })
+  await handler(request('POST', { sessionId: 'old' }), responseRecorder())
+  await handler(request('POST', { sessionId: 'new', approve: true }), responseRecorder())
+  // 只保留最新一条
+  assert.equal(store.take().sessionId, 'new')
+})
+
+test('pending action store starts empty and clears after take', () => {
+  const store = createPendingActionStore()
+  assert.equal(store.take(), null)
+  store.stash({ sessionId: 's1' })
+  assert.equal(store.take().sessionId, 's1')
+  assert.equal(store.take(), null)
 })
 
 test('session current uplink stores and clears the reported session id', async () => {
