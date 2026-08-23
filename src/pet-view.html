@@ -339,11 +339,15 @@
     row.appendChild(pct)
     return row
   }
+  // 与网页端 MOODS（src/client.core.js）一致的 mood 文字映射
+  var MOOD_TEXTS = { '01': '绘制中', '02': '摸鱼中', '03': '得意中', '04': '思考中', '05': '等待中', '06': '待机中' }
   function buildMenu() {
     menuEl.textContent = ''
     var snap = lastSnapshot
     var running = snap && (snap.state === 'THINKING' || snap.state === 'WORKING' || snap.state === 'WAITING' || snap.state === 'ERROR')
-    menuEl.appendChild(menuRow((snap ? snap.message : '连接中') + (running ? ' · 运行中' : ''), null, null))
+    // mood 取值与 apply() 一致：优先临时覆盖（点击切换/画画），否则用快照值
+    var menuMood = moodOverride && moodOverride.until > Date.now() ? moodOverride.mood : ((snap && snap.mood) || '06')
+    menuEl.appendChild(menuRow((MOOD_TEXTS[menuMood] || '待机中') + ' · ' + (snap ? snap.message : '连接中') + (running ? ' · 运行中' : ''), null, null))
     menuEl.appendChild(menuSep())
     menuEl.appendChild(menuSliderRow())
     menuEl.appendChild(menuRow('锁定位置', lockedNow, function () {

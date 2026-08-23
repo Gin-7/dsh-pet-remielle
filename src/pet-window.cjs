@@ -41,9 +41,20 @@ if (!url) {
 }
 
 app.whenReady().then(() => {
+  // UI 缩放补偿：上方 force-device-scale-factor=1 把渲染钉在 100%，而系统
+  // 缩放（如 110%）下网页端按真实 dsf 渲染，桌宠会整体偏小约一成。这里读取
+  // 主屏真实 scaleFactor，用 webContents zoom 放大内容、同时把窗口做大同样
+  // 倍数，恢复与网页一致的物理尺寸（CSS 布局视口保持 400x520 不变）。
+  // 不采用「去掉 force-dsf 让 Electron 按真实缩放渲染」的做法：非整数缩放
+  // 下 DIP↔物理往返有截断误差，拖拽闭环会复发持续漂移（见 drag-move 去重
+  // 注释）；保持 dsf=1 的无损换算再 zoom 补偿，拖拽与命中判定只需在两处
+  // 乘回 uiZoom。局限：多显示器缩放不同时以主屏为准，不做跨屏动态切换。
+  const uiZoom = Math.min(2, Math.max(0.5, screen.getPrimaryDisplay().scaleFactor || 1))
+  const petW = Math.round(PET_CONTENT_W * uiZoom)
+  const petH = Math.round(PET_CONTENT_H * uiZoom)
   const win = new BrowserWindow({
-    width: PET_CONTENT_W,
-    height: PET_CONTENT_H,
+    width: petW,
+    height: petH,
     transparent: true,
     frame: false,
     alwaysOnTop: true,
@@ -61,6 +72,7 @@ app.whenReady().then(() => {
       preload: path.join(__dirname, 'pet-preload.cjs'),
     },
   })
+  win.webContents.setZoomFactor(uiZoom)
 
   // Click-through: transparent margins must not block the desktop. Renderer
   // mousemove + { forward: true } does not work on Windows when only the
@@ -96,8 +108,9 @@ app.whenReady().then(() => {
     if (!hitRects || hitRects.length === 0) return false
     const pt = screen.getCursorScreenPoint()
     const b = win.getContentBounds()
-    const x = pt.x - b.x
-    const y = pt.y - b.y
+    // hitRects 由渲染层按 CSS px 上报；内容被放大 uiZoom 后需换算回 CSS 坐标
+    const x = (pt.x - b.x) / uiZoom
+    const y = (pt.y - b.y) / uiZoom
     for (const r of hitRects) {
       if (x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h) return true
     }
@@ -150,13 +163,14 @@ app.whenReady().then(() => {
     clientY = Number(clientY) || 0
     const [x, y] = win.getPosition()
     const physical = screen.getCursorScreenPoint()
-    const dipX = x + clientX
-    const dipY = y + clientY
+    // 抓取偏移按 CSS px 上报，内容放大 uiZoom 后实际物理偏移要乘回来
+    const dipX = x + clientX * uiZoom
+    const dipY = y + clientY * uiZoom
     const clamp = (v) => Math.min(4, Math.max(0.5, v))
     // 比例按轴独立实测；抓取点太靠边（除数过小）时该轴退回 1。
     const sx = clientX > 4 && Math.abs(physical.x - dipX) > 1 ? clamp(physical.x / dipX) : 1
     const sy = clientY > 4 && Math.abs(physical.y - dipY) > 1 ? clamp(physical.y / dipY) : 1
-    drag = { ox: clientX, oy: clientY, sx: sx, sy: sy, tx: NaN, ty: NaN }
+    drag = { ox: clientX * uiZoom, oy: clientY * uiZoom, sx: sx, sy: sy, tx: NaN, ty: NaN }
   })
   ipcMain.on('drag-move', () => {
     if (!drag) return
@@ -170,7 +184,7 @@ app.whenReady().then(() => {
     if (nx === drag.tx && ny === drag.ty) return
     drag.tx = nx
     drag.ty = ny
-    win.setBounds({ x: nx, y: ny, width: PET_CONTENT_W, height: PET_CONTENT_H })
+    win.setBounds({ x: nx, y: ny, width: petW, height: petH })
   })
   ipcMain.on('drag-end', () => {
     drag = null
@@ -184,6 +198,8 @@ app.whenReady().then(() => {
 
   // 无网页客户端在线时点击气泡卡：渲染层只发信号，URL 由这里从宿主给的
   // DSH_PET_URL 推导（同源根路径即 DSH 网页端），用系统默认浏览器拉到前台。
+  // 已知限制：固定取 origin 根路径，若宿主部署在子路径（如 http://host/dsh/）
+  // 会落到错误页面；当前部署为根路径，待真有子路径需求再传 base path。
   ipcMain.handle('open-dsh-page', () => {
     try {
       return shell.openExternal(new URL('/', url).origin)
