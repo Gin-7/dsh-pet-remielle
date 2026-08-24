@@ -14,6 +14,7 @@
 - 审批「允许一次」没有网页客户端接收时，改为气泡堆叠上方弹出 toast 提示（Remielle 风格随机文案、下方淡入上方回落动画后自动消失），取代写入终端的 `console.warn`。
 
 ### Fixes
+- 清掉 #8 合并残留：网页端重复声明的 `BUBBLE_TITLE_MS`、桌面端已无读取的 `lastBubbleMood/Text/Detail`。首行仍是同贴纸 2 秒锁，等待/出错/完成立即更新。
 - 审批气泡悬停提示改为第二行全文（工作区 · 请求 preview）：方框宽度会 CSS 省略，原生 title 才能读到具体请求；「允许一次」说明仍在勾号 aria-label。
 - 网页宠物按下缺少握拳光标；桌面虽有 grabbing，但快照 `apply()` 每次 `syncCursor()` 无条件打回 grab，按住未松就会变回张开的手。两端按住期间保持 grabbing，松开再恢复。
 - 宿主 `states()` 与快照 `sessions[]` 改走 `session-order.compareSessions`（审批 > 提问 > 完成卡 > attention > 当前会话 > 状态 > 时间），不再与客户端各排各的。

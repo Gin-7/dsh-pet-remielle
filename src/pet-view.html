@@ -223,7 +223,6 @@
     bubbleDot.title = p === 0 ? '切到余额' : '切到状态'
     if (p === 0) {
       balanceFrame = null
-      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
       if (lastSnapshot) apply(lastSnapshot)
       if (window.__petBalance && window.__petBalance.showStatus) window.__petBalance.showStatus()
     } else if (p === 1 && window.__petBalance && window.__petBalance.showBalance) {
@@ -285,9 +284,6 @@
     }
   }
   var BUBBLE_TITLE_MS = 2000
-  var lastBubbleMood = ''
-  var lastBubbleText = ''
-  var lastBubbleDetail = ''
   var dragState = null
   var menuOpen = false
   var lockedNow = false
@@ -1101,7 +1097,6 @@
       currentBubblePage = 0
       balanceFrame = null
       balanceRequested = false
-      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
     }
     prevBubbleVisible = bubbleEnabled
     // 强制页面归属
@@ -1110,7 +1105,6 @@
     if (statusOn && !usageOn) { currentBubblePage = 0 }
     if (statusOn && usageOn && currentBubblePage > 1) currentBubblePage = 0
     if (currentBubblePage !== pageBefore) {
-      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
       if (currentBubblePage === 0) balanceFrame = null
     }
     if (currentBubblePage === 1 && !(balanceFrame && balanceFrame.kind === 'balance') && window.__petBalance && !balanceRequested) {
