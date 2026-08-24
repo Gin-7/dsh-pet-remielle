@@ -580,37 +580,10 @@
     // 按住期间保持握拳：快照 apply() 每次都会走到这里，不能无条件打回 grab。
     imgEl.style.cursor = lockedNow ? 'default' : dragState ? 'grabbing' : 'grab'
   }
-  imgEl.addEventListener('mousedown', function (e) {
-    if (e.button !== 0 || lockedNow) return
-    dragState = { x: e.screenX, y: e.screenY, moved: false }
-    imgEl.style.cursor = 'grabbing'
-    setForceInteractive(true)
-    if (window.petBridge && window.petBridge.dragStart) window.petBridge.dragStart(e.clientX, e.clientY)
-  })
-  window.addEventListener('mousemove', function (e) {
-    if (!dragState) return
-    if (!(e.buttons & 1)) {
-      // 左键已在窗外释放：渲染层与主进程的拖动状态一并复位，
-      // 否则主进程 drag 残留到下一次 dragStart 才被覆盖。
-      dragState = null
-      if (window.petBridge && window.petBridge.dragEnd) window.petBridge.dragEnd()
-      if (!menuOpen) setForceInteractive(false)
-      syncCursor()
-      return
-    }
-    var dx = e.screenX - dragState.x
-    var dy = e.screenY - dragState.y
-    if (Math.abs(dx) + Math.abs(dy) > 6) dragState.moved = true
-    // 拖动采用主进程闭环绝对定位（光标 - 抓取偏移）：渲染层 screenX 在
-    // Windows 显示缩放 ≠ 100% 时与 Electron 坐标存在换算差，增量式移动
-    // 会累积成 pet 相对鼠标的持续漂移；这里只负责通知主进程重新对齐。
-    if (window.petBridge && window.petBridge.dragMove) window.petBridge.dragMove()
-    dragState = { x: e.screenX, y: e.screenY, moved: dragState.moved }
-  })
-  window.addEventListener('mouseup', function () {
+  function endPetDrag() {
     if (window.petBridge && window.petBridge.dragEnd) window.petBridge.dragEnd()
     if (dragState && !dragState.moved) {
-      // plain click: switch mood, same as the in-page pet
+      // 单击：随机换心情，与网页宠物一致
       var moods = ['01', '02', '03', '04', '05', '06']
       var current = lastSnapshot ? (lastSnapshot.mood || '06') : '06'
       var pick = moods.filter(function (m) { return m !== current })
@@ -620,7 +593,33 @@
     dragState = null
     if (!menuOpen) setForceInteractive(false)
     syncCursor()
+  }
+  imgEl.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0 || lockedNow) return
+    dragState = { x: e.screenX, y: e.screenY, moved: false }
+    imgEl.style.cursor = 'grabbing'
+    setForceInteractive(true)
+    // 捕获后窗外松开仍能收到 pointerup，不再用 mousemove 的 buttons 猜测松手
+    // （透明窗上 buttons 会在按住时掉成 0，握拳被提前打回张手）。
+    if (imgEl.setPointerCapture) imgEl.setPointerCapture(e.pointerId)
+    if (window.petBridge && window.petBridge.dragStart) window.petBridge.dragStart(e.clientX, e.clientY)
   })
+  window.addEventListener('pointermove', function (e) {
+    if (!dragState) return
+    var dx = e.screenX - dragState.x
+    var dy = e.screenY - dragState.y
+    if (Math.abs(dx) + Math.abs(dy) > 6) dragState.moved = true
+    // 拖动采用主进程闭环绝对定位（光标 - 抓取偏移）：渲染层 screenX 在
+    // Windows 显示缩放 ≠ 100% 时与 Electron 坐标存在换算差，增量式移动
+    // 会累积成 pet 相对鼠标的持续漂移；这里只负责通知主进程重新对齐。
+    if (window.petBridge && window.petBridge.dragMove) window.petBridge.dragMove()
+    dragState = { x: e.screenX, y: e.screenY, moved: dragState.moved }
+  })
+  window.addEventListener('pointerup', function (e) {
+    if (e.button !== undefined && e.button !== 0) return
+    endPetDrag()
+  })
+  window.addEventListener('pointercancel', function () { endPetDrag() })
 
   function mk(tag, style, text) {
     var n = document.createElement(tag)
@@ -899,10 +898,12 @@
       return
     }
     applyBubbleTitle(el, entry)
+    // 详情行为单行文本，用 block 使 overflow/ellipsis 生效（display:flex 会让 text-overflow 失效）
+    var detailShown = detail.replace(/^\s*[·•]\s*/, '· ')
     el.detail.style.display = detail ? 'block' : 'none'
     if (detail !== el.lastDetail) {
       el.lastDetail = detail
-      el.detailText.textContent = detail.replace(/^\s*[·•]\s*/, '· ')
+      el.detailText.textContent = detailShown
     }
     var attention = attentionOf(entry)
     var approval = approvalOf(entry)
@@ -931,7 +932,7 @@
     // 占位卡不可交互（activate 有守卫），title 不能落进「点击跳转」兜底文案。
     // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，原生
     // tooltip 才能读到请求内容；操作说明已在圆形勾号的 aria-label 里。
-    el.node.title = entry.idlePlaceholder ? '' : approval ? (detail || '') : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
+    el.node.title = entry.idlePlaceholder ? '' : approval ? (detailShown || '') : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
     el.node.style.zIndex = String(100 - index)
     el.node.style.order = String(index)
     el.node.style.marginTop = index === 0 ? '0px' : '-60px'

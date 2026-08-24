@@ -284,7 +284,6 @@ test('title clipping ignores long detail text for short approval titles', () => 
 
 test('approval bubble tooltip shows the second-line request detail', () => {
   const harness = createHarness()
-  const detail = '.dsh · 读取工作区文件并执行安装'
   harness.send({
     ...base,
     sessions: [{
@@ -292,12 +291,13 @@ test('approval bubble tooltip shows the second-line request detail', () => {
       state: 'WAITING',
       phase: 'approval',
       message: '需要你确认一下哦',
-      detail,
+      detail: '  • 读取工作区文件并执行安装',
       approval: true,
       attention: true,
     }],
   })
-  assert.equal(harness.card('需要你确认一下哦').title, detail)
+  // title 与第二行同一套行首项目符号规范化
+  assert.equal(harness.card('需要你确认一下哦').title, '· 读取工作区文件并执行安装')
 })
 
 test('pet dock grabbing cursor survives snapshot refresh until pointerup', () => {
