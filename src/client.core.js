@@ -1197,6 +1197,11 @@ function mountPet(ctx) {
     }, 15000)
   }
   var lockedNow = false
+  var petDragging = false
+  function syncPetCursor() {
+    // 按住期间保持握拳：快照 applyVisuals 每次都会走到这里，不能无条件打回 grab。
+    dock.style.cursor = lockedNow ? 'default' : petDragging ? 'grabbing' : 'grab'
+  }
   var positionRestored = false
   var lastTurnEndShown = false
   var intervalId = 0
@@ -1209,7 +1214,7 @@ function mountPet(ctx) {
     img.style.width = Math.round(180 * scale) + 'px'
     img.style.opacity = String(opacity)
     lockedNow = snapshot.locked === true
-    dock.style.cursor = lockedNow ? 'default' : 'grab'
+    syncPetCursor()
   }
 
   /** Status bubble above the pet: message + detail (project · progress · stage).
@@ -1521,8 +1526,10 @@ function mountPet(ctx) {
     el.node.setAttribute('aria-disabled', entry.idlePlaceholder ? 'true' : 'false')
     el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
     el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
-    // 占位卡不可交互（activate 有守卫），title 不能落进「点击跳转」兜底文案
-    el.node.title = entry.idlePlaceholder ? '' : approval ? '允许一次：点击圆形勾号直接确认' : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
+    // 占位卡不可交互（activate 有守卫），title 不能落进「点击跳转」兜底文案。
+    // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，原生
+    // tooltip 才能读到请求内容；操作说明已在圆形勾号的 aria-label 里。
+    el.node.title = entry.idlePlaceholder ? '' : approval ? (detail || '') : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
     // Deck layout: the front card is readable and background cards expose
     // only a shallow lower edge. Visual order is driven by the flex `order`
     // property (not DOM order), so cards keep their correct stacking even
@@ -2194,6 +2201,8 @@ function mountPet(ctx) {
     var ox = e.clientX
     var oy = e.clientY
     dragMoved = false
+    petDragging = true
+    syncPetCursor()
     function onMove(ev) {
       if (Math.abs(ev.clientX - ox) + Math.abs(ev.clientY - oy) > 6) dragMoved = true
       root.style.right = 'auto'
@@ -2208,6 +2217,9 @@ function mountPet(ctx) {
     function onUp() {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      petDragging = false
+      syncPetCursor()
       if (dragMoved) {
         var r = root.getBoundingClientRect()
         patchConfig('posX', Math.round(r.left))
@@ -2216,6 +2228,7 @@ function mountPet(ctx) {
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   })
 
   dock.addEventListener('click', function () {
@@ -2345,7 +2358,7 @@ function mountPet(ctx) {
     menu.appendChild(makeToggleRow('锁定位置', lockedNow, function () {
       var next = !lockedNow
       lockedNow = next
-      dock.style.cursor = next ? 'default' : 'grab'
+      syncPetCursor()
       void patchConfig('locked', next)
       buildMenuContent()
     }))

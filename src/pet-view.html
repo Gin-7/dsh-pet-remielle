@@ -581,7 +581,8 @@
 
   // --- drag: only from the pet image, JS-driven window move ---
   function syncCursor() {
-    imgEl.style.cursor = lockedNow ? 'default' : 'grab'
+    // 按住期间保持握拳：快照 apply() 每次都会走到这里，不能无条件打回 grab。
+    imgEl.style.cursor = lockedNow ? 'default' : dragState ? 'grabbing' : 'grab'
   }
   imgEl.addEventListener('mousedown', function (e) {
     if (e.button !== 0 || lockedNow) return
@@ -931,8 +932,10 @@
     // 是 0.3.4 桌面点卡片不跳转时代的遗留，与 title 提示和实际行为矛盾。
     el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
     el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
-    // 占位卡不可交互（activate 有守卫），title 不能落进「点击跳转」兜底文案
-    el.node.title = entry.idlePlaceholder ? '' : approval ? '允许一次：点击圆形勾号直接确认' : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
+    // 占位卡不可交互（activate 有守卫），title 不能落进「点击跳转」兜底文案。
+    // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，原生
+    // tooltip 才能读到请求内容；操作说明已在圆形勾号的 aria-label 里。
+    el.node.title = entry.idlePlaceholder ? '' : approval ? (detail || '') : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
     el.node.style.zIndex = String(100 - index)
     el.node.style.order = String(index)
     el.node.style.marginTop = index === 0 ? '0px' : '-60px'

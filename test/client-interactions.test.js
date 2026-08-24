@@ -282,6 +282,39 @@ test('title clipping ignores long detail text for short approval titles', () => 
   assert.equal(harness.card('这是一个确实长到超过卡片内部可用宽度并且必须截断显示的审批标题文本').className.includes('title-clipped'), true)
 })
 
+test('approval bubble tooltip shows the second-line request detail', () => {
+  const harness = createHarness()
+  const detail = '.dsh · 读取工作区文件并执行安装'
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'approval',
+      state: 'WAITING',
+      phase: 'approval',
+      message: '需要你确认一下哦',
+      detail,
+      approval: true,
+      attention: true,
+    }],
+  })
+  assert.equal(harness.card('需要你确认一下哦').title, detail)
+})
+
+test('pet dock grabbing cursor survives snapshot refresh until pointerup', () => {
+  const harness = createHarness()
+  harness.send({ ...base, sessions: [] })
+  const dock = harness.elements.find((node) => String(node.style.cssText || '').includes('cursor:grab'))
+  assert.ok(dock, 'missing pet dock')
+  const down = dock.listeners.get('pointerdown')?.[0]
+  assert.ok(down, 'missing dock pointerdown')
+  down({ button: 0, clientX: 20, clientY: 20, preventDefault() {} })
+  assert.equal(dock.style.cursor, 'grabbing')
+  harness.send({ ...base, mood: '01', sessions: [] })
+  assert.equal(dock.style.cursor, 'grabbing', 'snapshot must not reset grabbing while held')
+  harness.dispatchWindowEvent('pointerup')
+  assert.equal(dock.style.cursor, 'grab')
+})
+
 test('question and error action symbols open their own conversations', () => {
   const harness = createHarness()
   harness.send({

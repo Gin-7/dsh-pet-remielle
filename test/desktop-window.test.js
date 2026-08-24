@@ -189,6 +189,11 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   assert.match(html, /autoAckedCompletions\.set\(currentSessionId, true\)/)
   assert.match(html, /autoAckedCompletions\.delete\(currentSessionId\)/)
   assert.match(html, /entry\.state === 'ERROR' && targetSessionOf\(entry\) === currentSessionId/)
+  // 审批卡原生 title 用第二行全文（工作区 · preview），不是固定操作说明
+  assert.match(html, /approval \? \(detail \|\| ''\)/)
+  assert.doesNotMatch(html, /允许一次：点击圆形勾号直接确认/)
+  // 按住宠物时快照 apply 不得把 grabbing 打回 grab
+  assert.match(html, /lockedNow \? 'default' : dragState \? 'grabbing' : 'grab'/)
 })
 
 test('pet-view menu expands to the work-area box and restores on close', () => {
