@@ -3,6 +3,9 @@
  * (src/pet-view.html, served by the host at /plugins/dsh-pet-remielle/session-order.js)
  * and the web client (src/client.core.js, inlined by scripts/build-client.mjs).
  *
+ * 文件用 .cjs：包是 "type":"module"，宿主 ESM 经 createRequire 才能拿到导出。
+ * 对外 URL 仍是 session-order.js（浏览器 script 不认 .cjs 扩展语义）。
+ *
  * Priority: approval > ask (ask_user_question) > completion > attention
  * > current session > state rank > updatedAt.
  */
@@ -48,16 +51,20 @@
   // 记住上一次的前两名 id 序列；本次纯排序若恰好互为倒序则交换回来。
   // 审批/回答/完成/attention 等层级变化不受影响，照常上位。
   var lastTopIds = []
+  // 纯比较、无滞回：宿主 states()/快照与客户端 orderSessions 共用，避免两套优先级。
+  function compareSessions(a, b, currentSessionId) {
+    var aTier = tierOf(a)
+    var bTier = tierOf(b)
+    if (aTier !== bTier) return bTier - aTier
+    var aCur = a.sessionId === currentSessionId ? 1 : 0
+    var bCur = b.sessionId === currentSessionId ? 1 : 0
+    if (aCur !== bCur) return bCur - aCur
+    var priority = stateRank(b.state) - stateRank(a.state)
+    return priority || (b.updatedAt || 0) - (a.updatedAt || 0)
+  }
   function orderSessions(sessions, currentSessionId) {
     var ranked = sessions.slice().sort(function (a, b) {
-      var aTier = tierOf(a)
-      var bTier = tierOf(b)
-      if (aTier !== bTier) return bTier - aTier
-      var aCur = a.sessionId === currentSessionId ? 1 : 0
-      var bCur = b.sessionId === currentSessionId ? 1 : 0
-      if (aCur !== bCur) return bCur - aCur
-      var priority = stateRank(b.state) - stateRank(a.state)
-      return priority || (b.updatedAt || 0) - (a.updatedAt || 0)
+      return compareSessions(a, b, currentSessionId)
     })
     if (lastTopIds.length === 2 && ranked.length >= 2) {
       var first = ranked[0]
@@ -81,13 +88,19 @@
       && stateRank(a.state) === stateRank(b.state)
   }
 
-  // 导出面只保留两端消费端实际解构的符号（stateRank/askOf/tierOf 仅供模块
-  // 内部排序使用，不对外暴露）。
+  // 网页/桌面解构 attentionOf 等；compareSessions 给宿主 ESM 经 CJS 复用。
+  // stateRank/askOf/tierOf 仍仅内部使用。
   global.__rm2SessionOrder = {
     attentionOf: attentionOf,
     completionOf: completionOf,
     targetSessionOf: targetSessionOf,
     approvalOf: approvalOf,
     orderSessions: orderSessions,
+    compareSessions: compareSessions,
+  }
+  // 浏览器 script / 构建拼接里存在 window，不得写 module.exports，否则会盖掉
+  // client bundle 的 module.exports。Node require 无 window，可当 CJS 导出。
+  if (typeof module === 'object' && module.exports && typeof window === 'undefined') {
+    module.exports = global.__rm2SessionOrder
   }
 })(typeof window !== 'undefined' ? window : globalThis)

@@ -10,6 +10,7 @@
  *    client shows them until the deadline, then falls back to durable state).
  */
 
+import { createRequire } from 'node:module'
 import {
   PetMessageKind,
   PetState,
@@ -21,6 +22,8 @@ import {
   statusCopy,
   taskCopy,
 } from './status-copy.js'
+
+const { compareSessions } = createRequire(import.meta.url)('./session-order.cjs')
 
 const statePriority = Object.freeze({
   [PetState.WAITING]: 60,
@@ -361,12 +364,7 @@ export class PetReducer {
         updatedAt: record.updatedAt,
       })
     }
-    out.sort((left, right) => {
-      const attention = Number(right.attention) - Number(left.attention)
-      if (attention !== 0) return attention
-      const priority = (statePriority[right.state] ?? 0) - (statePriority[left.state] ?? 0)
-      return priority || right.updatedAt - left.updatedAt || left.sessionId.localeCompare(right.sessionId)
-    })
+    out.sort((left, right) => compareSessions(left, right))
     return out
   }
 

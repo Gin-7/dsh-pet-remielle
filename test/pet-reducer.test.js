@@ -450,6 +450,33 @@ test('states() returns one entry per session with mood/message/detail', () => {
   assert.equal(states[0].attention, false)
 })
 
+test('states() ranks approval above ask above ERROR above WORKING', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('work'), [
+    event('turn/start'),
+    event('tool/call', { callId: 'c0', name: 'bash' }, 2),
+  ])
+  collect(reducer, session('err'), [
+    event('turn/start', {}, 3),
+    event('turn/end', { reason: { kind: 'error' } }, 4),
+  ])
+  collect(reducer, session('ask'), [
+    event('turn/start', {}, 5),
+    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 6),
+  ])
+  collect(reducer, session('appr'), [
+    event('turn/start', {}, 7),
+    event('tool/call', { callId: 'c1', name: 'bash' }, 8),
+    event('approval/asked', { id: 'a1', toolName: 'bash', callId: 'c1' }, 9),
+  ])
+  assert.deepEqual(reducer.states().map((entry) => entry.sessionId), [
+    'appr',
+    'ask',
+    'err',
+    'work',
+  ])
+})
+
 test('states() ranks attention-needing sessions on top', () => {
   const reducer = new PetReducer()
   // s1 is streaming (THINKING), s2 waits on the human (WAITING via ask).

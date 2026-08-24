@@ -213,7 +213,7 @@ src/
 ├── pets.js           # 宠物注册表：目录发现/合并/校验（可单测）
 ├── status-copy.js    # 蕾米埃尔风格状态文案（可整体替换）
 ├── desktop-window.js # 桌面模式：Electron 发现 + 窗口进程管理（可单测）
-├── pet-window.js     # 桌面模式：Electron main（透明置顶窗口 + 屏幕右上角作品窗）
+├── pet-window.cjs    # 桌面模式：Electron main（透明置顶窗口 + 屏幕右上角作品窗）
 ├── pet-view.html     # 桌面模式：宠物窗口页面（GIF + 气泡 + SSE + 画画 + 余额气泡）
 ├── balance-widget.js # 余额控制器（客户端）：取数/滚动动画/5 秒回落，渲染进宠物自带气泡
 └── client.core.js    # 浏览器端：宠物 UI + 设置（构建时包装）

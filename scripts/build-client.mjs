@@ -19,7 +19,7 @@ const pluginId = 'dsh-pet-remielle'
 const core = readFileSync(coreFile, 'utf8')
 // 共享的气泡排序逻辑（桌面悬浮窗与网页客户端同一份实现）拼在核心代码之前，
 // 使 window.__rm2SessionOrder 在 client.core.js 执行时已就绪。
-const orderFile = resolve(root, 'src', 'session-order.js')
+const orderFile = resolve(root, 'src', 'session-order.cjs')
 const order = readFileSync(orderFile, 'utf8')
 const { version } = JSON.parse(readFileSync(pkgFile, 'utf8'))
 const banner = `window.__ModuleLoader__.load({ id: ${JSON.stringify(pluginId)}, factory: (require) => {

@@ -59,7 +59,7 @@ var CSS = [
   '.rm2-pet-menu-item .mute{color:#c2607f;font-size:12px;}',
   '.rm2-pet-menu-item .tick{color:#b03a60;font-weight:600;}',
   '.rm2-pet-menu-sep{height:1px;background:rgba(240,120,160,.25);margin:5px 6px;}',
-  '.rm2-pet-bubble{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;min-width:150px;max-width:340px;padding:12px 20px 12px 30px;border-radius:22px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 6px 20px rgba(190,70,110,.20);font-size:12px;line-height:1.45;text-align:left;pointer-events:none;white-space:nowrap;text-overflow:ellipsis;cursor:default;}',
+  '.rm2-pet-bubble{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;min-width:150px;max-width:340px;padding:12px 20px 12px 30px;border-radius:22px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 8px 24px rgba(190,70,110,.22);font-size:12px;line-height:1.45;text-align:left;pointer-events:none;white-space:nowrap;text-overflow:ellipsis;cursor:default;}',
   '.rm2-pet-bubble-title{font-weight:600;color:#b03a60;}',
   '.rm2-pet-bubble-detail{color:#c2607f;margin-top:2px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}',
   // 气泡翻页圆点
@@ -114,7 +114,7 @@ var CSS = [
   'body[data-ds-dark-theme] .rm2-pet-menu-sep{background:rgba(255,150,185,.25);}',
   // 堆叠会话卡（状态页）
   '.rm2-pet-bubbles{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:12px;width:fit-content;max-width:min(330px,calc(100vw - 24px));display:flex;flex-direction:column;align-items:center;pointer-events:none;cursor:default;}',
-  '.rm2-pet-bubbles .rm2-pet-bubble{position:relative;bottom:auto;left:auto;transform:none;margin:0;box-sizing:border-box;width:fit-content;min-width:150px;max-width:min(330px,calc(100vw - 24px));height:68px;min-height:68px;padding:12px 20px 12px 30px;border-radius:22px;text-align:left;box-shadow:0 8px 24px rgba(190,70,110,.25);transition:width .18s ease,opacity .18s ease;}',
+  '.rm2-pet-bubbles .rm2-pet-bubble{position:relative;bottom:auto;left:auto;transform:none;margin:0;box-sizing:border-box;width:fit-content;min-width:150px;max-width:min(330px,calc(100vw - 24px));height:68px;min-height:68px;padding:12px 20px 12px 30px;border-radius:22px;text-align:left;box-shadow:0 8px 24px rgba(190,70,110,.22);transition:width .18s ease,opacity .18s ease;}',
   '.rm2-pet-bubbles .rm2-pet-bubble::after{display:none;}',
   '.rm2-pet-bubbles .rm2-pet-bubble{pointer-events:auto;cursor:pointer;}',
   '.rm2-pet-bubble-header{display:flex;align-items:center;min-width:0;min-height:22px;}',
@@ -128,7 +128,7 @@ var CSS = [
   '.rm2-pet-bubble-stack-count{display:none;position:absolute;right:16px;bottom:0;height:8px;align-items:center;color:#f0a8c0;font-size:9px;font-weight:700;line-height:8px;}',
   '.rm2-pet-bubble.summary-backboard .rm2-pet-bubble-stack-count{display:flex;}',
   '.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-title,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-action,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-completion{visibility:hidden;}',
-  '.rm2-pet-bubble.top{border-color:#b03a60;box-shadow:0 10px 28px rgba(190,70,110,.38);}',
+  '.rm2-pet-bubble.top{border-color:#b03a60;box-shadow:0 8px 24px rgba(190,70,110,.22);}',
   '.rm2-pet-bubble.attention{border-color:#e8508a;animation:rm2-pet-attention 1.6s ease-in-out infinite;}',
   '@keyframes rm2-pet-attention{0%,100%{box-shadow:0 0 0 0 rgba(232,80,138,.35);}50%{box-shadow:0 0 0 6px rgba(232,80,138,0);}}',
   'body[data-ds-dark-theme] .rm2-pet-bubble.top{border-color:#ffb3c9;}',
@@ -1228,10 +1228,10 @@ function mountPet(ctx) {
   var currentSessionId = undefined
   var lastTopEntry = null
   var bubbleEls = new Map() // sessionId -> { node, title, detail }
-  // 排序逻辑与桌面悬浮窗共用 src/session-order.js（构建时由 scripts/build-client.mjs
+  // 排序逻辑与桌面悬浮窗共用 src/session-order.cjs（构建时由 scripts/build-client.mjs
   // 拼接到本文件之前）：审批 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
   var __order = window.__rm2SessionOrder
-  // 构建脚本（build-client.mjs）必须把 session-order.js 拼接在本文件之前；
+  // 构建脚本（build-client.mjs）必须把 session-order.cjs 拼接在本文件之前；
   // 拼接被破坏时这里早失败，错误信息可直接定位成因，而不是在首次排序时抛
   // TypeError 让整个宠物模块静默失效。
   if (!__order) throw new Error('__rm2SessionOrder is missing: build-client.mjs session-order prepend was broken')
@@ -2381,17 +2381,25 @@ function mountPet(ctx) {
     menu.appendChild(makeToggleRow('暂停动画', paused, function () { setPaused(!paused); buildMenuContent() }))
   }
 
-  // Menu anchors to the character's top-right corner (outside the pet, never
-  // covering it). Falls back: top-left when the right side is too narrow,
-  // then above the pet when neither side fits.
-  function openMenuAt() {
-    buildMenuContent()
-    menu.style.display = 'block'
-    var mw = menu.offsetWidth
-    var mh = menu.offsetHeight
-    var W = window.innerWidth || 1280
-    var H = window.innerHeight || 800
-    var r = dock.getBoundingClientRect()
+  // 平时锚角色顶右（紧凑，气泡在 absolute 里不撑 dock）；菜单矩形与气泡相交
+  // 才改走包围盒避让。贴边仍是右→左→上。与桌面 pet-view.html 同一套。
+  function menuBoxOf(el) {
+    if (!el) return null
+    var cr = el.getBoundingClientRect()
+    if (cr.width < 1 || cr.height < 1) return null
+    return { top: cr.top, left: cr.left, right: cr.right, bottom: cr.bottom }
+  }
+  function unionMenuBox(a, b) {
+    if (!a) return b
+    if (!b) return a
+    return {
+      top: Math.min(a.top, b.top),
+      left: Math.min(a.left, b.left),
+      right: Math.max(a.right, b.right),
+      bottom: Math.max(a.bottom, b.bottom),
+    }
+  }
+  function sideMenuPos(r, mw, mh, W, H) {
     var left, top
     if (r.right + 8 + mw <= W - 4) {
       left = r.right + 8
@@ -2403,8 +2411,24 @@ function mountPet(ctx) {
       left = Math.max(4, Math.min(r.right - mw, W - mw - 4))
       top = Math.max(4, r.top - mh - 8)
     }
-    menu.style.left = left + 'px'
-    menu.style.top = top + 'px'
+    return { left: left, top: top }
+  }
+  function openMenuAt() {
+    buildMenuContent()
+    menu.style.display = 'block'
+    var mw = menu.offsetWidth
+    var mh = menu.offsetHeight
+    var W = window.innerWidth || 1280
+    var H = window.innerHeight || 800
+    var pet = menuBoxOf(img) || menuBoxOf(dock)
+    var bubbleBox = unionMenuBox(menuBoxOf(bubbleStack), menuBoxOf(bubble))
+    var cluster = unionMenuBox(pet, bubbleBox) || pet
+    var pos = sideMenuPos(pet, mw, mh, W, H)
+    if (bubbleBox && pos.left < bubbleBox.right && pos.left + mw > bubbleBox.left && pos.top < bubbleBox.bottom && pos.top + mh > bubbleBox.top) {
+      pos = sideMenuPos(cluster, mw, mh, W, H)
+    }
+    menu.style.left = pos.left + 'px'
+    menu.style.top = pos.top + 'px'
     menuOpen = true
   }
   function closeMenu() {

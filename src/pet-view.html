@@ -45,8 +45,8 @@
     border-radius: 22px;
     background: #fff0f5;
     border: 1px solid rgba(240, 120, 160, .45);
-    /* 透明 HWND 上同样的粉 box-shadow 会整圈开成光晕；改成短暗底影，观感贴近网页叠在不透明页上。 */
-    box-shadow: 0 4px 10px rgba(0, 0, 0, .28), 0 1px 4px rgba(190, 70, 110, .16);
+    /* 透明 HWND 上网页同款大粉影会整圈开成光晕；中等粉光 + 短暗底，黑底可见又不Bloom。 */
+    box-shadow: 0 3px 8px rgba(0, 0, 0, .18), 0 6px 16px rgba(190, 70, 110, .28);
     font-size: 12px;
     line-height: 1.45;
     text-align: left;
@@ -58,7 +58,7 @@
     width: fit-content;
     height: 68px;
     min-height: 68px;
-    box-shadow: 0 5px 12px rgba(0, 0, 0, .30), 0 1px 4px rgba(190, 70, 110, .16);
+    box-shadow: 0 3px 8px rgba(0, 0, 0, .18), 0 6px 16px rgba(190, 70, 110, .30);
     pointer-events: auto;
     cursor: pointer;
     overflow: hidden;
@@ -79,7 +79,7 @@
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-action,
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-completion { visibility: hidden; }
-  .rm2-pet-bubble.top { border-color: #b03a60; box-shadow: 0 6px 14px rgba(0, 0, 0, .34), 0 2px 6px rgba(190, 70, 110, .20); }
+  .rm2-pet-bubble.top { border-color: #b03a60; box-shadow: 0 4px 10px rgba(0, 0, 0, .20), 0 8px 18px rgba(190, 70, 110, .34); }
   .rm2-pet-bubble.attention { border-color: #e8508a; animation: rm2-pet-attention 1.6s ease-in-out infinite; }
   @keyframes rm2-pet-attention { 0%,100% { box-shadow: 0 0 0 0 rgba(232,80,138,.35); } 50% { box-shadow: 0 0 0 6px rgba(232,80,138,0); } }
   .rm2-bubble-dots { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 120; }
@@ -112,14 +112,14 @@
   .rm2-pet-toast.hide { opacity: 0; transform: translate(-50%, 4px); transition: opacity .22s, transform .22s; }
   .rm2-pet-toast-icon { flex: none; width: 20px; height: 20px; border-radius: 50%; background: #e8508a; color: #fff; font-size: 13px; font-weight: 700; line-height: 20px; text-align: center; }
   .rm2-pet-toast b { color: #b03a60; font-weight: 600; }
-  /* Right-click menu — fill/border 与网页同色；阴影用短暗底影（见上方气泡注释）。 */
+  /* Right-click menu — fill/border 与网页同色；阴影见上方气泡注释。 */
   .menu {
     display: none; position: fixed; z-index: 999;
     min-width: 200px;
     background: #fff0f5;
     border: 1px solid rgba(240, 120, 160, .45);
     border-radius: 10px;
-    box-shadow: 0 5px 12px rgba(0, 0, 0, .32), 0 1px 4px rgba(190, 70, 110, .16);
+    box-shadow: 0 3px 8px rgba(0, 0, 0, .20), 0 6px 16px rgba(190, 70, 110, .28);
     padding: 6px;
     font-family: system-ui, sans-serif;
     font-size: 13px; color: #8a2f52;
@@ -453,24 +453,28 @@
       }).catch(function () {}).then(function () { window.close() })
     }, true))
   }
-  // 与网页端 openMenuAt 同一套「右→左→上」公式；约束用工作区而不是 400×520 窗。
-  // 落点选出后再扩窗包住菜单+光晕。needT 钳在 ≥0，不向上改 y，避免开/关瞬移。
-  var MENU_GLOW = 16
-  function clusterRect() {
-    var img = imgEl.getBoundingClientRect()
-    var top = img.top, left = img.left, right = img.right, bottom = img.bottom
-    function include(el) {
-      if (!el) return
-      var cr = el.getBoundingClientRect()
-      if (cr.width < 1 || cr.height < 1) return
-      if (cr.top < top) top = cr.top
-      if (cr.left < left) left = cr.left
-      if (cr.right > right) right = cr.right
-      if (cr.bottom > bottom) bottom = cr.bottom
+  // 与网页端 openMenuAt 同一套：平时锚角色（紧凑），菜单矩形与气泡相交才改走
+  // 包围盒避让。约束用工作区。落点选出后再扩窗包住菜单+光晕。needT 钳 ≥0，
+  // 不向上改 y。贴右向左扩由主进程 setOpacity(0) 后再改 bounds，避免左右抽动。
+  var MENU_GLOW = 20
+  function menuBoxOf(el) {
+    if (!el) return null
+    var cr = el.getBoundingClientRect()
+    if (cr.width < 1 || cr.height < 1) return null
+    return { top: cr.top, left: cr.left, right: cr.right, bottom: cr.bottom }
+  }
+  function unionMenuBox(a, b) {
+    if (!a) return b
+    if (!b) return a
+    return {
+      top: Math.min(a.top, b.top),
+      left: Math.min(a.left, b.left),
+      right: Math.max(a.right, b.right),
+      bottom: Math.max(a.bottom, b.bottom),
     }
-    include(bubbleStack)
-    include(bubbleEl)
-    return { top: top, left: left, right: right, bottom: bottom }
+  }
+  function clusterRect() {
+    return unionMenuBox(menuBoxOf(imgEl), unionMenuBox(menuBoxOf(bubbleStack), menuBoxOf(bubbleEl)))
   }
   function applyPetShift(dx, dy) {
     dx = Number(dx) || 0
@@ -481,7 +485,8 @@
     }
     if (toastEl) toastEl.style.left = (200 + dx) + 'px'
   }
-  function pickMenuPos(r, mw, mh, L, T, R, B) {
+  window.__rm2ApplyPetShift = applyPetShift
+  function sideMenuPos(r, mw, mh, L, T, R, B) {
     var left, top
     if (r.right + 8 + mw <= R - 4) {
       left = r.right + 8
@@ -495,8 +500,18 @@
     }
     return { left: left, top: top }
   }
-  function layoutMenu(W, H, mw, mh, r) {
-    var pos = pickMenuPos(r, mw, mh, 0, 0, W, H)
+  function pickMenuPos(mw, mh, L, T, R, B) {
+    var pet = menuBoxOf(imgEl) || clusterRect()
+    var bubble = unionMenuBox(menuBoxOf(bubbleStack), menuBoxOf(bubbleEl))
+    var cluster = unionMenuBox(pet, bubble) || pet
+    var compact = sideMenuPos(pet, mw, mh, L, T, R, B)
+    if (bubble && compact.left < bubble.right && compact.left + mw > bubble.left && compact.top < bubble.bottom && compact.top + mh > bubble.top) {
+      return sideMenuPos(cluster, mw, mh, L, T, R, B)
+    }
+    return compact
+  }
+  function layoutMenu(W, H, mw, mh) {
+    var pos = pickMenuPos(mw, mh, 0, 0, W, H)
     menuEl.style.left = pos.left + 'px'
     menuEl.style.top = pos.top + 'px'
     menuOpen = true
@@ -514,14 +529,13 @@
     var mh = menuEl.offsetHeight
     var W = window.innerWidth || 380
     var H = window.innerHeight || 430
-    var r = clusterRect()
     function expandTo(pos) {
       var needL = Math.round(Math.min(0, pos.left - MENU_GLOW))
       var needT = Math.round(Math.max(0, pos.top - MENU_GLOW))
       var needR = Math.round(pos.left + mw + MENU_GLOW)
       var needB = Math.round(pos.top + mh + MENU_GLOW)
       if (!(window.petBridge && window.petBridge.menuExpand) || (needL >= 0 && needT >= 0 && needR <= W && needB <= H)) {
-        layoutMenu(W, H, mw, mh, r)
+        layoutMenu(W, H, mw, mh)
         return
       }
       window.petBridge.menuExpand(needL, needT, needR, needB).then(function (dim) {
@@ -529,10 +543,10 @@
         applyPetShift(dim && dim.dx, dim && dim.dy)
         var W2 = (dim && Number(dim.width)) || window.innerWidth || W
         var H2 = (dim && Number(dim.height)) || window.innerHeight || H
-        layoutMenu(W2, H2, mw, mh, clusterRect())
+        layoutMenu(W2, H2, mw, mh)
       }).catch(function () {
         if (menuEl.style.display !== 'block') return
-        layoutMenu(W, H, mw, mh, r)
+        layoutMenu(W, H, mw, mh)
       })
     }
     if (window.petBridge && window.petBridge.getWorkArea) {
@@ -542,11 +556,11 @@
         var T = (wa && Number(wa.top)) || 0
         var R = (wa && Number(wa.right)) || W
         var B = (wa && Number(wa.bottom)) || H
-        expandTo(pickMenuPos(r, mw, mh, L, T, R, B))
-      }).catch(function () { expandTo(pickMenuPos(r, mw, mh, 0, 0, W, H)) })
+        expandTo(pickMenuPos(mw, mh, L, T, R, B))
+      }).catch(function () { expandTo(pickMenuPos(mw, mh, 0, 0, W, H)) })
       return
     }
-    expandTo(pickMenuPos(r, mw, mh, 0, 0, W, H))
+    expandTo(pickMenuPos(mw, mh, 0, 0, W, H))
   }
   function closeMenu() {
     menuOpen = false
@@ -617,7 +631,7 @@
     if (text !== undefined) n.textContent = text
     return n
   }
-  // 排序逻辑与网页客户端共用 src/session-order.js（宿主 /session-order.js 提供）：
+  // 排序逻辑与网页客户端共用 src/session-order.cjs（宿主仍以 /session-order.js 提供）：
   // 审批 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
   var __order = window.__rm2SessionOrder
   // 宿主 /session-order.js 加载失败时早失败并给出可定位的成因（与网页端一致）
@@ -780,7 +794,7 @@
       event.preventDefault()
       event.stopPropagation()
       // 与网页端一致（src/client.core.js activate）：占位卡不可交互，
-      // 否则点击「待命中」会以 __pet_idle__ 广播打开不存在的会话，
+      // 否则点击「待机中」会以 __pet_idle__ 广播打开不存在的会话，
       // 无网页在线时还会误触 openDshPage 弹出浏览器。
       if (el.node.dataset.idlePlaceholder === 'true') return
       // 假背板：点击时按当帧排序动态解析第 2 名会话并跳转。

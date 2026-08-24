@@ -24,12 +24,12 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | State machine | Pure-function `PetReducer` with mood mapping (unit-tested) |
 | Message protocol | Typed protocol (protocol.js) |
 | Configuration | schemastery persistence + settings card |
-| Multi-session priority | Unread completions > waiting/errors > current session > state priority > recency |
+| Multi-session priority | Approval > waiting for an answer (ask_user_question) > completion reminder > waiting/error > current session > state priority > recency |
 | Live push | SSE stream (auto-reconnect + polling fallback) |
 | Status bubble | Adaptive two-layer deck on both the in-page pet and the desktop window: top status card + `+N` summary backboard; message + detail (project · completed x/y · phase) |
-| Session actions | Web: card / `?` / `!` open the session, `✓` allows once; desktop: no navigation, `✓` still allows once |
-| Completion reminders | Persist until handled: web returns to idle after opening that session; desktop click dismisses the green dot and idles immediately. The current session has no unread dot (current Host lifetime only) |
-| Error reminders | A failed turn (model-call error, etc.) keeps the attention bubble until that conversation is opened; a failure in the current session never becomes a reminder. Opening the session (bubble jump or sidebar) dismisses it. Approvals and questions are unchanged |
+| Session actions | Web and desktop match: card / `?` / `!` open the session, `✓` allows once; with no web client online, a card/icon click opens the DSH page in the system browser |
+| Completion reminders | Persist until handled; a completion on the current session is auto-cleared; opening that session (in-page jump or browser) also clears it. The already-open session has no unread dot (current Host lifetime only) |
+| Error reminders | A failed turn (model-call error, etc.) keeps the pink attention mark until that conversation is opened; a failure in the current session never becomes a reminder. Opening the session (bubble jump or sidebar) dismisses it. Approvals and questions are unchanged |
 | Balance | Single-click the pet to show DeepSeek balance + time period (60s auto-refresh, rolling-number animation, stale fallback on network blips), auto-returns to the status bubble after 5s |
 | Today usage | Two modes: ledger (default, token-free, balance-delta) / real-time token (platform usage API + peak/off-peak pricing, exact) |
 | Desktop float | Bundled Electron transparent always-on-top window (opt-in) |
@@ -49,7 +49,7 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | 05 Waiting | <img src="assets/pets/remielle/05.gif" width="56" alt="05 Waiting"/> | WAITING: question answer, approval pending, turn blocked |
 | 06 Idle | <img src="assets/pets/remielle/06.gif" width="56" alt="06 Idle"/> | IDLE / DISCONNECTED: idle, after turn ends |
 
-When multiple sessions run concurrently, the top task is selected by `unread completion > waiting/error > current session > state priority > recency`; every other session is represented by a clickable `+N` summary backboard. Sub-agents are ignored by default (configurable).
+When multiple sessions run concurrently, the top task is selected by `approval > waiting for an answer > completion reminder > waiting/error > current session > state priority > recency`; every other session is represented by a clickable `+N` summary backboard. Sub-agents are ignored by default (configurable).
 
 ### Pet Definition Convention
 
@@ -126,7 +126,9 @@ dsh plugin --profile web add dsh-pet-remielle
 `desktopMode` is off by default. When enabled, a **transparent, always-on-top, frameless** Electron window displays the pet.
 
 - Window supports dragging (position remembered), scroll-wheel zoom, double-click drawing, right-click menu.
-- Status/balance bubbles match the web pet: stacked session cards and a single toggle dot. Desktop card clicks do not navigate; a completed-card click only clears the reminder and returns to idle. `✓` still clicks Allow once. The in-page pet still opens the conversation.
+- Status/balance bubbles match the web pet: stacked session cards, a single toggle dot, the same tooltips and click behavior; `✓` still clicks Allow once.
+- Known limit: the sidebar “pending content” green-dot feed is synced only while a **web client is online**. Reminders that appear while the page is closed may be missing from the desktop bubble until the page is opened again.
+- The desktop window compensates UI size from the system scale so it matches the in-page pet.
 - Double-click drawing: artwork appears in a **desktop top-right** independent window, brush-reveal along the diagonal, then "Pleased → fade-out".
 - Right-click menu: switch to web mode, lock, bubble toggle, size, drawing, etc.
 - Closing/switching returns to the in-page pet automatically; window closes when DSH host exits.
@@ -211,7 +213,7 @@ src/
 ├── pets.js           # Pet registry: directory discovery/merge/validation (unit-tested)
 ├── status-copy.js    # Remielle-flavored status copy (replaceable)
 ├── desktop-window.js # Desktop mode: Electron discovery + window process management (unit-tested)
-├── pet-window.js     # Desktop mode: Electron main (transparent window + top-right artwork window)
+├── pet-window.cjs    # Desktop mode: Electron main (transparent window + top-right artwork window)
 ├── pet-view.html     # Desktop mode: pet window page (GIF + bubble + SSE + drawing + balance bubble)
 ├── balance-widget.js # Balance controller (client): fetch/rolling animation/5s auto-return, rendered into the pet's own bubble
 └── client.core.js    # Browser side: pet UI + settings (wrapped at build time)

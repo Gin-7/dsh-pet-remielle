@@ -177,9 +177,9 @@ export class DesktopWindow {
     }
     const child = this.spawnImpl(this.backend.command, this.backend.args, {
       cwd: dirname(this.backend.command),
-      // inherit：让 pet 进程的诊断日志（[pet-geo:*]/[pet-drag] 等）直达宿主
-      // 控制台；此前 'ignore' 曾把现场取证所需的全部输出吞掉。
-      stdio: 'inherit',
+      // pipe 而非 inherit：Electron/Chromium 启动时常往宿主控制台写一个空行。
+      // 有内容的诊断日志仍转发；纯空白块丢掉。
+      stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: false,
       env: {
         ...process.env,
@@ -189,6 +189,16 @@ export class DesktopWindow {
       },
     })
     this.child = child
+    const forward = (stream, dest) => {
+      if (!stream || typeof stream.on !== 'function' || !dest || typeof dest.write !== 'function') return
+      stream.on('data', (chunk) => {
+        const text = String(chunk)
+        if (!text.trim()) return
+        dest.write(text)
+      })
+    }
+    forward(child.stdout, process.stdout)
+    forward(child.stderr, process.stderr)
     child.once('error', (error) => {
       this.logger.error?.(`dsh-pet-remielle: pet window failed to start: ${error.message}`)
       this.child = undefined

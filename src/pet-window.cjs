@@ -255,7 +255,40 @@ app.whenReady().then(() => {
       bottom: (wa.y + wa.height - b.y) / uiZoom,
     }
   })
-  ipcMain.handle('menu-expand', (_event, cssLeft, cssTop, cssRight, cssBottom) => {
+  const applyShiftInPage = (dx, dy) => {
+    const dxN = Number(dx) || 0
+    const dyN = Number(dy) || 0
+    return win.webContents.executeJavaScript(
+      `void (window.__rm2ApplyPetShift && window.__rm2ApplyPetShift(${dxN},${dyN}))`,
+    ).catch(() => {})
+  }
+  // resizable:false 时 Windows 常忽略 setBounds 的 x，只从当前左上角改宽；
+  // 透明窗 opacity:0 时 DWM 还可能在揭回时把位置弹回隐藏前的 bounds。
+  const applyBounds = (bounds) => {
+    if (win.isDestroyed()) return
+    let locked = false
+    try { locked = !win.isResizable(); if (locked) win.setResizable(true) } catch { locked = false }
+    try {
+      win.setContentBounds(bounds)
+    } finally {
+      try { if (locked) win.setResizable(false) } catch { /* 还原失败也不要抛 */ }
+    }
+  }
+  const withHiddenMove = async (originMoves, run) => {
+    if (originMoves && !win.isDestroyed()) {
+      try { win.setOpacity(0) } catch { /* 透明窗仍可 setOpacity */ }
+    }
+    try {
+      await run()
+      // 只等一帧让 DWM 吃下 bounds+shift；揭回后再写 bounds 会在可见时挪窗=闪动。
+      if (originMoves) await new Promise((r) => setTimeout(r, 16))
+    } finally {
+      if (originMoves && !win.isDestroyed()) {
+        try { win.setOpacity(1) } catch { /* 必须揭回，否则宠物会消失 */ }
+      }
+    }
+  }
+  ipcMain.handle('menu-expand', async (_event, cssLeft, cssTop, cssRight, cssBottom) => {
     const b = win.getContentBounds()
     const left = Math.round((Number(cssLeft) || 0) * uiZoom)
     const top = Math.round((Number(cssTop) || 0) * uiZoom)
@@ -282,23 +315,38 @@ app.whenReady().then(() => {
       if (bot < b.height) bot = b.height
     }
     const nb = { x: b.x + x, y: b.y + y, width: rgt - x, height: bot - y }
+    const dx = Math.round(-x / uiZoom)
+    const dy = Math.round(-y / uiZoom)
     if (nb.width === b.width && nb.height === b.height && x === 0 && y === 0) {
       return { width: Math.round(b.width / uiZoom), height: Math.round(b.height / uiZoom), dx: 0, dy: 0 }
     }
     if (menuBase == null) menuBase = { x: b.x, y: b.y, width: b.width, height: b.height }
-    win.setBounds(nb)
+    const originMoves = x !== 0 || y !== 0
+    await withHiddenMove(originMoves, async () => {
+      if (originMoves) await applyShiftInPage(dx, dy)
+      applyBounds(nb)
+      if (originMoves) applyBounds(nb)
+    })
     return {
       width: Math.round(nb.width / uiZoom),
       height: Math.round(nb.height / uiZoom),
-      dx: Math.round(-x / uiZoom),
-      dy: Math.round(-y / uiZoom),
+      dx,
+      dy,
     }
   })
-  ipcMain.handle('menu-restore', () => {
+  ipcMain.handle('menu-restore', async () => {
     if (menuBase == null || win.isDestroyed()) return
     const base = menuBase
     menuBase = null
-    win.setBounds(base)
+    const b = win.getContentBounds()
+    const originMoved = base.x !== b.x || base.y !== b.y
+    await withHiddenMove(originMoved, async () => {
+      // 先搬回窗口（此时页面 shift 仍在，视觉位置正确），再清 shift。
+      // 若先清 shift 而 x 没写回去，宠物会停在扩窗后的左侧。
+      applyBounds(base)
+      if (originMoved) await applyShiftInPage(0, 0)
+      applyBounds(base)
+    })
   })
 
   // 无网页客户端在线时点击气泡卡：渲染层只发信号，URL 由这里从宿主给的

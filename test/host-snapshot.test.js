@@ -5,7 +5,7 @@ import { applyCompletionAck, createCompletionAckHandler, createPendingActionStor
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
-function snapshotWith({ latest, pulse = null, config = {}, petId, getStates, getCompletions }) {
+function snapshotWith({ latest, pulse = null, config = {}, petId, getStates, getCompletions, getCurrent }) {
   return createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
@@ -13,6 +13,7 @@ function snapshotWith({ latest, pulse = null, config = {}, petId, getStates, get
     getPetId: () => petId,
     getStates,
     getCompletions,
+    getCurrent,
   })()
 }
 
@@ -189,6 +190,33 @@ test('expired pulse falls back to durable state', () => {
 test('disabled config is reflected in the snapshot', () => {
   const snapshot = snapshotWith({ latest: idle, config: { enabled: false } })
   assert.equal(snapshot.enabled, false)
+})
+
+test('snapshot sessions follow session-order: approval > ask > completion > current > recency', () => {
+  const snapshot = snapshotWith({
+    latest: idle,
+    getCurrent: () => 'cur',
+    getStates: () => [
+      { sessionId: 'think', state: PetState.THINKING, attention: false, updatedAt: 9 },
+      { sessionId: 'cur', state: PetState.WORKING, attention: false, updatedAt: 1 },
+      { sessionId: 'ask', state: PetState.WAITING, ask: true, attention: true, updatedAt: 2 },
+      { sessionId: 'appr', state: PetState.WAITING, approval: true, attention: true, updatedAt: 3 },
+    ],
+    getCompletions: () => [{
+      sessionId: 'done',
+      message: '任务已完成',
+      detail: '任务已完成',
+      phase: 'turn-end',
+      updatedAt: 8,
+    }],
+  })
+  assert.deepEqual(snapshot.sessions.map((entry) => entry.sessionId), [
+    'appr',
+    'ask',
+    'completion:done',
+    'cur',
+    'think',
+  ])
 })
 
 test('snapshot carries one entry per tracked session for stacked bubbles', () => {

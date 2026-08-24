@@ -15,6 +15,7 @@
  * polls the state endpoint, or in an optional desktop floating window.
  */
 
+import { createRequire } from 'node:module'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,6 +43,8 @@ import {
 import { createBalanceService, normalizeUsageMode } from './balance.js'
 import { statusCopy } from './status-copy.js'
 import { TURN_WATCHDOG_INTERVAL_MS, createTurnWatchdog } from './turn-watchdog.js'
+
+const { compareSessions } = createRequire(import.meta.url)('./session-order.cjs')
 
 export const name = 'dsh-pet-remielle'
 export const inject = ['sessions', 'credentials']
@@ -524,6 +527,8 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         ask: false,
       })
     }
+    const currentId = currentOf() || undefined
+    sessions.sort((left, right) => compareSessions(left, right, currentId))
     return {
       ok: true,
       enabled: config.enabled === true,
@@ -1008,7 +1013,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       let sessionOrderJs = null
       const readSessionOrder = async () => {
         if (sessionOrderJs) return sessionOrderJs
-        sessionOrderJs = await readFile(new URL('../src/session-order.js', import.meta.url), 'utf8')
+        sessionOrderJs = await readFile(new URL('../src/session-order.cjs', import.meta.url), 'utf8')
         return sessionOrderJs
       }
 
