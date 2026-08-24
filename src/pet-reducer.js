@@ -523,7 +523,7 @@ export class PetReducer {
     record = {
       id: sessionId,
       state: PetState.IDLE,
-      payload: { phase: 'session-created', message: '蕾米埃尔待命中' },
+      payload: { phase: 'session-created', message: '蕾米埃尔待机中~' },
       turnActive: false,
       openTools: new Map(),
       askTools: new Set(),
@@ -573,7 +573,7 @@ export class PetReducer {
       return
     }
     record.state = record.savedState ?? PetState.THINKING
-    record.payload = record.savedPayload ?? { phase: 'wait-end', message: '蕾米埃尔待命中' }
+    record.payload = record.savedPayload ?? { phase: 'wait-end', message: '蕾米埃尔待机中~' }
     record.savedState = undefined
     record.savedPayload = undefined
   }
@@ -581,7 +581,7 @@ export class PetReducer {
   #waitPayload(record) {
     return record.waits.find((wait) => wait.kind === 'approval')?.payload
       ?? record.waits.at(-1)?.payload
-      ?? { phase: 'wait-end', message: '蕾米埃尔待命中' }
+      ?? { phase: 'wait-end', message: '蕾米埃尔待机中~' }
   }
 
   #select() {
@@ -591,7 +591,7 @@ export class PetReducer {
         record: {
           id: 'dsh-host',
           state: PetState.IDLE,
-          payload: { phase: 'no-session', message: '蕾米埃尔待命中' },
+          payload: { phase: 'no-session', message: '蕾米埃尔待机中~' },
           updatedAt: ++this.clock,
         },
       }

@@ -8,13 +8,22 @@
 <title>蕾米埃尔桌宠</title>
 <style>
   html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  /* 内容定位职责在下方 .pet 固定锚层（见其注释），body 只负责铺满与禁选中 */
   body {
     width: 100vw; height: 100vh;
-    display: flex; align-items: flex-end; justify-content: center;
     user-select: none; -webkit-user-select: none;
     font-family: system-ui, sans-serif;
   }
-  .pet { position: relative; display: flex; flex-direction: column; align-items: center; }
+  /* .pet 固定锚层：尺寸钉在窗口基准（400×520 = pet-window.cjs 的
+     PET_CONTENT_W/H），fixed 贴视口左缘/底缘。菜单扩窗只向右长（x 不动）、
+     向上长（底缘不动），本层因此全程不位移、不随视口伸缩重排——内容布局
+     一旦依赖视口尺寸，渲染层重排滞后 setBounds 的那一帧就会表现为宠物随
+     窗口平移闪现。子元素沿用原 body 的排布：纵向贴底、水平居中。 */
+  .pet {
+    position: fixed; left: 0; bottom: 0;
+    width: 400px; height: 520px;
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+  }
   .rm2-pet-bubbles {
     position: relative;
     margin-bottom: 12px;
@@ -79,6 +88,30 @@
   .rm2-bubble-balance { box-sizing: border-box; height: 68px; min-height: 68px; max-width: 330px; }
   .rm2-bubble-balance .rm2-pet-bubble-title { line-height: 22px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   img { width: 180px; height: auto; display: block; }
+  /* 审批未送达 toast：单例提示条，悬在气泡堆叠上方（bottom 由 JS 按堆叠实时计算）；
+     pointer-events 放行桌面点击，z-index 低于右键菜单（#menu:999） */
+  .rm2-pet-toast {
+    /* 水平锚在 400 基准中心（与 .pet 锚层同基准）：left:50% 会随菜单扩窗后
+       变宽的视口漂到新中心，宠物不动而 toast 横移 */
+    position: fixed; left: 200px;
+    display: none; align-items: center; gap: 8px;
+    padding: 7px 16px 7px 9px;
+    border-radius: 17px;
+    background: #fff0f5;
+    border: 1px solid rgba(240, 120, 160, .55);
+    box-shadow: 0 6px 18px rgba(190, 70, 110, .30);
+    font-size: 12px; color: #c2607f;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 900;
+    opacity: 0;
+    transform: translate(-50%, 6px);
+    transition: opacity .18s ease-out, transform .18s ease-out;
+  }
+  .rm2-pet-toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .rm2-pet-toast.hide { opacity: 0; transform: translate(-50%, 4px); transition: opacity .22s, transform .22s; }
+  .rm2-pet-toast-icon { flex: none; width: 20px; height: 20px; border-radius: 50%; background: #e8508a; color: #fff; font-size: 13px; font-weight: 700; line-height: 20px; text-align: center; }
+  .rm2-pet-toast b { color: #b03a60; font-weight: 600; }
   /* Right-click menu — pink palette, matching the status bubble and the
      in-page pet menu (both sides use the same hardcoded pink values). */
   .menu {
@@ -108,6 +141,8 @@
     .rm2-pet-bubble-detail { color: #f0a8c0; }
     .rm2-pet-bubble.top { border-color: #ffb3c9; }
     .rm2-pet-bubble.attention { border-color: #ff6fa8; }
+    .rm2-pet-toast { background: rgba(72, 20, 42, .97); border-color: rgba(255, 150, 185, .5); color: #e8a8bf; }
+    .rm2-pet-toast b { color: #ffb3c9; }
     .menu { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
     .menu-item:hover { background: rgba(255, 150, 185, .16); }
     .menu-item .tick { color: #ffb3c9; }
@@ -326,7 +361,7 @@
     slider.min = 0.5
     slider.max = 2
     slider.step = 0.05
-    slider.style.cssText = 'width:110px;margin:0 4px;'
+    slider.style.cssText = 'width:110px;margin:0 4px;accent-color:#e8508a;'
     var pct = document.createElement('span')
     pct.className = 'tick'
     pct.style.cssText = 'min-width:42px;text-align:right;font-size:12px;'
@@ -421,19 +456,16 @@
   // Menu anchors to the character's top-right corner (outside the pet, never
   // covering it). Falls back: top-left when the right side is too narrow,
   // then above the pet when neither side fits (small desktop window).
-  function openMenuAt() {
-    buildMenu()
-    menuEl.style.display = 'block'
-    setForceInteractive(true)
-    var mw = menuEl.offsetWidth
-    var mh = menuEl.offsetHeight
-    var W = window.innerWidth || 380
-    var H = window.innerHeight || 430
-    var r = imgEl.getBoundingClientRect()
+  // 与网页端 openMenuAt（src/client.core.js）同一套「右→左→上」公式；区别是
+  // 桌面窗口平时刚好包住宠物、右侧放不下菜单——打开时先请主进程按需加宽窗口
+  // （x/y 不变，宠物视觉位置不动），按实际宽度布局；贴屏幕右缘加宽不足时自然
+  // 落到左侧/上方兜底（同网页贴底时上移遮挡部分气泡的取舍）。菜单顶对齐图片
+  // 顶（r.top），气泡悬在图片上方（bottom:100% 同款布局），因此不遮挡气泡。
+  function layoutMenu(W, H, mw, mh, r) {
     var left, top
     if (r.right + 8 + mw <= W - 4) {
       left = r.right + 8
-      top = Math.max(4, Math.min(r.top, H - mh - 4))
+      top = Math.max(4, Math.min(r.top, H - mh - 24))
     } else if (r.left - 8 - mw >= 4) {
       left = r.left - mw - 8
       top = Math.max(4, Math.min(r.top, H - mh - 4))
@@ -446,11 +478,43 @@
     menuOpen = true
     reportHitRects()
   }
+  function openMenuAt() {
+    buildMenu()
+    setForceInteractive(true)
+    // 先离屏测量：fixed 元素未设 left/top 时会停在文档默认位置，扩窗往返期间
+    // 会闪现一下；测完再定位到目标位置。
+    menuEl.style.left = '-9999px'
+    menuEl.style.top = '0px'
+    menuEl.style.display = 'block'
+    var mw = menuEl.offsetWidth
+    var mh = menuEl.offsetHeight
+    var W = window.innerWidth || 380
+    var H = window.innerHeight || 430
+    var r = imgEl.getBoundingClientRect()
+    // 扩窗需求：右侧留 24px 光晕；高度按菜单顶对齐图像顶（r.top）+ 底部 40px 光晕
+    var needW = Math.round(r.right + 8 + mw + 24)
+    var needH = Math.round(r.top + mh + 40)
+    if (window.petBridge && window.petBridge.menuExpand && (needW > W || needH > H)) {
+      window.petBridge.menuExpand(needW, needH).then(function (dim) {
+        // 往返期间菜单已被关掉（画画/切换模式等）就不再定位
+        if (menuEl.style.display !== 'block') return
+        layoutMenu((dim && Number(dim.width)) || W, (dim && Number(dim.height)) || H, mw, mh, r)
+      }).catch(function () {
+        // 主进程无此通道（旧版本）：回退当前窗口内的兜底布局
+        if (menuEl.style.display !== 'block') return
+        layoutMenu(W, H, mw, mh, r)
+      })
+      return
+    }
+    layoutMenu(W, H, mw, mh, r)
+  }
   function closeMenu() {
     menuOpen = false
     menuEl.style.display = 'none'
     setForceInteractive(false)
     reportHitRects()
+    // 还原菜单期间加宽的窗口（未扩过窗时主进程侧是 no-op）
+    if (window.petBridge && window.petBridge.menuRestore) window.petBridge.menuRestore()
   }
   document.addEventListener('pointerdown', function (e) {
     if (menuOpen && !menuEl.contains(e.target)) closeMenu()
@@ -524,6 +588,61 @@
   function orderSessions(sessions) {
     return __order.orderSessions(sessions, currentSessionId)
   }
+  // --- approval toast：“允许一次”未送达时的气泡内提示 ---
+  // 单例节点首次调用时创建挂 body，重复触发只刷新文案与倒计时不叠加；
+  // 悬在气泡堆叠上方 8px，多卡堆叠增高时随 getBoundingClientRect 自动跟随。
+  var TOAST_TEXTS = [
+    '呜…允许一次没有送到呢，打开 DSH 网页再试一次嘛~',
+    '诶？没有找到接收的人，去 DSH 网页再按一次吧~',
+    '批准没有送到哦，打开 DSH 网页后再来一次~',
+  ]
+  var toastEl = null
+  var toastMsg = null
+  var toastFadeTimer = 0
+  var toastGoneTimer = 0
+  function showToast() {
+    if (!toastEl) {
+      toastEl = mk('div', '')
+      toastEl.className = 'rm2-pet-toast'
+      var icon = mk('span', '', '✓')
+      icon.className = 'rm2-pet-toast-icon'
+      toastMsg = mk('span', '', '')
+      toastEl.appendChild(icon)
+      toastEl.appendChild(toastMsg)
+      document.body.appendChild(toastEl)
+    }
+    // 重置上一轮计时器：连续触发时不叠加、不提前熄灭
+    if (toastFadeTimer) { window.clearTimeout(toastFadeTimer); toastFadeTimer = 0 }
+    if (toastGoneTimer) { window.clearTimeout(toastGoneTimer); toastGoneTimer = 0 }
+    // 每次随机取一条文案，第一个逗号前的片段加粗
+    var text = TOAST_TEXTS[Math.floor(Math.random() * TOAST_TEXTS.length)]
+    var cut = text.indexOf('，')
+    var head = cut >= 0 ? text.slice(0, cut) : text
+    var tail = cut >= 0 ? text.slice(cut + 1) : ''
+    toastMsg.innerHTML = '<b>' + head + '</b>，' + tail
+    // bottom 相对视口：堆叠容器顶缘上方 8px
+    var sr = bubbleStack.getBoundingClientRect()
+    toastEl.style.bottom = (window.innerHeight - sr.top + 8) + 'px'
+    // 隐藏/淡出中都需要重新入场：复位初始态并强制 reflow，保证过渡可靠触发；
+    // 可见中重复触发则保持 .show 不闪动
+    if (!toastEl.classList.contains('show')) {
+      toastEl.classList.remove('hide')
+      toastEl.style.display = 'flex'
+      void toastEl.offsetWidth
+      toastEl.classList.add('show')
+    }
+    // 3500ms 后开始淡出，再 400ms 后彻底隐藏
+    toastFadeTimer = window.setTimeout(function () {
+      toastFadeTimer = 0
+      toastEl.classList.remove('show')
+      toastEl.classList.add('hide')
+      toastGoneTimer = window.setTimeout(function () {
+        toastGoneTimer = 0
+        toastEl.classList.remove('hide')
+        toastEl.style.display = 'none'
+      }, 400)
+    }, 3500)
+  }
   function approveSession(sessionId) {
     if (!sessionId) return
     fetch(SESSION_OPEN_ENDPOINT, {
@@ -533,9 +652,10 @@
     })
       .then(function (r) { return r.ok ? r.json() : null })
       .then(function (data) {
-        // delivered=false：没有网页客户端在线接收审批广播，“允许一次”没有生效
+        // delivered=false：没有网页客户端在线接收审批广播，“允许一次”没有生效，
+        // 弹 toast 提示用户到 DSH 网页重试
         if (data && data.delivered === false) {
-          console.warn('[dsh-pet-remielle] 允许一次未生效：没有网页客户端在线接收审批动作')
+          showToast()
         }
       })
       .catch(function () {})
@@ -777,7 +897,7 @@
         sessionId: '__pet_idle__',
         state: 'IDLE',
         mood: snapshot.mood || '06',
-        message: snapshot.message || '蕾米埃尔待命中',
+        message: snapshot.message || '蕾米埃尔待机中~',
         detail: '',
         phase: 'idle',
         updatedAt: snapshot.updatedAt || 0,

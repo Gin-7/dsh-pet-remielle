@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld('petBridge', {
   dragMove: () => ipcRenderer.send('drag-move'),
   dragEnd: () => ipcRenderer.send('drag-end'),
   getPosition: () => ipcRenderer.invoke('get-position'),
+  // 右键菜单：按需扩窗（宽对称扩、高底缘固定向上扩，内容不闪移），invoke 返回
+  // 实际 CSS 尺寸 {width,height}；菜单关闭时还原到打开前的位置尺寸（未扩过窗时是 no-op）
+  menuExpand: (width, height) => ipcRenderer.invoke('menu-expand', Number(width) || 0, Number(height) || 0),
+  menuRestore: () => ipcRenderer.send('menu-restore'),
   // 无网页在线时点击卡片：请主进程用系统浏览器打开 DSH 网页端（URL 由主进程决定）
   openDshPage: () => ipcRenderer.invoke('open-dsh-page'),
   // 绘画作品：独立窗口显示在桌面右上角（不遮气泡）
