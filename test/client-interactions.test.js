@@ -324,6 +324,62 @@ test('completion card waits for confirmed selection before acknowledgement', asy
   assert.ok(harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'done' })))
 })
 
+test('current conversation ERROR card is dropped without attention', () => {
+  const harness = createHarness('err')
+  harness.send({
+    ...base,
+    message: '蕾米埃尔待机中~',
+    sessions: [{
+      sessionId: 'err',
+      state: 'ERROR',
+      message: '任务好像遇到问题了哦',
+      detail: 'dsh-pet-remielle · 需要处理',
+      attention: true,
+      updatedAt: 1,
+    }],
+  })
+  assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务好像遇到问题了哦'), false)
+})
+
+test('background ERROR card stays in attention until that session is opened', () => {
+  const harness = createHarness('other')
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'err',
+      state: 'ERROR',
+      message: '任务好像遇到问题了哦',
+      detail: 'dsh-pet-remielle · 需要处理',
+      attention: true,
+      updatedAt: 1,
+    }],
+  })
+  const card = harness.card('任务好像遇到问题了哦')
+  assert.ok(card.className.includes('attention'))
+  harness.select('err')
+  // 节点可能仍留在 harness.elements 里，但已从牌叠父节点卸下。
+  assert.equal(card.parentNode.children.includes(card), false)
+})
+
+test('current conversation WAITING card stays until the question is answered', () => {
+  const harness = createHarness('ask')
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'ask',
+      state: 'WAITING',
+      phase: 'ask',
+      message: '需要你确认一下哦',
+      detail: '等待回答',
+      ask: true,
+      attention: true,
+      updatedAt: 1,
+    }],
+  })
+  const card = harness.card('需要你确认一下哦')
+  assert.ok(card.className.includes('attention'))
+})
+
 test('current conversation completion is acknowledged without a green reminder', async () => {
   const harness = createHarness('done')
   harness.send({

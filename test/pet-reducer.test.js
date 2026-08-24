@@ -472,6 +472,66 @@ test('states() ranks attention-needing sessions on top', () => {
   assert.equal(states[1].attention, false)
 })
 
+test('turn/end error -> durable ERROR attention', () => {
+  const reducer = new PetReducer()
+  const state = latestState(reducer, session(), [
+    event('turn/start'),
+    event('turn/end', { reason: { kind: 'error' } }, 2),
+  ])
+  assert.equal(state.state, PetState.ERROR)
+  assert.equal(state.phase, 'turn-end')
+  assert.equal(state.stage, '需要处理')
+  const states = reducer.states()
+  assert.equal(states.length, 1)
+  assert.equal(states[0].attention, true)
+})
+
+test('dismissError idles a durable ERROR session and omits it from states()', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('s1'), [
+    event('turn/start'),
+    event('turn/end', { reason: { kind: 'error' } }, 2),
+  ])
+  assert.equal(reducer.states()[0].state, PetState.ERROR)
+  const messages = reducer.dismissError('s1')
+  assert.equal(messages.at(-1).state, PetState.IDLE)
+  assert.deepEqual(reducer.states(), [])
+})
+
+test('dismissError omits a background ERROR while WAITING stays selected', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('ask'), [
+    event('turn/start'),
+    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 2),
+  ])
+  collect(reducer, session('err'), [
+    event('turn/start', {}, 3),
+    event('turn/end', { reason: { kind: 'error' } }, 4),
+  ])
+  assert.equal(reducer.states().some((entry) => entry.sessionId === 'err' && entry.state === PetState.ERROR), true)
+  reducer.dismissError('err')
+  assert.equal(reducer.states().some((entry) => entry.sessionId === 'err'), false)
+  assert.equal(reducer.states()[0].sessionId, 'ask')
+  assert.equal(reducer.states()[0].state, PetState.WAITING)
+})
+
+test('dismissError is a no-op for WAITING, WORKING, and unknown ids', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('ask'), [
+    event('turn/start'),
+    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 2),
+  ])
+  collect(reducer, session('work'), [
+    event('turn/start', {}, 3),
+    event('tool/call', { callId: 'c1', name: 'bash' }, 4),
+  ])
+  assert.deepEqual(reducer.dismissError('ask'), [])
+  assert.deepEqual(reducer.dismissError('work'), [])
+  assert.deepEqual(reducer.dismissError('missing'), [])
+  assert.equal(reducer.states().find((entry) => entry.sessionId === 'ask').state, PetState.WAITING)
+  assert.equal(reducer.states().find((entry) => entry.sessionId === 'work').state, PetState.WORKING)
+})
+
 test('states() marks ERROR as attention and sorts before WORKING', () => {
   const reducer = new PetReducer()
   collect(reducer, session('s1'), [

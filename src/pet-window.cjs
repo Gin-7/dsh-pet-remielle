@@ -236,46 +236,65 @@ app.whenReady().then(() => {
     return { x: Math.round(x), y: Math.round(y) }
   })
 
-  // 右键菜单需要比平时更大的窗口空间（平时窗口刚好包住宠物）。菜单打开时渲染
-  // 层请求按需扩窗：宽度只向右长、高度只向上长，x 永不移动、y 仅因向上扩展
-  // 上移。窗口任何位移都会拖动整个页面内容——渲染层 flex 重排至少滞后
-  // setBounds 一帧，间隙里内容按旧布局随窗口一起平移，表现为开/关菜单时宠物
-  // 向左上/右下闪现一下再弹回；旧版「对称扩宽」必然移动 x（左侧空间不足时更
-  // 甚），正是闪现根源。配合 pet-view.html 的 .pet 固定锚层（fixed left:0
-  // bottom:0 400×520）：右缘扩展 x 不动、向上扩展底缘不动，内容屏幕位置全程
-  // 恒定、零闪现；右侧工作区空间不足时宁可少加宽，由渲染层 layoutMenu 落到
-  // 左侧/上方兜底分支。高度向上空间不足时钳制为 0、绝不向下扩（会压任务栏，
-  // 且底缘一动锚层内容跟着移）——此前未钳制时窗口顶部超出工作区（桌宠拖到
-  // 屏幕顶端之上，b.y < wa.y）会算出负 growUp：窗口被压矮下移、菜单截断，
-  // 关菜单还原时又要把窗口移回屏幕外原位，被 Windows 对屏外窗口的位置钳制
-  // 拦回工作区，高度却已恢复，宠物瞬移到屏幕底部。多屏查询异常时不钳制、按
-  // 请求值扩（与旧版一致）。force-dsf=1 下 bounds/workArea 同为物理像素（见
-  // 文件头 DPI 注释），渲染层传来的 CSS 宽高先乘 uiZoom 换算，返回值再换算回
-  // CSS 供直接定位。
+  // 右键菜单：渲染层按工作区用与网页相同的右→左→上公式选出落点，再把窗口
+  // 扩到菜单+光晕的包围盒。优先只增加宽/高（原点不动）：.pet 顶左锚 400×520，
+  // 向右/下长时内容屏幕位置不变。贴右翻左才会减小 x，返回 dx/dy 让渲染层把
+  // .pet 推回。force-dsf=1 下 bounds/workArea 同为物理像素，CSS 先乘 uiZoom。
   let menuBase = null
-  ipcMain.handle('menu-expand', (_event, cssWidth, cssHeight) => {
-    const wantW = Math.round((Number(cssWidth) || 0) * uiZoom)
-    const wantH = Math.round((Number(cssHeight) || 0) * uiZoom)
+  ipcMain.handle('get-work-area', () => {
     const b = win.getContentBounds()
-    if (wantW <= b.width && wantH <= b.height) {
-      return { width: Math.round(b.width / uiZoom), height: Math.round(b.height / uiZoom) }
+    let wa = null
+    try { wa = screen.getDisplayMatching(b).workArea } catch { /* 无工作区时退回当前窗 */ }
+    if (!wa) {
+      return { left: 0, top: 0, right: b.width / uiZoom, bottom: b.height / uiZoom }
+    }
+    return {
+      left: (wa.x - b.x) / uiZoom,
+      top: (wa.y - b.y) / uiZoom,
+      right: (wa.x + wa.width - b.x) / uiZoom,
+      bottom: (wa.y + wa.height - b.y) / uiZoom,
+    }
+  })
+  ipcMain.handle('menu-expand', (_event, cssLeft, cssTop, cssRight, cssBottom) => {
+    const b = win.getContentBounds()
+    const left = Math.round((Number(cssLeft) || 0) * uiZoom)
+    const top = Math.round((Number(cssTop) || 0) * uiZoom)
+    const right = Math.round((Number(cssRight) || 0) * uiZoom)
+    const bottom = Math.round((Number(cssBottom) || 0) * uiZoom)
+    let x = Math.min(0, left)
+    let y = Math.min(0, top)
+    let rgt = Math.max(b.width, right)
+    let bot = Math.max(b.height, bottom)
+    let wa = null
+    try { wa = screen.getDisplayMatching(b).workArea } catch { /* 查询异常时按请求值扩 */ }
+    if (wa) {
+      const waL = wa.x - b.x
+      const waT = wa.y - b.y
+      const waR = wa.x + wa.width - b.x
+      const waB = wa.y + wa.height - b.y
+      x = Math.max(x, waL)
+      y = Math.max(y, waT)
+      rgt = Math.min(Math.max(rgt, b.width), waR)
+      bot = Math.min(Math.max(bot, b.height), waB)
+      if (x > 0) x = 0
+      if (y > 0) y = 0
+      if (rgt < b.width) rgt = b.width
+      if (bot < b.height) bot = b.height
+    }
+    const nb = { x: b.x + x, y: b.y + y, width: rgt - x, height: bot - y }
+    if (nb.width === b.width && nb.height === b.height && x === 0 && y === 0) {
+      return { width: Math.round(b.width / uiZoom), height: Math.round(b.height / uiZoom), dx: 0, dy: 0 }
     }
     if (menuBase == null) menuBase = { x: b.x, y: b.y, width: b.width, height: b.height }
-    let wa = null
-    try {
-      wa = screen.getDisplayMatching(b).workArea
-    } catch { /* 查询异常时按请求值扩 */ }
-    const growR = wantW > b.width
-      ? Math.min(wantW - b.width, wa ? (wa.x + wa.width) - (b.x + b.width) : wantW - b.width)
-      : 0
-    const growUp = wantH > b.height
-      ? (wa ? Math.max(0, Math.min(wantH - b.height, b.y - wa.y)) : wantH - b.height)
-      : 0
-    const nb = { x: b.x, y: b.y - growUp, width: b.width + growR, height: b.height + growUp }
     win.setBounds(nb)
-    return { width: Math.round(nb.width / uiZoom), height: Math.round(nb.height / uiZoom) }
+    return {
+      width: Math.round(nb.width / uiZoom),
+      height: Math.round(nb.height / uiZoom),
+      dx: Math.round(-x / uiZoom),
+      dy: Math.round(-y / uiZoom),
+    }
   })
-  ipcMain.on('menu-restore', () => {
+  ipcMain.handle('menu-restore', () => {
     if (menuBase == null || win.isDestroyed()) return
     const base = menuBase
     menuBase = null

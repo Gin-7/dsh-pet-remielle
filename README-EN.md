@@ -29,6 +29,7 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | Status bubble | Adaptive two-layer deck on both the in-page pet and the desktop window: top status card + `+N` summary backboard; message + detail (project · completed x/y · phase) |
 | Session actions | Web: card / `?` / `!` open the session, `✓` allows once; desktop: no navigation, `✓` still allows once |
 | Completion reminders | Persist until handled: web returns to idle after opening that session; desktop click dismisses the green dot and idles immediately. The current session has no unread dot (current Host lifetime only) |
+| Error reminders | A failed turn (model-call error, etc.) keeps the attention bubble until that conversation is opened; a failure in the current session never becomes a reminder. Opening the session (bubble jump or sidebar) dismisses it. Approvals and questions are unchanged |
 | Balance | Single-click the pet to show DeepSeek balance + time period (60s auto-refresh, rolling-number animation, stale fallback on network blips), auto-returns to the status bubble after 5s |
 | Today usage | Two modes: ledger (default, token-free, balance-delta) / real-time token (platform usage API + peak/off-peak pricing, exact) |
 | Desktop float | Bundled Electron transparent always-on-top window (opt-in) |

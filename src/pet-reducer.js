@@ -317,6 +317,21 @@ export class PetReducer {
   }
 
   /**
+   * 打开该会话即已读：只收口耐久 ERROR（turn/end 失败），回 IDLE，牌叠不再渲染。
+   * WAITING（审批/提问）和工具报错脉冲不走这里。
+   */
+  dismissError(sessionId) {
+    const record = this.sessions.get(String(sessionId ?? ''))
+    if (!record || record.state !== PetState.ERROR) return []
+    this.#update(record, PetState.IDLE, {
+      phase: 'turn-end',
+      stage: '已停止',
+      message: statusCopy('stopped'),
+    })
+    return this.#render()
+  }
+
+  /**
    * One renderable state per active or attention-needing session. IDLE and
    * DISCONNECTED records remain internally tracked for primary-state fallback,
    * but are omitted from the card deck so completed/stopped turns disappear.

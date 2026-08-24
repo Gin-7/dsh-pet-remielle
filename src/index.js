@@ -812,6 +812,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     const id = completionSessionIdOf(session)
     if (id && completionQueue.delete(id)) hub.broadcast()
   }
+  const currentSessionNow = () => (
+    Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''
+  )
+  const dismissErrorIfNeeded = (sessionId) => {
+    if (!sessionId) return
+    const hadError = reducer.states().some((entry) => entry.sessionId === sessionId && entry.state === PetState.ERROR)
+    if (!hadError) return
+    for (const message of reducer.dismissError(sessionId)) onMessage(message)
+    // #render 只在选中会话签名变化时发消息；后台 ERROR 已读时可能返回 []，
+    // 但 states() 已经少了这张卡，必须照样推快照。
+    hub.broadcast()
+  }
   const offEvent = eventCtx.on('session/event', (session, event) => {
     const eventType = String(event?.type ?? '')
     // 看门狗活跃度：任何事件都刷新该会话的「最近活动」时间戳；
@@ -819,10 +831,16 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     watchdog.feed(completionSessionIdOf(session))
     if (eventType === 'turn/end') watchdog.end(completionSessionIdOf(session))
     if (eventType === 'turn/start' || eventType === 'tool/call') dropCompletion(session)
-    for (const message of reducer.handle(session, event)) {
-      onMessage(message)
-      hub.broadcast()
-    }
+    const outgoing = [...reducer.handle(session, event)]
+    const sessionId = completionSessionIdOf(session)
+    const currentFailed = eventType === 'turn/end'
+      && sessionId
+      && sessionId === currentSessionNow()
+      && reducer.states().some((entry) => entry.sessionId === sessionId && entry.state === PetState.ERROR)
+    // 失败发生时人已经在这个对话里：当场已读，不进粉圈提醒。
+    if (currentFailed) outgoing.push(...reducer.dismissError(sessionId))
+    for (const message of outgoing) onMessage(message)
+    if (outgoing.length || currentFailed) hub.broadcast()
   }, { global: true })
   const offDisposed = eventCtx.on('session/disposed', (session) => {
     dropCompletion(session)
@@ -1023,7 +1041,11 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           kind: 'exact',
           path: SESSION_OPEN_ENDPOINT,
           handler: createSessionOpenHandler({
-            notify: (payload) => hub.notify(payload),
+            notify: (payload) => {
+              const delivered = hub.notify(payload)
+              if (payload?.sessionId) dismissErrorIfNeeded(payload.sessionId)
+              return delivered
+            },
             onUndelivered: (action) => pendingActions.stash(action),
           }),
         }),
@@ -1038,6 +1060,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
               reportedCurrentSessionId = sessionId
               // 空串（清除上报）同样刷新时间戳：清除态本身也是一种有效状态
               reportedCurrentSessionAt = Date.now()
+              dismissErrorIfNeeded(sessionId)
             },
           }),
         }),
