@@ -449,6 +449,8 @@ app.whenReady().then(() => {
   // ~0.54 的错误系数，位移被放大近一倍、一拖就冲出屏幕），故挂在导航完成后。
   win.webContents.on('did-finish-load', () => {
     win.webContents.setZoomFactor(uiZoom)
+    // 阴影 CSS 按 1/zoom 反缩放，使透明窗光晕物理尺寸不随 DPI 膨胀。
+    win.webContents.insertCSS(`:root{--rm2-ui-zoom:${uiZoom};}`).catch(() => {})
   })
   win.webContents.on('did-fail-load', (_e, code, desc, furl) => console.log('[pet] FAIL:', code, desc, furl))
   win.webContents.on('console-message', (_e, level, msg) => console.log('[pet-console]', level, String(msg).slice(0, 160)))

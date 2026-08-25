@@ -1016,6 +1016,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         sessionOrderJs = await readFile(new URL('../src/session-order.cjs', import.meta.url), 'utf8')
         return sessionOrderJs
       }
+      let petTipJs = null
+      const readPetTip = async () => {
+        if (petTipJs) return petTipJs
+        petTipJs = await readFile(new URL('../src/pet-tip.cjs', import.meta.url), 'utf8')
+        return petTipJs
+      }
 
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: CONFIG_ENDPOINT, handler: createConfigHandler(settings) }),
@@ -1144,6 +1150,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           res.end(js)
         } }),
         'dsh-pet-remielle: shared bubble order script',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/pet-tip.js', handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const js = await readPetTip()
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'cache-control': 'no-store',
+          })
+          res.end(js)
+        } }),
+        'dsh-pet-remielle: shared pet tip script',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({

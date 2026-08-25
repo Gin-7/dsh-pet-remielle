@@ -6,12 +6,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { backendCandidates, DesktopWindow, findRoot, findDshRoot } from '../src/desktop-window.js'
 
-test('backend candidates prefer the bundled Electron on win32', () => {
+test('backend candidates prefer the bundled Electron on win32', (t) => {
+  const bundled = join(dirname(fileURLToPath(import.meta.url)), '..', 'vendor', 'electron-win32-x64', 'electron.exe')
+  if (!existsSync(bundled)) {
+    t.skip('bundled Electron runtime not present')
+    return
+  }
   const saved = process.env.DSH_PET_ELECTRON
   try {
     delete process.env.DSH_PET_ELECTRON
@@ -189,8 +195,30 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   assert.match(html, /autoAckedCompletions\.set\(currentSessionId, true\)/)
   assert.match(html, /autoAckedCompletions\.delete\(currentSessionId\)/)
   assert.match(html, /entry\.state === 'ERROR' && targetSessionOf\(entry\) === currentSessionId/)
-  // 审批卡原生 title 用第二行全文（工作区 · preview），不是固定操作说明
+  // 审批卡悬停提示用第二行全文（工作区 · preview），不是固定操作说明；
+  // 自绘浮层 .rm2-pet-tip 承载提示（原生 title 不随 zoom 缩放已废弃），title 置空
   assert.match(html, /approval \? \(detailShown \|\| ''\)/)
+  assert.match(html, /dataset\.rm2Tip = entry\.idlePlaceholder/)
+  assert.match(html, /点击跳到这里看一下~/)
+  assert.match(html, /完成啦~ 点击查看结果哦/)
+  assert.match(html, /轮到你啦，点击跳到这里处理呢/)
+  assert.match(html, /id="bubbleDot" title=""/)
+  assert.doesNotMatch(html, /切到余额/)
+  assert.match(html, /\/plugins\/dsh-pet-remielle\/pet-tip\.js/)
+  assert.match(html, /__rm2PetTip/)
+  assert.match(html, /function syncDotTip\(/)
+  assert.match(html, /function onDotLeave\(/)
+  assert.match(html, /bubbleDot\.addEventListener\('mouseenter'/)
+  assert.match(html, /rm2-pet-tip/)
+  assert.match(html, /__tip\.layoutPetTip\(petTip, anchor/)
+  assert.match(html, /function layoutPetTip\(/)
+  assert.match(html, /getWorkArea\(\)\.then/)
+  // 桌面 tip 不用网页 8/24 大粉影；阴影走 --rm2-glow（负 spread，避免透明窗 Bloom）
+  assert.doesNotMatch(html, /\.rm2-pet-tip[\s\S]{0,400}box-shadow:\s*0 8px 24px rgba\(190/)
+  assert.match(html, /--rm2-ui-zoom: 1;/)
+  assert.match(html, /--rm2-glow:/)
+  assert.match(html, /box-shadow: var\(--rm2-glow\)/)
+  assert.match(html, /calc\(-3px \/ var\(--rm2-ui-zoom\)\)/)
   assert.doesNotMatch(html, /允许一次：点击圆形勾号直接确认/)
   // 按住宠物时快照 apply 不得把 grabbing 打回 grab
   assert.match(html, /lockedNow \? 'default' : dragState \? 'grabbing' : 'grab'/)
@@ -235,6 +263,7 @@ test('pet-view menu expands to the work-area box and restores on close', () => {
   assert.match(petWindow, /menuBase == null\) menuBase = \{ x: b\.x, y: b\.y, width: b\.width, height: b\.height \}/)
   assert.match(petWindow, /applyBounds\(base\)/)
   assert.match(petWindow, /getDisplayMatching/)
+  assert.match(petWindow, /insertCSS\(`:root\{--rm2-ui-zoom:\$\{uiZoom\};\}`\)/)
   // .pet 顶左锚 400×520：向右/下扩原点不动；toast 仍锚 400 盒中心
   assert.match(html, /\.pet \{\s*\n\s*position: fixed; left: 0; top: 0;/)
   assert.match(html, /width: 400px; height: 520px;/)

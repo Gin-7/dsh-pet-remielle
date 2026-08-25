@@ -29,8 +29,8 @@
     "build:client": "node scripts/build-client.mjs",
     "generate": "node scripts/build-client.mjs",
     "prepublishOnly": "node scripts/build-client.mjs",
-    "test": "node --test --test-timeout=10000 test/protocol.test.js test/status-copy.test.js test/pet-reducer.test.js test/turn-watchdog.test.js test/host-snapshot.test.js test/client-interactions.test.js test/pets.test.js test/stream-hub.test.js test/desktop-window.test.js test/self-update.test.js",
-    "check": "node --check lib/client.js && node --check src/index.js && node --check src/pet-reducer.js && node --check src/session-order.cjs && node --check src/turn-watchdog.js && node --check src/protocol.js && node --check src/status-copy.js && node --check src/pets.js && node --check src/self-update.js && node --check src/desktop-window.js && node --check scripts/build-client.mjs"
+    "test": "node --test --test-timeout=10000 test/protocol.test.js test/status-copy.test.js test/pet-reducer.test.js test/turn-watchdog.test.js test/host-snapshot.test.js test/client-interactions.test.js test/pets.test.js test/stream-hub.test.js test/desktop-window.test.js test/self-update.test.js test/pet-tip.test.js",
+    "check": "node --check lib/client.js && node --check src/index.js && node --check src/pet-reducer.js && node --check src/session-order.cjs && node --check src/turn-watchdog.js && node --check src/protocol.js && node --check src/status-copy.js && node --check src/pets.js && node --check src/self-update.js && node --check src/desktop-window.js && node --check src/pet-tip.cjs && node --check scripts/build-client.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"

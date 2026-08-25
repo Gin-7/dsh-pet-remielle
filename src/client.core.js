@@ -62,6 +62,9 @@ var CSS = [
   '.rm2-pet-bubble{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;min-width:150px;max-width:340px;padding:12px 20px 12px 30px;border-radius:22px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 8px 24px rgba(190,70,110,.22);font-size:12px;line-height:1.45;text-align:left;pointer-events:none;white-space:nowrap;text-overflow:ellipsis;cursor:default;}',
   '.rm2-pet-bubble-title{font-weight:600;color:#b03a60;}',
   '.rm2-pet-bubble-detail{color:#c2607f;margin-top:2px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}',
+  // 自绘悬停提示浮层：原生 title 不吃 setZoomFactor，高缩放屏（如 200%）上文字过小。
+  '.rm2-pet-tip{position:fixed;z-index:2147483400;box-sizing:border-box;max-width:min(420px,calc(100vw - 48px));padding:8px 12px;border-radius:10px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 8px 24px rgba(190,70,110,.22);font-family:system-ui,sans-serif;font-size:13px;line-height:1.5;color:#8a2f52;white-space:pre-wrap;word-break:break-all;display:none;pointer-events:none;}',
+  'body[data-ds-dark-theme] .rm2-pet-tip{background:rgba(72,20,42,.96);border-color:rgba(255,150,185,.42);color:#ffd6e4;}',
   // 气泡翻页圆点
   '.rm2-bubble-dots{position:absolute;left:10px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;pointer-events:auto;z-index:120;}',
   '.rm2-bubble-dot{width:10px;height:10px;border-radius:50%;background:#e8508a;cursor:pointer;box-shadow:0 0 0 2px rgba(255,255,255,.65);transition:transform .18s,background .18s;}',
@@ -1033,6 +1036,8 @@ function mountPet(ctx) {
   var bubble = mk('div', 'display:none;')
   // 单气泡（余额页）：复用状态卡 top 的视觉（粗边框/阴影/字重），外观与对话卡一致
   bubble.className = 'rm2-pet-bubble top'
+  // 空 title 截断祖先 dock 的原生提示，避免余额页圆点露出边框时冒出「拖动我…」
+  bubble.title = ''
   var bubbleTitle = mk('div', '')
   bubbleTitle.className = 'rm2-pet-bubble-title'
   var bubbleDetail = mk('div', '')
@@ -1042,11 +1047,14 @@ function mountPet(ctx) {
   // 堆叠会话卡（状态页）：每会话一张可读卡 + 一张 +N 背板卡
   var bubbleStack = mk('div', 'display:none;')
   bubbleStack.className = 'rm2-pet-bubbles'
+  bubbleStack.title = ''
   // 翻页圆点（单个：点击在状态↔余额间切换）
   var bubbleDots = mk('div', '', '')
   bubbleDots.className = 'rm2-bubble-dots'
+  bubbleDots.title = ''
   var bubbleDot = mk('div', '', '')
   bubbleDot.className = 'rm2-bubble-dot'
+  bubbleDot.title = ''
   bubbleDots.appendChild(bubbleDot)
   bubble.appendChild(bubbleDots)
   // 气泡区域吞掉所有会冒泡到 dock 的桌宠交互事件：
@@ -1061,6 +1069,42 @@ function mountPet(ctx) {
   }
   swallowPetInteraction(bubble)
   swallowPetInteraction(bubbleStack)
+  // 自绘悬停提示浮层：原生 title 由系统渲染、不随 setZoomFactor 缩放，
+  // 高 DPI 屏（200%）上文字过小。文本存卡片 dataset.rm2Tip，悬停时显示浮层。
+  var petTip = null
+  var petTipAnchor = null
+  var __tip = window.__rm2PetTip
+  if (!__tip) throw new Error('__rm2PetTip is missing: build-client.mjs pet-tip prepend was broken')
+  function hidePetTip() {
+    petTipAnchor = null
+    if (petTip) petTip.style.display = 'none'
+  }
+  function layoutPetTip(anchor, L, T, R, B) {
+    __tip.layoutPetTip(petTip, anchor, L, T, R, B)
+  }
+  function showPetTip(anchor) {
+    var text = anchor && anchor.dataset ? anchor.dataset.rm2Tip : ''
+    if (!text) { hidePetTip(); return }
+    if (!petTip) {
+      petTip = mk('div', '')
+      petTip.className = 'rm2-pet-tip'
+      document.body.appendChild(petTip)
+    }
+    petTip.textContent = text
+    petTip.style.left = '-9999px'
+    petTip.style.top = '0px'
+    petTip.style.display = 'block'
+    petTipAnchor = anchor
+    var W = window.innerWidth || 1280
+    var H = window.innerHeight || 800
+    layoutPetTip(anchor, 0, 0, W, H)
+  }
+  function syncDotTip() {
+    __tip.applyDotTip(bubbleDot, currentBubblePage, petTipAnchor, showPetTip)
+  }
+  function onDotLeave(e) {
+    __tip.onDotLeave(e, bubbleDot, bubbleDots, showPetTip, hidePetTip)
+  }
   // 气泡框最小宽度：把标题在常见长度内的宽度变化"吸收"掉，避免方框频繁抖动
   var BUBBLE_MIN_W = 208
   // 两种方框（堆叠对话卡 / 余额气泡）共用同一宽度规则：取"最宽一行" + 内边距(50)，
@@ -1072,7 +1116,7 @@ function mountPet(ctx) {
   var currentBubblePage = 0
   function switchBubblePage(p) {
     currentBubblePage = p
-    bubbleDot.title = p === 0 ? '切到余额' : '切到状态'
+    syncDotTip()
     // 两页都同步重渲：余额页不再等 widget 异步首帧——__petBalance 未就绪时，
     // 旧牌叠会残留到下一个轮询周期才消失
     if (lastSnapshot) updateBubble(lastSnapshot)
@@ -1085,6 +1129,9 @@ function mountPet(ctx) {
     }
   }
   bubbleDot.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(currentBubblePage === 0 ? 1 : 0) })
+  bubbleDot.addEventListener('mouseenter', function (e) { if (e && e.stopPropagation) e.stopPropagation(); showPetTip(bubbleDot) })
+  bubbleDot.addEventListener('mouseleave', onDotLeave)
+  syncDotTip()
   // 状态牌叠与单气泡（余额页）都要接住滚轮：翻页，而不是冒泡到 dock 缩放桌宠
   function onBubbleWheel(e) {
     e.preventDefault(); e.stopPropagation()
@@ -1411,6 +1458,8 @@ function mountPet(ctx) {
     node.addEventListener('keydown', function (event) {
       if (event.key === 'Enter' || event.key === ' ') activate(event)
     })
+    node.addEventListener('mouseenter', function () { showPetTip(node) })
+    node.addEventListener('mouseleave', hidePetTip)
     bubbleStack.appendChild(node)
     bubbleEls.set(sessionId, el)
     return el
@@ -1480,6 +1529,7 @@ function mountPet(ctx) {
       el.node.setAttribute('aria-disabled', 'false')
       el.node.style.cursor = 'pointer'
       el.node.title = ''
+      el.node.dataset.rm2Tip = ''
       el.node.style.zIndex = String(100 - index)
       el.node.style.order = String(index)
       el.node.style.marginTop = '-60px'
@@ -1491,6 +1541,7 @@ function mountPet(ctx) {
     if (!text && !detail) {
       commitBubbleTitle(el, '', entry.mood || '')
       el.node.style.display = 'none'
+      if (petTipAnchor === el.node) hidePetTip()
       return
     }
     applyBubbleTitle(el, entry)
@@ -1522,10 +1573,13 @@ function mountPet(ctx) {
     el.node.setAttribute('aria-disabled', entry.idlePlaceholder ? 'true' : 'false')
     el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
     el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
-    // 占位卡不可交互（activate 有守卫），title 不能落进「点击跳转」兜底文案。
-    // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，原生
-    // tooltip 才能读到请求内容；操作说明已在圆形勾号的 aria-label 里。
-    el.node.title = entry.idlePlaceholder ? '' : approval ? (detailShown || '') : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
+    // 占位卡不可交互（activate 有守卫），提示不能落进「点击跳转」兜底文案。
+    // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，自绘
+    // 浮层才能读到请求内容；原生 title 不随 zoom 缩放已废弃；操作说明在勾号
+    // aria-label 里。title 置空避免与自绘浮层双重提示。
+    el.node.dataset.rm2Tip = entry.idlePlaceholder ? '' : approval ? (detailShown || '') : completed ? '完成啦~ 点击查看结果哦' : attention ? '轮到你啦，点击跳到这里处理呢' : '点击跳到这里看一下~'
+    el.node.title = ''
+    if (petTipAnchor === el.node) showPetTip(el.node)
     // Deck layout: the front card is readable and background cards expose
     // only a shallow lower edge. Visual order is driven by the flex `order`
     // property (not DOM order), so cards keep their correct stacking even
@@ -1772,7 +1826,7 @@ function mountPet(ctx) {
     bubbleStack.style.pointerEvents = bubblePointer
     // 圆点：仅双开时显示（单圆点，点击切换）
     bubbleDots.style.display = bothOn ? '' : 'none'
-    bubbleDot.title = currentBubblePage === 0 ? '切到余额' : '切到状态'
+    syncDotTip()
     var cur = currentBubblePage
     var show = anyOn && (cur === 0 ? statusOn : usageOn)
     if (cur === 0) {

@@ -24,13 +24,13 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | State machine | Pure-function `PetReducer` with mood mapping (unit-tested) |
 | Message protocol | Typed protocol (protocol.js) |
 | Configuration | schemastery persistence + settings card |
-| Multi-session priority | Approval > waiting for an answer (ask_user_question) > completion reminder > waiting/error > current session > state priority > recency |
+| Multi-session priority | Approval > waiting for an answer (ask_user_question) > completion reminder > waiting/error > current session > state priority > recency. Hysteresis only stabilizes the top two; third and later still rotate with recency |
 | Live push | SSE stream (auto-reconnect + polling fallback) |
 | Status bubble | Adaptive two-layer deck on both the in-page pet and the desktop window: top status card + `+N` summary backboard; message + detail (project · completed x/y · phase) |
 | Session actions | Web and desktop match: card / `?` / `!` open the session, `✓` allows once; with no web client online, a card/icon click opens the DSH page in the system browser |
 | Completion reminders | Persist until handled; a completion on the current session is auto-cleared; opening that session (in-page jump or browser) also clears it. The already-open session has no unread dot (current Host lifetime only) |
 | Error reminders | A failed turn (model-call error, etc.) keeps the pink attention mark until that conversation is opened; a failure in the current session never becomes a reminder. Opening the session (bubble jump or sidebar) dismisses it. Approvals and questions are unchanged |
-| Balance | Single-click the pet to show DeepSeek balance + time period (60s auto-refresh, rolling-number animation, stale fallback on network blips), auto-returns to the status bubble after 5s |
+| Balance | With both status and usage on, the left dot or a wheel on the bubble switches to the balance page (60s auto-refresh, rolling-number animation, stale fallback on network blips); stays on the current page, no auto-return |
 | Today usage | Two modes: ledger (default, token-free, balance-delta) / real-time token (platform usage API + peak/off-peak pricing, exact) |
 | Desktop float | Bundled Electron transparent always-on-top window (opt-in) |
 | Multi-pet | Settings → Pet Management (registry + switch active pet) |
@@ -148,20 +148,21 @@ dsh plugin --profile web add dsh-pet-remielle
 
 ## Usage
 
-- **Single-click pet**: cycle through random sticker moods, and show the balance + time-period bubble (DeepSeek balance / today usage / off-peak or peak period); auto-returns to the status bubble after 5s.
+- **Single-click pet**: cycle through random sticker moods.
 - **Double-click pet**: enter drawing animation; after completion a artwork pops up (screen top-right) and fades out.
 - **Right-click pet (in-page)**: character size / lock position / show bubble / usage mode / desktop float mode / reset position / pause animation.
 - **Right-click pet (desktop window)**: character size / lock position / show bubble / usage mode / drawing / switch to web mode.
-- **Scroll wheel**: resize character.
+- **Bubble paging**: with both status and usage on, the left dot or a wheel on the bubble switches between the status card and the balance page; stays on the current page, no auto-return.
+- **Scroll wheel (pet)**: resize character.
 - In-page pet menu can also launch the desktop window.
 
 ---
 
 ## Balance & Today Usage
 
-Single-click the pet to see your DeepSeek account balance and today's spend (bubble shows "DeepSeek Balance ¥X" + "Today ¥X · Off-peak/Peak", the period is color-coded: green = off-peak, red = peak).
+With both status and usage on, the left dot or a wheel on the bubble shows your DeepSeek account balance and today's spend (bubble shows "DeepSeek Balance ¥X" + "Today ¥X · Off-peak/Peak", the period is color-coded: green = off-peak, red = peak). Usage-only shows the balance page directly. Stays on the current page; does not auto-return to status.
 
-- **Balance**: from the official API `api.deepseek.com/user/balance` (credential `DEEPSEEK_API_KEY`). Auto-refreshes every 60s; single-click the pet to refresh manually; rolling-number animation on changes; transient network blips keep the last known balance instead of flashing errors.
+- **Balance**: from the official API `api.deepseek.com/user/balance` (credential `DEEPSEEK_API_KEY`). Auto-refreshes every 60s; switching to the balance page fetches once; rolling-number animation on changes; transient network blips keep the last known balance instead of flashing errors.
 - **Today usage · ledger (default, token-free)**: accumulates balance deltas into `$DSH_HOME/.dshp-usage.json` (cross-day reset & archive). No extra token needed, but it is an estimate — usage while DSH is off is not recorded.
 - **Today usage · real-time token (exact)**: after configuring the platform session token `DEEPSEEK_PLATFORM_TOKEN`, it queries the platform cost API (`platform.deepseek.com/api/v0/usage/by_api_key/cost`) and reads the platform's own per-hour CNY amount — no local pricing table, so DeepSeek price changes are followed automatically:
   - The bubble also shows the current period (off-peak / peak; peak: 09:00–12:00 and 14:00–18:00 Beijing time)
@@ -215,7 +216,7 @@ src/
 ├── desktop-window.js # Desktop mode: Electron discovery + window process management (unit-tested)
 ├── pet-window.cjs    # Desktop mode: Electron main (transparent window + top-right artwork window)
 ├── pet-view.html     # Desktop mode: pet window page (GIF + bubble + SSE + drawing + balance bubble)
-├── balance-widget.js # Balance controller (client): fetch/rolling animation/5s auto-return, rendered into the pet's own bubble
+├── balance-widget.js # Balance controller (client): fetch/rolling animation, rendered into the pet's own bubble
 └── client.core.js    # Browser side: pet UI + settings (wrapped at build time)
 lib/client.js         # Build artifact (version injected, ready to use)
 assets/pets/remielle/ # Remielle assets (GIFs + artwork)

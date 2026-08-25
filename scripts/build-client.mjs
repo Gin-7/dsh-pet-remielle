@@ -21,6 +21,8 @@ const core = readFileSync(coreFile, 'utf8')
 // 使 window.__rm2SessionOrder 在 client.core.js 执行时已就绪。
 const orderFile = resolve(root, 'src', 'session-order.cjs')
 const order = readFileSync(orderFile, 'utf8')
+const tipFile = resolve(root, 'src', 'pet-tip.cjs')
+const tip = readFileSync(tipFile, 'utf8')
 const { version } = JSON.parse(readFileSync(pkgFile, 'utf8'))
 const banner = `window.__ModuleLoader__.load({ id: ${JSON.stringify(pluginId)}, factory: (require) => {
 const module = { exports: {} }
@@ -29,6 +31,6 @@ const RM_PLUGIN_VERSION = ${JSON.stringify(String(version || '0.0.0'))}
 `
 const footer = 'return module.exports\n} })'
 
-const output = `${banner}${order}\n${core}\n${footer}\n`
+const output = `${banner}${order}\n${tip}\n${core}\n${footer}\n`
 writeFileSync(outFile, output)
 console.log(`lib/client.js written (${Math.round(Buffer.byteLength(output) / 1024)} KiB)`)

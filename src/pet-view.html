@@ -8,6 +8,19 @@
 <title>蕾米埃尔桌宠</title>
 <style>
   html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  /* 主进程按真实系统缩放写入 --rm2-ui-zoom；阴影长度除以 zoom，
+     透明窗光晕的物理尺寸不随 DPI 膨胀（网页端没有这层 zoom）。
+     粉影用负 spread 把亮边收进卡片底下：透明 HWND 上普通 box-shadow
+     的半透明粉会整圈 Bloom，看起来比网页（落在不透明底上）更大更亮。 */
+  :root {
+    --rm2-ui-zoom: 1;
+    --rm2-glow:
+      0 calc(1px / var(--rm2-ui-zoom)) calc(3px / var(--rm2-ui-zoom)) rgba(0, 0, 0, .45),
+      0 calc(3px / var(--rm2-ui-zoom)) calc(8px / var(--rm2-ui-zoom)) calc(-3px / var(--rm2-ui-zoom)) rgba(140, 40, 80, .16);
+    --rm2-glow-top:
+      0 calc(2px / var(--rm2-ui-zoom)) calc(4px / var(--rm2-ui-zoom)) rgba(0, 0, 0, .48),
+      0 calc(4px / var(--rm2-ui-zoom)) calc(10px / var(--rm2-ui-zoom)) calc(-3px / var(--rm2-ui-zoom)) rgba(140, 40, 80, .18);
+  }
   /* 内容定位职责在下方 .pet 固定锚层（见其注释），body 只负责铺满与禁选中 */
   body {
     width: 100vw; height: 100vh;
@@ -45,8 +58,7 @@
     border-radius: 22px;
     background: #fff0f5;
     border: 1px solid rgba(240, 120, 160, .45);
-    /* 透明 HWND 上网页同款大粉影会整圈开成光晕；中等粉光 + 短暗底，黑底可见又不Bloom。 */
-    box-shadow: 0 3px 8px rgba(0, 0, 0, .18), 0 6px 16px rgba(190, 70, 110, .28);
+    box-shadow: var(--rm2-glow);
     font-size: 12px;
     line-height: 1.45;
     text-align: left;
@@ -58,7 +70,7 @@
     width: fit-content;
     height: 68px;
     min-height: 68px;
-    box-shadow: 0 3px 8px rgba(0, 0, 0, .18), 0 6px 16px rgba(190, 70, 110, .30);
+    box-shadow: var(--rm2-glow);
     pointer-events: auto;
     cursor: pointer;
     overflow: hidden;
@@ -66,6 +78,25 @@
   }
   .rm2-pet-bubble-title { font-weight: 600; color: #b03a60; min-width: 0; flex: none; white-space: nowrap; overflow: visible; text-overflow: clip; line-height: 1.35; }
   .rm2-pet-bubble-detail { color: #c2607f; margin-top: 2px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  /* 自绘悬停提示浮层：原生 title 不吃 setZoomFactor，高缩放屏（如 200%）上文字过小。
+     阴影与菜单同套，不用网页 8/24。 */
+  .rm2-pet-tip {
+    position: fixed; z-index: 999;
+    box-sizing: border-box;
+    max-width: min(420px, calc(100vw - 48px));
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: #fff0f5;
+    border: 1px solid rgba(240, 120, 160, .45);
+    box-shadow: var(--rm2-glow);
+    font-family: system-ui, sans-serif;
+    font-size: 13px; line-height: 1.5; color: #8a2f52;
+    white-space: pre-wrap; word-break: break-all;
+    display: none; pointer-events: none;
+  }
+  @media (prefers-color-scheme: dark) {
+    .rm2-pet-tip { background: #48142a; border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
+  }
   .rm2-pet-bubble-header { display: flex; align-items: center; min-width: 0; min-height: 22px; }
   .rm2-pet-bubble.title-clipped .rm2-pet-bubble-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
   .rm2-pet-bubble-action { display: inline-flex; flex: none; order: 2; align-items: center; justify-content: center; width: 22px; height: 22px; margin-left: 8px; margin-right: 0; border-radius: 50%; background: #e8508a; color: #fff; font-size: 15px; font-weight: 700; line-height: 1; }
@@ -79,7 +110,7 @@
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-action,
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-completion { visibility: hidden; }
-  .rm2-pet-bubble.top { border-color: #b03a60; box-shadow: 0 4px 10px rgba(0, 0, 0, .20), 0 8px 18px rgba(190, 70, 110, .34); }
+  .rm2-pet-bubble.top { border-color: #b03a60; box-shadow: var(--rm2-glow-top); }
   .rm2-pet-bubble.attention { border-color: #e8508a; animation: rm2-pet-attention 1.6s ease-in-out infinite; }
   @keyframes rm2-pet-attention { 0%,100% { box-shadow: 0 0 0 0 rgba(232,80,138,.35); } 50% { box-shadow: 0 0 0 6px rgba(232,80,138,0); } }
   .rm2-bubble-dots { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 120; }
@@ -99,7 +130,7 @@
     border-radius: 17px;
     background: #fff0f5;
     border: 1px solid rgba(240, 120, 160, .55);
-    box-shadow: 0 6px 18px rgba(190, 70, 110, .30);
+    box-shadow: var(--rm2-glow);
     font-size: 12px; color: #c2607f;
     white-space: nowrap;
     pointer-events: none;
@@ -119,7 +150,7 @@
     background: #fff0f5;
     border: 1px solid rgba(240, 120, 160, .45);
     border-radius: 10px;
-    box-shadow: 0 3px 8px rgba(0, 0, 0, .20), 0 6px 16px rgba(190, 70, 110, .28);
+    box-shadow: var(--rm2-glow);
     padding: 6px;
     font-family: system-ui, sans-serif;
     font-size: 13px; color: #8a2f52;
@@ -135,14 +166,15 @@
      否则下方的 .menu 浅色底会盖回深色壳，仅 select 的 !important
      字色残留，出现浅粉字配浅粉底的不可读组合 */
   @media (prefers-color-scheme: dark) {
-    .rm2-pet-bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
+    /* 实色底：半透明壳会透出粉影，边缘看起来更亮。 */
+    .rm2-pet-bubble { background: #48142a; border-color: rgba(255, 150, 185, .42); }
     .rm2-pet-bubble-title { color: #ffd6e4; }
     .rm2-pet-bubble-detail { color: #f0a8c0; }
     .rm2-pet-bubble.top { border-color: #ffb3c9; }
     .rm2-pet-bubble.attention { border-color: #ff6fa8; }
-    .rm2-pet-toast { background: rgba(72, 20, 42, .97); border-color: rgba(255, 150, 185, .5); color: #e8a8bf; }
+    .rm2-pet-toast { background: #48142a; border-color: rgba(255, 150, 185, .5); color: #e8a8bf; }
     .rm2-pet-toast b { color: #ffb3c9; }
-    .menu { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
+    .menu { background: #48142a; border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
     .menu-item:hover { background: rgba(255, 150, 185, .16); }
     .menu-item .tick { color: #ffb3c9; }
     .menu-item .mute { color: #f0a8c0; }
@@ -158,14 +190,15 @@
 <body>
   <script src="/plugins/dsh-pet-remielle/balance-widget.js"></script>
   <script src="/plugins/dsh-pet-remielle/session-order.js"></script>
+  <script src="/plugins/dsh-pet-remielle/pet-tip.js"></script>
   <div class="menu" id="menu"></div>
   <div class="pet">
-    <div class="rm2-pet-bubbles" id="bubbleStack"></div>
-    <div class="rm2-pet-bubble top" id="bubble" style="position:relative;">
+    <div class="rm2-pet-bubbles" id="bubbleStack" title=""></div>
+    <div class="rm2-pet-bubble top" id="bubble" style="position:relative;" title="">
       <div class="rm2-pet-bubble-title" id="title"></div>
       <div class="rm2-pet-bubble-detail" id="detail"></div>
-      <div class="rm2-bubble-dots" id="bubbleDots">
-        <div class="rm2-bubble-dot" id="bubbleDot" title="切到余额"></div>
+      <div class="rm2-bubble-dots" id="bubbleDots" title="">
+        <div class="rm2-bubble-dot" id="bubbleDot" title=""></div>
       </div>
     </div>
     <img id="pet" alt="蕾米埃尔" draggable="false">
@@ -193,6 +226,59 @@
   var currentSessionId = undefined
   var lastTopEntry = null
   var bubbleEls = new Map()
+  // 自绘悬停提示浮层：原生 title 由系统渲染、不随 setZoomFactor 缩放，
+  // 高 DPI 屏（200%）上文字过小。文本存卡片 dataset.rm2Tip，悬停时显示浮层。
+  // 定位钳在「窗口 ∩ 工作区」内并留出光晕，避免贴屏边时文字出屏、阴影被 overflow:hidden 竖切。
+  var petTip = null
+  var petTipAnchor = null
+  var __tip = window.__rm2PetTip
+  if (!__tip) throw new Error('__rm2PetTip is missing: pet-tip.js script failed to load')
+  function hidePetTip() {
+    petTipAnchor = null
+    if (petTip) petTip.style.display = 'none'
+  }
+  function layoutPetTip(anchor, L, T, R, B) {
+    __tip.layoutPetTip(petTip, anchor, L, T, R, B)
+  }
+  function showPetTip(anchor) {
+    var text = anchor && anchor.dataset ? anchor.dataset.rm2Tip : ''
+    if (!text) { hidePetTip(); return }
+    if (!petTip) {
+      petTip = document.createElement('div')
+      petTip.className = 'rm2-pet-tip'
+      document.body.appendChild(petTip)
+    }
+    petTip.textContent = text
+    petTip.style.left = '-9999px'
+    petTip.style.top = '0px'
+    petTip.style.display = 'block'
+    petTipAnchor = anchor
+    var W = window.innerWidth || 400
+    var H = window.innerHeight || 520
+    layoutPetTip(anchor, 0, 0, W, H)
+    if (window.petBridge && window.petBridge.getWorkArea) {
+      window.petBridge.getWorkArea().then(function (wa) {
+        if (petTipAnchor !== anchor || !petTip || petTip.style.display === 'none') return
+        var L = Number(wa && wa.left)
+        var T = Number(wa && wa.top)
+        var R = Number(wa && wa.right)
+        var B = Number(wa && wa.bottom)
+        layoutPetTip(
+          anchor,
+          Number.isFinite(L) ? L : 0,
+          Number.isFinite(T) ? T : 0,
+          Number.isFinite(R) ? R : W,
+          Number.isFinite(B) ? B : H,
+        )
+      }).catch(function () {})
+    }
+  }
+  function syncDotTip() {
+    __tip.applyDotTip(bubbleDot, currentBubblePage, petTipAnchor, showPetTip)
+  }
+  function onDotLeave(e) {
+    __tip.onDotLeave(e, bubbleDot, bubbleDots, showPetTip, hidePetTip)
+  }
   var __petMeasureEl = null
   function ensureMeasureEl() {
     if (!__petMeasureEl) {
@@ -220,7 +306,7 @@
   }
   function switchBubblePage(p) {
     currentBubblePage = p
-    bubbleDot.title = p === 0 ? '切到余额' : '切到状态'
+    syncDotTip()
     if (p === 0) {
       balanceFrame = null
       if (lastSnapshot) apply(lastSnapshot)
@@ -239,6 +325,9 @@
     switchBubblePage(currentBubblePage === 0 ? 1 : 0)
   }
   bubbleDot.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(currentBubblePage === 0 ? 1 : 0) })
+  bubbleDot.addEventListener('mouseenter', function (e) { if (e && e.stopPropagation) e.stopPropagation(); showPetTip(bubbleDot) })
+  bubbleDot.addEventListener('mouseleave', onDotLeave)
+  syncDotTip()
   bubbleEl.addEventListener('wheel', onBubbleWheel, { passive: false })
   bubbleStack.addEventListener('wheel', onBubbleWheel, { passive: false })
   // 气泡区域吞掉桌宠交互事件：双击气泡不再触发画画（window dblclick），
@@ -815,6 +904,8 @@
     node.addEventListener('keydown', function (event) {
       if (event.key === 'Enter' || event.key === ' ') activate(event)
     })
+    node.addEventListener('mouseenter', function () { showPetTip(node) })
+    node.addEventListener('mouseleave', hidePetTip)
     bubbleStack.appendChild(node)
     bubbleEls.set(sessionId, el)
     return el
@@ -884,6 +975,7 @@
       el.node.setAttribute('aria-disabled', 'false')
       el.node.style.cursor = 'pointer'
       el.node.title = ''
+      el.node.dataset.rm2Tip = ''
       el.node.style.zIndex = String(100 - index)
       el.node.style.order = String(index)
       el.node.style.marginTop = '-60px'
@@ -895,6 +987,7 @@
     if (!text && !detail) {
       commitBubbleTitle(el, '', entry.mood || '')
       el.node.style.display = 'none'
+      if (petTipAnchor === el.node) hidePetTip()
       return
     }
     applyBubbleTitle(el, entry)
@@ -929,10 +1022,13 @@
     // 是 0.3.4 桌面点卡片不跳转时代的遗留，与 title 提示和实际行为矛盾。
     el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
     el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
-    // 占位卡不可交互（activate 有守卫），title 不能落进「点击跳转」兜底文案。
-    // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，原生
-    // tooltip 才能读到请求内容；操作说明已在圆形勾号的 aria-label 里。
-    el.node.title = entry.idlePlaceholder ? '' : approval ? (detailShown || '') : completed ? '任务已完成：点击查看结果' : attention ? '需要处理：点击跳转到此对话' : '点击跳转到此对话'
+    // 占位卡不可交互（activate 有守卫），提示不能落进「点击跳转」兜底文案。
+    // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，自绘
+    // 浮层才能读到请求内容；原生 title 不随 zoom 缩放已废弃；操作说明在勾号
+    // aria-label 里。title 置空避免与自绘浮层双重提示。
+    el.node.dataset.rm2Tip = entry.idlePlaceholder ? '' : approval ? (detailShown || '') : completed ? '完成啦~ 点击查看结果哦' : attention ? '轮到你啦，点击跳到这里处理呢' : '点击跳到这里看一下~'
+    el.node.title = ''
+    if (petTipAnchor === el.node) showPetTip(el.node)
     el.node.style.zIndex = String(100 - index)
     el.node.style.order = String(index)
     el.node.style.marginTop = index === 0 ? '0px' : '-60px'
@@ -1119,7 +1215,7 @@
     bubbleEl.style.pointerEvents = bubblePointer
     bubbleStack.style.pointerEvents = bubblePointer
     bubbleDots.style.display = bothOn ? '' : 'none'
-    bubbleDot.title = currentBubblePage === 0 ? '切到余额' : '切到状态'
+    syncDotTip()
     var cur = currentBubblePage
     var show = anyOn && (cur === 0 ? statusOn : usageOn)
     if (cur === 0) {

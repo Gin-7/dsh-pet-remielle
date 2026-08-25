@@ -296,8 +296,47 @@ test('approval bubble tooltip shows the second-line request detail', () => {
       attention: true,
     }],
   })
-  // title 与第二行同一套行首项目符号规范化
-  assert.equal(harness.card('需要你确认一下哦').title, '· 读取工作区文件并执行安装')
+  // 悬停提示改自绘浮层：文本在 dataset.rm2Tip（与第二行同一套行首项目符号
+  // 规范化），原生 title 置空避免双重提示
+  const approvalCard = harness.card('需要你确认一下哦')
+  assert.equal(approvalCard.dataset.rm2Tip, '· 读取工作区文件并执行安装')
+  assert.equal(approvalCard.title, '')
+})
+
+test('web pet tip follows dark theme and stays inside the viewport with glow padding', () => {
+  const core = readFileSync(CLIENT_CORE, 'utf8')
+  assert.match(core, /body\[data-ds-dark-theme\] \.rm2-pet-tip/)
+  assert.match(core, /__tip\.layoutPetTip\(petTip, anchor/)
+  const harness = createHarness()
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 's1',
+      state: 'WORKING',
+      phase: 'output',
+      message: '正在输出回答哦',
+      detail: 'dsh-pet-remielle · 输出阶段',
+    }],
+  })
+  const card = harness.card('正在输出回答哦')
+  card.getBoundingClientRect = () => ({ left: 1100, top: 8, width: 180, height: 68, right: 1280, bottom: 76 })
+  const enter = card.listeners.get('mouseenter')?.[0]
+  assert.ok(enter, 'missing mouseenter listener')
+  enter()
+  const tip = harness.elements.find((node) => node.className === 'rm2-pet-tip')
+  assert.ok(tip, 'missing .rm2-pet-tip')
+  assert.equal(tip.textContent, '点击跳到这里看一下~')
+  const left = Number.parseFloat(tip.style.left)
+  const top = Number.parseFloat(tip.style.top)
+  const tw = tip.offsetWidth
+  const th = tip.offsetHeight
+  assert.ok(left >= 24, `left ${left} should keep 24px glow`)
+  assert.ok(left + tw <= 1280 - 24, `right ${left + tw} should keep 24px glow`)
+  assert.ok(top >= 24, `top ${top} should keep 24px glow`)
+  assert.ok(top + th <= 800 - 24, `bottom ${top + th} should keep 24px glow`)
+  // 贴右边时应收窄换行（2 * spaceR = 132），而不是按整页宽度平移
+  const maxW = Number.parseFloat(tip.style.maxWidth)
+  assert.equal(maxW, 132)
 })
 
 test('pet dock grabbing cursor survives snapshot refresh until pointerup', () => {
@@ -579,6 +618,11 @@ test('bubble hover uses the default cursor and wheel flips pages instead of scal
   assert.ok(css, 'missing injected pet CSS')
   assert.match(css, /\.rm2-pet-bubble\{[^}]*cursor:default/)
   assert.match(css, /\.rm2-pet-bubbles\{[^}]*cursor:default/)
+  const balanceBubble = harness.elements.find((node) => node.className === 'rm2-pet-bubble top')
+  const pageDot = harness.elements.find((node) => node.className === 'rm2-bubble-dot')
+  assert.equal(balanceBubble.title, '', 'balance bubble must not inherit dock title')
+  assert.equal(pageDot.title, '', 'page-switch dot must not inherit dock title')
+  assert.equal(pageDot.dataset.rm2Tip, '点击看余额呀~')
   harness.send({ ...base, sessions: [] })
   // 滚轮翻页：两个气泡容器都要接住 wheel（stopPropagation，不冒泡到 dock 缩放），
   // 且容器可命中（pointer-events:auto），卡片缝隙上的滚轮不再穿透。
@@ -593,6 +637,41 @@ test('bubble hover uses the default cursor and wheel flips pages instead of scal
     wheel({ preventDefault() { prevented = true }, stopPropagation() { stopped = true } })
     assert.ok(stopped && prevented, `${className} wheel handler must capture the event`)
   }
+})
+
+test('page-switch dot overlay tip follows the page and restores the card tip', () => {
+  const harness = createHarness()
+  harness.send({
+    ...base,
+    showBubble: true,
+    showBubbleStatus: true,
+    showBubbleUsage: true,
+    sessions: [{
+      sessionId: 's1',
+      state: 'WORKING',
+      phase: 'output',
+      message: '正在输出回答哦',
+      detail: 'dsh-pet-remielle · 输出阶段',
+    }],
+  })
+  const pageDot = harness.elements.find((node) => node.className === 'rm2-bubble-dot')
+  const card = harness.card('正在输出回答哦')
+  assert.equal(pageDot.title, '')
+  assert.equal(pageDot.dataset.rm2Tip, '点击看余额呀~')
+  const enter = pageDot.listeners.get('mouseenter')?.[0]
+  const leave = pageDot.listeners.get('mouseleave')?.[0]
+  assert.ok(enter && leave, 'missing switch-dot hover listeners')
+  enter({ stopPropagation() {} })
+  const tip = harness.elements.find((node) => node.className === 'rm2-pet-tip')
+  assert.ok(tip, 'missing .rm2-pet-tip')
+  assert.equal(tip.textContent, '点击看余额呀~')
+  leave({ relatedTarget: card })
+  assert.equal(tip.textContent, '点击跳到这里看一下~')
+  leave({})
+  assert.equal(tip.style.display, 'none')
+  harness.click(pageDot)
+  assert.equal(pageDot.dataset.rm2Tip, '点击回状态呀~')
+  assert.equal(pageDot.title, '')
 })
 
 test('deck order puts approval above ask above completion', () => {
@@ -758,14 +837,17 @@ test('内联 SUCCESS_COPY_POOL 与 status-copy.js 的 success 池逐字一致（
 })
 
 test('lib bundle inlines session-order ahead of mountPet（拼接顺序护栏）', () => {
-  // __rm2SessionOrder 必须在 mountPet 定义前就位，否则消费端早失败守卫会抛错、
+  // __rm2SessionOrder / __rm2PetTip 必须在 mountPet 定义前就位，否则消费端早失败守卫会抛错、
   // 宠物模块整体失效。此断言防止 build-client.mjs 的前置拼接被意外破坏。
   const code = readFileSync(CLIENT, 'utf8')
   const orderAt = code.indexOf('__rm2SessionOrder')
+  const tipAt = code.indexOf('__rm2PetTip')
   assert.notEqual(orderAt, -1, 'lib/client.js 应包含 session-order 拼接产物')
+  assert.notEqual(tipAt, -1, 'lib/client.js 应包含 pet-tip 拼接产物')
   const mountAt = code.indexOf('function mountPet')
   assert.notEqual(mountAt, -1, 'lib/client.js 应包含 mountPet 定义')
   assert.ok(orderAt < mountAt, 'session-order 必须拼接在 mountPet 之前')
+  assert.ok(tipAt < mountAt, 'pet-tip 必须拼接在 mountPet 之前')
 })
 
 test('unloading clears the reported current session via beacon or keepalive fetch（行为验证）', async () => {
