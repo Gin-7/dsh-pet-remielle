@@ -14,7 +14,7 @@
 - 审批「允许一次」没有网页客户端接收时，改为气泡堆叠上方弹出 toast 提示（Remielle 风格随机文案、下方淡入上方回落动画后自动消失），取代写入终端的 `console.warn`。
 
 ### Fixes
-- 圆点短提示贴左会拆成「点击看余 / 额呀~」：短单行改为 nowrap，maxW 改用可见宽度并允许向空侧偏置，仍钳在 24px 光晕内。
+- 圆点短提示贴左会拆成「点击看余 / 额呀~」：先 nowrap 按自然宽展开，超出可见 maxW 再换行，盒子可向空侧偏置，仍钳在 24px 光晕内。
 - 牌叠假背板悬停无文案：改为「点击去看 工作区 · 对话标题 哦~」（无方括号）；标题来自 `session/title` / `sessionTitle.get` / 网页 `sessions.list`。
 - 文档与余额控制器仍写「单击宠物弹出余额、5 秒回落」：改为圆点/滚轮翻页且停在当前页；删掉无调用方的 `click` / `enterBalance` / 5 秒定时器。README 补一句排序滞回仅稳定前两名。
 - 自绘 tip 钳位算法网页/桌面各一份：抽到 `src/pet-tip.cjs` 的 `layoutPetTip`；桌面 `showPetTip` 仍先按窗口再按 `getWorkArea` 收紧。

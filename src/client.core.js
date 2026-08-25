@@ -1666,24 +1666,16 @@ function mountPet(ctx) {
             })
             existingIds.add('completion:' + sid)
           }
-        }
-      }
-    } catch (e) { /* sessions.list 偶发异常不阻断堆叠渲染 */ }
-    try {
-      if (ctx && ctx.sessions && ctx.sessions.list && typeof ctx.sessions.list.getSnapshot === 'function') {
-        var titleSnap = ctx.sessions.list.getSnapshot()
-        var titleById = (titleSnap && typeof titleSnap.byId === 'object') ? titleSnap.byId : null
-        if (titleById) {
           sessions = sessions.map(function (entry) {
             if (!entry || entry.title) return entry
             var tid = targetSessionOf(entry)
-            var row = titleById[tid] || titleById[entry.sessionId]
+            var row = byId[tid] || byId[entry.sessionId]
             if (!row || !row.title) return entry
             return Object.assign({}, entry, { title: row.title })
           })
         }
       }
-    } catch (e) { /* 列表标题缺失时背板 tip 回落 project / 口吻 */ }
+    } catch (e) { /* sessions.list 偶发异常不阻断堆叠渲染；缺标题时背板 tip 回落 project / 口吻 */ }
     var liveTargets = new Set()
     for (var li = 0; li < sessions.length; li++) {
       if (!completionOf(sessions[li])) liveTargets.add(targetSessionOf(sessions[li]))

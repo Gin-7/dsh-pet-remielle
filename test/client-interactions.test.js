@@ -261,6 +261,22 @@ test('multi-session deck renders an inert backboard with a dynamic click target'
   assert.deepEqual(harness.opened, ['second', 'third'])
 })
 
+test('backboard tip fills conversation title from sessions.list when snapshot omits it', () => {
+  const harness = createHarness('first', true, {
+    second: { id: 'second', title: '审查提示框颜色与溢出问题', cwd: 'C:\\work\\dsh-pet-remielle' },
+  })
+  harness.send({
+    ...base,
+    sessions: [
+      { sessionId: 'first', state: 'WORKING', phase: 'tool-call', message: '正在继续处理任务呢', detail: '.dsh · 调用工具', updatedAt: 3, project: 'other' },
+      { sessionId: 'second', state: 'THINKING', phase: 'think', message: '让我想想最优解是什么', detail: '.dsh · 分析阶段', updatedAt: 2, project: 'dsh-pet-remielle' },
+    ],
+  })
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  assert.ok(backboard, 'backboard card should exist')
+  assert.equal(backboard.dataset.rm2Tip, '点击去看 dsh-pet-remielle · 审查提示框颜色与溢出问题 哦~')
+})
+
 test('title clipping ignores long detail text for short approval titles', () => {
   const harness = createHarness()
   harness.send({

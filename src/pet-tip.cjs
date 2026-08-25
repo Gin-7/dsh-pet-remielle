@@ -40,14 +40,19 @@
     if (typeof hide === 'function') hide()
   }
 
-  // 短单行（圆点两句、卡片口吻）不拆字；审批全文等长文案仍换行。
-  function applyTipWrap(petTip) {
+  // 先按单行量自然宽，超出可见 maxW 再换行；文案自带换行（审批全文）直接 wrap。
+  function fitTipWrap(petTip, maxW) {
     if (!petTip || !petTip.style) return
     var text = String(petTip.textContent || '')
-    if (text.length <= 24 && text.indexOf('\n') === -1) {
-      petTip.style.whiteSpace = 'nowrap'
-      petTip.style.wordBreak = 'normal'
-    } else {
+    if (text.indexOf('\n') !== -1) {
+      petTip.style.whiteSpace = 'pre-wrap'
+      petTip.style.wordBreak = 'break-all'
+      return
+    }
+    petTip.style.whiteSpace = 'nowrap'
+    petTip.style.wordBreak = 'normal'
+    petTip.style.maxWidth = 'none'
+    if (petTip.offsetWidth > maxW) {
       petTip.style.whiteSpace = 'pre-wrap'
       petTip.style.wordBreak = 'break-all'
     }
@@ -72,8 +77,8 @@
     var cx = r.left + r.width / 2
     var visW = visR - visL - pad * 2
     var maxW = Math.min(420, Math.max(80, visW))
+    fitTipWrap(petTip, maxW)
     petTip.style.maxWidth = maxW + 'px'
-    applyTipWrap(petTip)
     var tw = petTip.offsetWidth
     var th = petTip.offsetHeight
     var minL = visL + pad

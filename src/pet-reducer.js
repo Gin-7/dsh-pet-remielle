@@ -323,9 +323,6 @@ export class PetReducer {
       case 'turn/end':
         return this.#turnEnd(record, event)
 
-      case 'session/title':
-        return []
-
       default:
         return []
     }

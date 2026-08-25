@@ -75,8 +75,33 @@ test('layoutPetTip expands to visible width, nowraps short copy, and slides into
   assert.ok(top + 40 <= 800 - 24, `bottom ${top + 40}`)
 })
 
-test('layoutPetTip wraps long copy', () => {
-  const petTip = { style: {}, offsetWidth: 200, offsetHeight: 80, textContent: '工作区 · ' + '审批请求全文'.repeat(8) }
+test('layoutPetTip nowraps backboard copy that still fits maxW', () => {
+  const petTip = {
+    style: {},
+    offsetWidth: 360,
+    offsetHeight: 40,
+    textContent: '点击去看 dsh-pet-remielle · 审查提示框颜色与溢出问题 哦~',
+  }
+  const anchor = {
+    getBoundingClientRect: () => ({ left: 100, width: 180, top: 80, bottom: 148 }),
+  }
+  tip.layoutPetTip(petTip, anchor, 0, 0, 1280, 800)
+  assert.equal(petTip.style.whiteSpace, 'nowrap')
+  assert.equal(petTip.style.wordBreak, 'normal')
+})
+
+test('layoutPetTip wraps copy wider than maxW', () => {
+  const petTip = { style: {}, offsetWidth: 500, offsetHeight: 80, textContent: '工作区 · ' + '审批请求全文'.repeat(8) }
+  const anchor = {
+    getBoundingClientRect: () => ({ left: 100, width: 180, top: 80, bottom: 148 }),
+  }
+  tip.layoutPetTip(petTip, anchor, 0, 0, 1280, 800)
+  assert.equal(petTip.style.whiteSpace, 'pre-wrap')
+  assert.equal(petTip.style.wordBreak, 'break-all')
+})
+
+test('layoutPetTip wraps copy that already contains a newline', () => {
+  const petTip = { style: {}, offsetWidth: 100, offsetHeight: 80, textContent: '第一行\n第二行' }
   const anchor = {
     getBoundingClientRect: () => ({ left: 100, width: 180, top: 80, bottom: 148 }),
   }
