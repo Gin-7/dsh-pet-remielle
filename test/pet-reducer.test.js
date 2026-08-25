@@ -435,6 +435,28 @@ test('states() is empty with no sessions', () => {
   assert.deepEqual(reducer.states(), [])
 })
 
+test('session/title is stored on states() without changing mood', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('s1'), [
+    event('turn/start'),
+    event('session/title', { title: '审查提示框颜色与溢出问题' }, 2),
+  ])
+  const states = reducer.states()
+  assert.equal(states.length, 1)
+  assert.equal(states[0].title, '审查提示框颜色与溢出问题')
+  assert.equal(states[0].state, PetState.THINKING)
+  assert.equal(states[0].mood, '04')
+})
+
+test('states() folds session/title from the session log', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', {
+    events: [{ type: 'session/title', data: { title: '审查提示框颜色与溢出问题' } }],
+  })
+  collect(reducer, sess, [event('turn/start')])
+  assert.equal(reducer.states()[0].title, '审查提示框颜色与溢出问题')
+})
+
 test('states() returns one entry per session with mood/message/detail', () => {
   const reducer = new PetReducer()
   collect(reducer, session('s1'), [

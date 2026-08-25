@@ -975,7 +975,8 @@
       el.node.setAttribute('aria-disabled', 'false')
       el.node.style.cursor = 'pointer'
       el.node.title = ''
-      el.node.dataset.rm2Tip = ''
+      el.node.dataset.rm2Tip = entry.backboardTip || ''
+      if (petTipAnchor === el.node) showPetTip(el.node)
       el.node.style.zIndex = String(100 - index)
       el.node.style.order = String(index)
       el.node.style.marginTop = '-60px'
@@ -1095,6 +1096,7 @@
         updatedAt: 0,
         backboard: true,
         summaryCount: ordered.length - 1,
+        backboardTip: __tip.backboardTipText(ordered[1].project, ordered[1].title),
       })
       backboardTarget = targetSessionOf(ordered[1]) || ''
     } else {

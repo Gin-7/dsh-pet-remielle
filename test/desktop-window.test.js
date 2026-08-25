@@ -211,6 +211,7 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   assert.match(html, /bubbleDot\.addEventListener\('mouseenter'/)
   assert.match(html, /rm2-pet-tip/)
   assert.match(html, /__tip\.layoutPetTip\(petTip, anchor/)
+  assert.match(html, /__tip\.backboardTipText\(ordered\[1\]\.project, ordered\[1\]\.title\)/)
   assert.match(html, /function layoutPetTip\(/)
   assert.match(html, /getWorkArea\(\)\.then/)
   // 桌面 tip 不用网页 8/24 大粉影；阴影走 --rm2-glow（负 spread，避免透明窗 Bloom）

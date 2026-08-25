@@ -240,6 +240,16 @@ test('multi-session deck renders an inert backboard with a dynamic click target'
   assert.equal(backboard.children.find((node) => node.className === 'rm2-pet-bubble-stack-count').textContent, '+2')
   assert.equal(hasCard('让我想想最优解是什么'), false)
   assert.equal(hasCard('正在检查剩余问题'), false)
+  assert.equal(backboard.dataset.rm2Tip, '点击跳到这里看一下~')
+  harness.send({
+    ...base,
+    sessions: [
+      sessions[0],
+      { ...sessions[1], project: 'dsh-pet-remielle', title: '审查提示框颜色与溢出问题' },
+      sessions[2],
+    ],
+  })
+  assert.equal(backboard.dataset.rm2Tip, '点击去看 dsh-pet-remielle · 审查提示框颜色与溢出问题 哦~')
   // 点击背板：按当帧排序动态解析第 2 名（second）并跳转。
   harness.click(backboard)
   assert.deepEqual(harness.opened, ['second'])
@@ -334,9 +344,10 @@ test('web pet tip follows dark theme and stays inside the viewport with glow pad
   assert.ok(left + tw <= 1280 - 24, `right ${left + tw} should keep 24px glow`)
   assert.ok(top >= 24, `top ${top} should keep 24px glow`)
   assert.ok(top + th <= 800 - 24, `bottom ${top + th} should keep 24px glow`)
-  // 贴右边时应收窄换行（2 * spaceR = 132），而不是按整页宽度平移
+  // 短口吻不拆字；maxW 用可见宽度，盒子可向空侧偏置，仍留 24px 光晕
+  assert.equal(tip.style.whiteSpace, 'nowrap')
   const maxW = Number.parseFloat(tip.style.maxWidth)
-  assert.equal(maxW, 132)
+  assert.equal(maxW, 420)
 })
 
 test('pet dock grabbing cursor survives snapshot refresh until pointerup', () => {

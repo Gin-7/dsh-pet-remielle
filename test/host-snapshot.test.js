@@ -55,6 +55,25 @@ const idle = createMessage(PetMessageKind.STATE, {
   detail: 's1 · 本轮已完成',
 })
 
+test('snapshot fills session title from getSessionTitle when missing', () => {
+  const snapshot = createStateSnapshot({
+    getLatest: () => idle,
+    getPulse: () => null,
+    getConfig: () => ({}),
+    getStates: () => [{
+      sessionId: 's1',
+      state: PetState.THINKING,
+      mood: '04',
+      message: '让我想想最优解是什么',
+      project: 'dsh-pet-remielle',
+      updatedAt: 1,
+    }],
+    getSessionTitle: (sessionId) => sessionId === 's1' ? '审查提示框颜色与溢出问题' : undefined,
+  })()
+  assert.equal(snapshot.sessions[0].title, '审查提示框颜色与溢出问题')
+  assert.equal(snapshot.sessions[0].project, 'dsh-pet-remielle')
+})
+
 test('snapshot carries config fields for the client', () => {
   const snapshot = snapshotWith({
     latest: idle,

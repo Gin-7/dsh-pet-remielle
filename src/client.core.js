@@ -1529,7 +1529,8 @@ function mountPet(ctx) {
       el.node.setAttribute('aria-disabled', 'false')
       el.node.style.cursor = 'pointer'
       el.node.title = ''
-      el.node.dataset.rm2Tip = ''
+      el.node.dataset.rm2Tip = entry.backboardTip || ''
+      if (petTipAnchor === el.node) showPetTip(el.node)
       el.node.style.zIndex = String(100 - index)
       el.node.style.order = String(index)
       el.node.style.marginTop = '-60px'
@@ -1658,6 +1659,8 @@ function mountPet(ctx) {
               detail: (item.cwd && String(item.cwd).split(/[\\/]/).filter(Boolean).pop())
                 ? '已完成 · ' + String(item.cwd).split(/[\\/]/).filter(Boolean).pop()
                 : '已完成',
+              title: item.title,
+              project: (item.cwd && String(item.cwd).split(/[\\/]/).filter(Boolean).pop()) || undefined,
               mood: '03',
               updatedAt: item.updatedAt || Date.now(),
             })
@@ -1666,6 +1669,21 @@ function mountPet(ctx) {
         }
       }
     } catch (e) { /* sessions.list 偶发异常不阻断堆叠渲染 */ }
+    try {
+      if (ctx && ctx.sessions && ctx.sessions.list && typeof ctx.sessions.list.getSnapshot === 'function') {
+        var titleSnap = ctx.sessions.list.getSnapshot()
+        var titleById = (titleSnap && typeof titleSnap.byId === 'object') ? titleSnap.byId : null
+        if (titleById) {
+          sessions = sessions.map(function (entry) {
+            if (!entry || entry.title) return entry
+            var tid = targetSessionOf(entry)
+            var row = titleById[tid] || titleById[entry.sessionId]
+            if (!row || !row.title) return entry
+            return Object.assign({}, entry, { title: row.title })
+          })
+        }
+      }
+    } catch (e) { /* 列表标题缺失时背板 tip 回落 project / 口吻 */ }
     var liveTargets = new Set()
     for (var li = 0; li < sessions.length; li++) {
       if (!completionOf(sessions[li])) liveTargets.add(targetSessionOf(sessions[li]))
@@ -1706,6 +1724,7 @@ function mountPet(ctx) {
         updatedAt: 0,
         backboard: true,
         summaryCount: ordered.length - 1,
+        backboardTip: __tip.backboardTipText(ordered[1].project, ordered[1].title),
       })
       backboardTarget = targetSessionOf(ordered[1]) || ''
     } else {

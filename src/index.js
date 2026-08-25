@@ -443,13 +443,20 @@ export function createAssetsHandler(petsRoot) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates, getCompletions, getCurrent }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates, getCompletions, getCurrent, getSessionTitle }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
   const activePetOf = typeof getActivePet === 'function' ? getActivePet : () => undefined
   const statesOf = typeof getStates === 'function' ? getStates : () => []
   const completionsOf = typeof getCompletions === 'function' ? getCompletions : () => []
   const currentOf = typeof getCurrent === 'function' ? getCurrent : () => undefined
+  const titleOf = typeof getSessionTitle === 'function' ? getSessionTitle : () => undefined
+  const withTitle = (entry) => {
+    if (!entry || entry.title) return entry
+    const sid = entry.targetSessionId || entry.sessionId
+    const title = sid ? titleOf(sid) : undefined
+    return title ? { ...entry, title } : entry
+  }
   return () => {
     const config = publicConfig(getConfig())
     const now = Date.now()
@@ -465,25 +472,26 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
     const sessions = stateEntries.map((entry) => {
       if (activePulse && activePulse.sessionId === entry.sessionId) {
         pulseMatched = true
-        return {
+        return withTitle({
           ...entry,
           state: activePulse.state,
           mood: activePulse.mood ?? entry.mood,
           phase: activePulse.phase ?? entry.phase,
           message: activePulse.message ?? entry.message,
           detail: activePulse.detail ?? entry.detail,
+          title: activePulse.title ?? entry.title,
           approval: entry.approval === true,
           ask: entry.ask === true,
           completed: activePulse.state === PetState.SUCCESS,
           pulseUntil: activePulse.until,
-        }
+        })
       }
-      return entry
+      return withTitle(entry)
     })
     // Completed sessions are absent from reducer.states(). Add the transient
     // pulse card while it is live; persistent reminders are merged below.
     if (activePulse && activePulse.sessionId && !pulseMatched) {
-      sessions.push({
+      sessions.push(withTitle({
         sessionId: activePulse.sessionId,
         state: activePulse.state,
         mood: activePulse.mood ?? '06',
@@ -499,7 +507,8 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         completed: activePulse.state === PetState.SUCCESS,
         updatedAt: now,
         pulseUntil: activePulse.until,
-      })
+        title: activePulse.title,
+      }))
     }
     for (const completion of completionsOf()) {
       const liveIndex = sessions.findIndex((entry) => entry.sessionId === completion.sessionId)
@@ -514,7 +523,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         }
         continue
       }
-      sessions.push({
+      sessions.push(withTitle({
         ...completion,
         sessionId: `completion:${completion.sessionId}`,
         targetSessionId: completion.sessionId,
@@ -525,7 +534,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         attention: false,
         approval: false,
         ask: false,
-      })
+      }))
     }
     const currentId = currentOf() || undefined
     sessions.sort((left, right) => compareSessions(left, right, currentId))
@@ -720,6 +729,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           message: message.message ?? statusCopy('success', message.sessionId ?? ''),
           detail: message.detail ?? '任务已完成',
           project: message.project,
+          title: message.title,
           task: message.task,
           progress: message.progress,
           phase: 'turn-end',
@@ -796,6 +806,15 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getStates: () => reducer.states(),
     getCompletions: () => [...completionQueue.values()],
     getCurrent: () => (Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''),
+    getSessionTitle: (sessionId) => {
+      try {
+        const session = ctx.sessions?.get?.(sessionId)
+        const title = ctx.sessionTitle?.get?.(session)?.title
+        return title ? String(title).trim() : undefined
+      } catch {
+        return undefined
+      }
+    },
   })
 
   const hub = createStreamHub({ serve: serveState })
@@ -845,7 +864,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     // 失败发生时人已经在这个对话里：当场已读，不进粉圈提醒。
     if (currentFailed) outgoing.push(...reducer.dismissError(sessionId))
     for (const message of outgoing) onMessage(message)
-    if (outgoing.length || currentFailed) hub.broadcast()
+    if (outgoing.length || currentFailed || eventType === 'session/title') hub.broadcast()
   }, { global: true })
   const offDisposed = eventCtx.on('session/disposed', (session) => {
     dropCompletion(session)

@@ -12,6 +12,16 @@
     return page === 0 ? '点击看余额呀~' : '点击回状态呀~'
   }
 
+  function backboardTipText(project, title) {
+    var parts = []
+    var p = String(project || '').trim()
+    var t = String(title || '').trim()
+    if (p) parts.push(p)
+    if (t && t !== p) parts.push(t)
+    if (!parts.length) return '点击跳到这里看一下~'
+    return '点击去看 ' + parts.join(' · ') + ' 哦~'
+  }
+
   function applyDotTip(dot, page, anchor, show) {
     if (!dot || !dot.dataset) return
     dot.dataset.rm2Tip = dotTipText(page)
@@ -30,7 +40,20 @@
     if (typeof hide === 'function') hide()
   }
 
-  // 网页/桌面同一套钳位：贴边收窄换行、相对卡片居中，并留出 24px 光晕。
+  // 短单行（圆点两句、卡片口吻）不拆字；审批全文等长文案仍换行。
+  function applyTipWrap(petTip) {
+    if (!petTip || !petTip.style) return
+    var text = String(petTip.textContent || '')
+    if (text.length <= 24 && text.indexOf('\n') === -1) {
+      petTip.style.whiteSpace = 'nowrap'
+      petTip.style.wordBreak = 'normal'
+    } else {
+      petTip.style.whiteSpace = 'pre-wrap'
+      petTip.style.wordBreak = 'break-all'
+    }
+  }
+
+  // 网页/桌面同一套钳位：用可见宽度自然展开，再把盒子钳进光晕内（可向空侧偏置）。
   // 桌面 showPetTip 在首帧后再按 getWorkArea 收紧 L/T/R/B，算法仍走这里。
   function layoutPetTip(petTip, anchor, L, T, R, B) {
     if (!petTip || !anchor) return
@@ -47,13 +70,10 @@
     if (visB - visT < 40) { visT = 0; visB = H }
     var r = anchor.getBoundingClientRect()
     var cx = r.left + r.width / 2
-    var spaceL = cx - (visL + pad)
-    var spaceR = visR - pad - cx
     var visW = visR - visL - pad * 2
-    var maxW = (spaceL > 0 && spaceR > 0)
-      ? Math.min(420, visW, Math.max(80, 2 * Math.min(spaceL, spaceR)))
-      : Math.min(420, Math.max(80, visW))
+    var maxW = Math.min(420, Math.max(80, visW))
     petTip.style.maxWidth = maxW + 'px'
+    applyTipWrap(petTip)
     var tw = petTip.offsetWidth
     var th = petTip.offsetHeight
     var minL = visL + pad
@@ -76,6 +96,7 @@
 
   global.__rm2PetTip = {
     dotTipText: dotTipText,
+    backboardTipText: backboardTipText,
     applyDotTip: applyDotTip,
     onDotLeave: onDotLeave,
     layoutPetTip: layoutPetTip,

@@ -10,6 +10,14 @@ test('dot tip copy follows the bubble page', () => {
   assert.equal(tip.dotTipText(1), '点击回状态呀~')
 })
 
+test('backboard tip joins workspace and conversation title without brackets', () => {
+  assert.equal(tip.backboardTipText('dsh-pet-remielle', '审查提示框颜色与溢出问题'), '点击去看 dsh-pet-remielle · 审查提示框颜色与溢出问题 哦~')
+  assert.equal(tip.backboardTipText('dsh-pet-remielle', ''), '点击去看 dsh-pet-remielle 哦~')
+  assert.equal(tip.backboardTipText('', '审查提示框颜色与溢出问题'), '点击去看 审查提示框颜色与溢出问题 哦~')
+  assert.equal(tip.backboardTipText('same', 'same'), '点击去看 same 哦~')
+  assert.equal(tip.backboardTipText('', ''), '点击跳到这里看一下~')
+})
+
 test('applyDotTip writes overlay text and clears native title', () => {
   const dot = { dataset: {}, title: '切到余额' }
   const shown = []
@@ -50,17 +58,29 @@ test('onDotLeave keeps, restores the card, or hides', () => {
   assert.deepEqual(hidden, [true])
 })
 
-test('layoutPetTip clamps to 24px glow and narrows at the edge', () => {
-  const petTip = { style: {}, offsetWidth: 200, offsetHeight: 40 }
+test('layoutPetTip expands to visible width, nowraps short copy, and slides into glow padding', () => {
+  const petTip = { style: {}, offsetWidth: 200, offsetHeight: 40, textContent: '点击看余额呀~' }
   const anchor = {
     getBoundingClientRect: () => ({ left: 1100, width: 180, top: 8, bottom: 76 }),
   }
   tip.layoutPetTip(petTip, anchor, 0, 0, 1280, 800)
-  assert.equal(Number.parseFloat(petTip.style.maxWidth), 132)
+  assert.equal(Number.parseFloat(petTip.style.maxWidth), 420)
+  assert.equal(petTip.style.whiteSpace, 'nowrap')
+  assert.equal(petTip.style.wordBreak, 'normal')
   const left = Number.parseFloat(petTip.style.left)
   const top = Number.parseFloat(petTip.style.top)
   assert.ok(left >= 24, `left ${left}`)
   assert.ok(left + 200 <= 1280 - 24, `right ${left + 200}`)
   assert.ok(top >= 24, `top ${top}`)
   assert.ok(top + 40 <= 800 - 24, `bottom ${top + 40}`)
+})
+
+test('layoutPetTip wraps long copy', () => {
+  const petTip = { style: {}, offsetWidth: 200, offsetHeight: 80, textContent: '工作区 · ' + '审批请求全文'.repeat(8) }
+  const anchor = {
+    getBoundingClientRect: () => ({ left: 100, width: 180, top: 80, bottom: 148 }),
+  }
+  tip.layoutPetTip(petTip, anchor, 0, 0, 1280, 800)
+  assert.equal(petTip.style.whiteSpace, 'pre-wrap')
+  assert.equal(petTip.style.wordBreak, 'break-all')
 })

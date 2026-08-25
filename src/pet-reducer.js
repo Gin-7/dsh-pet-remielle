@@ -60,6 +60,21 @@ function cleanProjectName(value) {
   return candidate.replace(/\s+/gu, ' ').slice(0, 40) || undefined
 }
 
+function conversationTitleOf(session, event) {
+  if (event?.type === 'session/title') {
+    const text = String(event?.data?.title ?? '').trim()
+    if (text) return text.slice(0, 80)
+  }
+  const events = session?.events
+  if (!Array.isArray(events)) return undefined
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]?.type !== 'session/title') continue
+    const text = String(events[i]?.data?.title ?? '').trim()
+    if (text) return text.slice(0, 80)
+  }
+  return undefined
+}
+
 function projectNameOf(session, event) {
   const candidates = [
     session?.header?.title,
@@ -173,6 +188,7 @@ export class PetReducer {
     record.subagent = subagent
     record.lastSeq = Number(event.seq ?? record.lastSeq)
     record.project = projectNameOf(session, event) ?? record.project
+    record.title = conversationTitleOf(session, event) ?? record.title
 
     switch (event.type) {
       case 'turn/start':
@@ -307,6 +323,9 @@ export class PetReducer {
       case 'turn/end':
         return this.#turnEnd(record, event)
 
+      case 'session/title':
+        return []
+
       default:
         return []
     }
@@ -353,6 +372,7 @@ export class PetReducer {
         message: record.payload.message ?? '',
         detail: detailFor(record),
         project: record.project,
+        title: record.title,
         task: record.task,
         progress: record.progress,
         // Only an unresolved approval wait may render the actionable ✓.
@@ -522,6 +542,8 @@ export class PetReducer {
       phase: 'turn-end',
       message: statusCopy('success', event.seq),
       detail: detailFor(record, '本轮已完成'),
+      project: record.project,
+      title: record.title,
     })
     if ([PetState.WAITING, PetState.ERROR].includes(selection.record.state)) {
       return [...this.#render(selection), pulse]
@@ -546,6 +568,7 @@ export class PetReducer {
       task: undefined,
       progress: undefined,
       project: undefined,
+      title: undefined,
       subagent: false,
       lastSeq: -1,
       updatedAt: ++this.clock,
@@ -628,6 +651,7 @@ export class PetReducer {
       task: selection.record.task,
       progress: selection.record.progress,
       project: selection.record.project,
+      title: selection.record.title,
       detail: detailFor(selection.record),
     })]
   }
