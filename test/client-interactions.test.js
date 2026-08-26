@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 const CLIENT = new URL('../lib/client.js', import.meta.url)
+const CLIENT_CORE = new URL('../src/client.core.js', import.meta.url)
+const STATUS_COPY = new URL('../src/status-copy.js', import.meta.url)
 
 function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = []) {
   const elements = []
@@ -112,12 +114,25 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     constructor() { stream = this }
     close() {}
   }
+  const windowListeners = new Map()
+  const beacons = []
+  class BlobStub {
+    constructor(parts) { this.parts = parts }
+  }
+  const navigatorStub = {
+    // sendBeacon 记录请求体；测试可通过置空 sendBeacon 验证 keepalive fetch 兜底
+    sendBeacon: (url, blob) => { beacons.push({ url, body: String(blob?.parts?.[0] ?? '') }); return true },
+  }
   const window = {
     __ModuleLoader__: { load(entry) { window.factory = entry.factory } },
     innerWidth: 1280,
     innerHeight: 800,
     localStorage: { setItem() {} },
-    addEventListener() {},
+    addEventListener(name, listener) {
+      const listeners = windowListeners.get(name) ?? []
+      listeners.push(listener)
+      windowListeners.set(name, listeners)
+    },
     removeEventListener() {},
     setInterval() { return 1 },
     clearInterval() {},
@@ -134,7 +149,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
   }
 
   const code = readFileSync(CLIENT, 'utf8')
-  new Function('window', 'document', 'EventSource', 'fetch', code)(window, document, EventSourceStub, fetch)
+  new Function('window', 'document', 'EventSource', 'fetch', 'navigator', 'Blob', code)(window, document, EventSourceStub, fetch, navigatorStub, BlobStub)
   const moduleExports = window.factory((id) => {
     if (id === 'react') return { createElement: () => ({}), Fragment: Symbol('Fragment') }
     throw new Error(`unexpected require: ${id}`)
@@ -179,7 +194,10 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     const queued = timers.splice(0)
     for (const listener of queued) listener()
   }
-  return { allowClicks, card, click, elements, fetches, opened, select, send, styleWrites, flushTitleTimers }
+  function dispatchWindowEvent(name) {
+    for (const listener of windowListeners.get(name) ?? []) listener({})
+  }
+  return { allowClicks, beacons, card, click, dispatchWindowEvent, elements, fetches, navigator: navigatorStub, opened, select, send, styleWrites, flushTitleTimers }
 }
 
 const base = {
@@ -202,25 +220,61 @@ test('generated CSS fixes active and idle heights without margin animation', () 
   assert.doesNotMatch(css, /transition:[^;}]*margin/)
 })
 
-test('multi-session updates keep one eight-pixel summary backboard stable', () => {
+test('multi-session deck renders an inert backboard with a dynamic click target', () => {
   const harness = createHarness('first')
   const sessions = [
     { sessionId: 'first', state: 'WORKING', phase: 'tool-call', message: '正在继续处理任务呢', detail: '.dsh · 调用工具', updatedAt: 3 },
     { sessionId: 'second', state: 'THINKING', phase: 'think', message: '让我想想最优解是什么', detail: '.dsh · 分析阶段', updatedAt: 2 },
     { sessionId: 'third', state: 'THINKING', phase: 'think', message: '正在检查剩余问题', detail: '.dsh · 检查阶段', updatedAt: 1 },
   ]
+  const hasCard = (t) => harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === t)
   harness.send({ ...base, sessions })
+  // 首层刷新不影响背板：+N 保持，第二层一律不渲染第 2 名的文字/图标。
   harness.send({ ...base, sessions: [{ ...sessions[0], message: '正在读取文件' }, sessions[1], sessions[2]] })
 
-  const background = harness.card('让我想想最优解是什么')
-  const writes = harness.styleWrites.filter(({ element, key }) => element === background && key === 'marginTop')
-  assert.ok(writes.length >= 2)
-  assert.deepEqual(new Set(writes.map(({ value }) => value)), new Set(['-60px']))
-  assert.equal(background.offsetHeight - Math.abs(Number.parseInt(writes.at(-1).value, 10)), 8)
-  assert.equal(background.children.find((node) => node.className === 'rm2-pet-bubble-stack-count').textContent, '+2')
-  assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '正在检查剩余问题'), false)
-  harness.click(background)
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  assert.ok(backboard, 'backboard card should exist')
+  const writes = harness.styleWrites.filter(({ element, key }) => element === backboard && key === 'marginTop')
+  assert.ok(writes.length >= 1)
+  assert.equal(backboard.offsetHeight - Math.abs(Number.parseInt(writes.at(-1).value, 10)), 8)
+  assert.equal(backboard.children.find((node) => node.className === 'rm2-pet-bubble-stack-count').textContent, '+2')
+  assert.equal(hasCard('让我想想最优解是什么'), false)
+  assert.equal(hasCard('正在检查剩余问题'), false)
+  assert.equal(backboard.dataset.rm2Tip, '点击跳到这里看一下~')
+  harness.send({
+    ...base,
+    sessions: [
+      sessions[0],
+      { ...sessions[1], project: 'dsh-pet-remielle', title: '审查提示框颜色与溢出问题' },
+      sessions[2],
+    ],
+  })
+  assert.equal(backboard.dataset.rm2Tip, '点击去看 dsh-pet-remielle · 审查提示框颜色与溢出问题 哦~')
+  // 点击背板：按当帧排序动态解析第 2 名（second）并跳转。
+  harness.click(backboard)
   assert.deepEqual(harness.opened, ['second'])
+  // 同级轮转（third 刷出更大 updatedAt）后，同一张背板的跳转目标跟着排序走。
+  // 先把当前会话复位回 first：上一次跳转已让 second 成为当前会话并占据首层。
+  harness.select('first')
+  harness.send({ ...base, sessions: [sessions[0], sessions[1], { ...sessions[2], updatedAt: 5 }] })
+  harness.click(backboard)
+  assert.deepEqual(harness.opened, ['second', 'third'])
+})
+
+test('backboard tip fills conversation title from sessions.list when snapshot omits it', () => {
+  const harness = createHarness('first', true, {
+    second: { id: 'second', title: '审查提示框颜色与溢出问题', cwd: 'C:\\work\\dsh-pet-remielle' },
+  })
+  harness.send({
+    ...base,
+    sessions: [
+      { sessionId: 'first', state: 'WORKING', phase: 'tool-call', message: '正在继续处理任务呢', detail: '.dsh · 调用工具', updatedAt: 3, project: 'other' },
+      { sessionId: 'second', state: 'THINKING', phase: 'think', message: '让我想想最优解是什么', detail: '.dsh · 分析阶段', updatedAt: 2, project: 'dsh-pet-remielle' },
+    ],
+  })
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  assert.ok(backboard, 'backboard card should exist')
+  assert.equal(backboard.dataset.rm2Tip, '点击去看 dsh-pet-remielle · 审查提示框颜色与溢出问题 哦~')
 })
 
 test('title clipping ignores long detail text for short approval titles', () => {
@@ -254,6 +308,79 @@ test('title clipping ignores long detail text for short approval titles', () => 
   assert.equal(harness.card('这是一个确实长到超过卡片内部可用宽度并且必须截断显示的审批标题文本').className.includes('title-clipped'), true)
 })
 
+test('approval bubble tooltip shows the second-line request detail', () => {
+  const harness = createHarness()
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'approval',
+      state: 'WAITING',
+      phase: 'approval',
+      message: '需要你确认一下哦',
+      detail: '  • 读取工作区文件并执行安装',
+      approval: true,
+      attention: true,
+    }],
+  })
+  // 悬停提示改自绘浮层：文本在 dataset.rm2Tip（与第二行同一套行首项目符号
+  // 规范化），原生 title 置空避免双重提示
+  const approvalCard = harness.card('需要你确认一下哦')
+  assert.equal(approvalCard.dataset.rm2Tip, '· 读取工作区文件并执行安装')
+  assert.equal(approvalCard.title, '')
+})
+
+test('web pet tip follows dark theme and stays inside the viewport with glow padding', () => {
+  const core = readFileSync(CLIENT_CORE, 'utf8')
+  assert.match(core, /body\[data-ds-dark-theme\] \.rm2-pet-tip/)
+  assert.match(core, /__tip\.layoutPetTip\(petTip, anchor/)
+  const harness = createHarness()
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 's1',
+      state: 'WORKING',
+      phase: 'output',
+      message: '正在输出回答哦',
+      detail: 'dsh-pet-remielle · 输出阶段',
+    }],
+  })
+  const card = harness.card('正在输出回答哦')
+  card.getBoundingClientRect = () => ({ left: 1100, top: 8, width: 180, height: 68, right: 1280, bottom: 76 })
+  const enter = card.listeners.get('mouseenter')?.[0]
+  assert.ok(enter, 'missing mouseenter listener')
+  enter()
+  const tip = harness.elements.find((node) => node.className === 'rm2-pet-tip')
+  assert.ok(tip, 'missing .rm2-pet-tip')
+  assert.equal(tip.textContent, '点击跳到这里看一下~')
+  const left = Number.parseFloat(tip.style.left)
+  const top = Number.parseFloat(tip.style.top)
+  const tw = tip.offsetWidth
+  const th = tip.offsetHeight
+  assert.ok(left >= 24, `left ${left} should keep 24px glow`)
+  assert.ok(left + tw <= 1280 - 24, `right ${left + tw} should keep 24px glow`)
+  assert.ok(top >= 24, `top ${top} should keep 24px glow`)
+  assert.ok(top + th <= 800 - 24, `bottom ${top + th} should keep 24px glow`)
+  // 短口吻不拆字；maxW 用可见宽度，盒子可向空侧偏置，仍留 24px 光晕
+  assert.equal(tip.style.whiteSpace, 'nowrap')
+  const maxW = Number.parseFloat(tip.style.maxWidth)
+  assert.equal(maxW, 420)
+})
+
+test('pet dock grabbing cursor survives snapshot refresh until pointerup', () => {
+  const harness = createHarness()
+  harness.send({ ...base, sessions: [] })
+  const dock = harness.elements.find((node) => String(node.style.cssText || '').includes('cursor:grab'))
+  assert.ok(dock, 'missing pet dock')
+  const down = dock.listeners.get('pointerdown')?.[0]
+  assert.ok(down, 'missing dock pointerdown')
+  down({ button: 0, clientX: 20, clientY: 20, preventDefault() {} })
+  assert.equal(dock.style.cursor, 'grabbing')
+  harness.send({ ...base, mood: '01', sessions: [] })
+  assert.equal(dock.style.cursor, 'grabbing', 'snapshot must not reset grabbing while held')
+  harness.dispatchWindowEvent('pointerup')
+  assert.equal(dock.style.cursor, 'grab')
+})
+
 test('question and error action symbols open their own conversations', () => {
   const harness = createHarness()
   harness.send({
@@ -264,10 +391,14 @@ test('question and error action symbols open their own conversations', () => {
     ],
   })
   const questionAction = harness.card('等待回答').children[0].children.find((node) => node.className === 'rm2-pet-bubble-action')
-  const errorAction = harness.card('需要处理').children[0].children.find((node) => node.className === 'rm2-pet-bubble-action')
-  harness.click(errorAction)
   harness.click(questionAction)
-  assert.deepEqual(harness.opened, ['error', 'question'])
+  assert.deepEqual(harness.opened, ['question'])
+  // ERROR 卡（stateRank 低于 WAITING）排第二，落入假背板：无真卡无图标，
+  // 点击背板动态跳到它。
+  assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '需要处理'), false)
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  harness.click(backboard)
+  assert.deepEqual(harness.opened, ['question', 'error'])
 })
 
 test('completion card waits for confirmed selection before acknowledgement', async () => {
@@ -290,6 +421,62 @@ test('completion card waits for confirmed selection before acknowledgement', asy
   harness.select('done')
   await Promise.resolve()
   assert.ok(harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'done' })))
+})
+
+test('current conversation ERROR card is dropped without attention', () => {
+  const harness = createHarness('err')
+  harness.send({
+    ...base,
+    message: '蕾米埃尔待机中~',
+    sessions: [{
+      sessionId: 'err',
+      state: 'ERROR',
+      message: '任务好像遇到问题了哦',
+      detail: 'dsh-pet-remielle · 需要处理',
+      attention: true,
+      updatedAt: 1,
+    }],
+  })
+  assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务好像遇到问题了哦'), false)
+})
+
+test('background ERROR card stays in attention until that session is opened', () => {
+  const harness = createHarness('other')
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'err',
+      state: 'ERROR',
+      message: '任务好像遇到问题了哦',
+      detail: 'dsh-pet-remielle · 需要处理',
+      attention: true,
+      updatedAt: 1,
+    }],
+  })
+  const card = harness.card('任务好像遇到问题了哦')
+  assert.ok(card.className.includes('attention'))
+  harness.select('err')
+  // 节点可能仍留在 harness.elements 里，但已从牌叠父节点卸下。
+  assert.equal(card.parentNode.children.includes(card), false)
+})
+
+test('current conversation WAITING card stays until the question is answered', () => {
+  const harness = createHarness('ask')
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'ask',
+      state: 'WAITING',
+      phase: 'ask',
+      message: '需要你确认一下哦',
+      detail: '等待回答',
+      ask: true,
+      attention: true,
+      updatedAt: 1,
+    }],
+  })
+  const card = harness.card('需要你确认一下哦')
+  assert.ok(card.className.includes('attention'))
 })
 
 test('current conversation completion is acknowledged without a green reminder', async () => {
@@ -379,11 +566,11 @@ test('expired reminder for the current conversation disappears immediately', asy
   assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务已完成'), false)
 })
 
-test('desktop session-action without approve does not open the conversation', () => {
+test('desktop session-action without approve opens the conversation (bubble-card jump)', () => {
   const harness = createHarness()
   harness.send({ ...base, desktopActive: true, sessions: [] })
   harness.send({ kind: 'session-action', sessionId: 'desk-1', completed: true })
-  assert.deepEqual(harness.opened, [])
+  assert.deepEqual(harness.opened, ['desk-1'])
 })
 
 test('desktop session-action approve opens the conversation for the native allow-once button', () => {
@@ -425,9 +612,12 @@ test('sidebar green-dot session (completed) is surfaced as a clickable completio
     ws1: { id: 'ws1', title: '还在运行', running: true, completed: false, updatedAt: 4 },
   })
   harness.send({ ...base, sessions: [] })
-  const card = harness.card('插件图标遮挡配色问题')
+  // 补卡标题用 success 固定文案池（不泄漏会话首条用户消息原文 displayTitle）。
+  const completionTitles = ['这次任务搞定啦~', '这一轮顺利完成哦', '任务完成咯，干得漂亮']
+  const card = harness.elements.find((node) => node.className === 'rm2-pet-bubble-title' && completionTitles.includes(node.textContent))
   assert.ok(card, 'missing sidebar completed completion card')
-  card.listeners.get('click')[0]({ preventDefault() {}, stopPropagation() {} })
+  const bubbleCard = card.parentNode.parentNode
+  bubbleCard.listeners.get('click')[0]({ preventDefault() {}, stopPropagation() {} })
   assert.ok(harness.opened.includes('ws2'), 'clicking should open the completed session')
 })
 
@@ -455,6 +645,11 @@ test('bubble hover uses the default cursor and wheel flips pages instead of scal
   assert.ok(css, 'missing injected pet CSS')
   assert.match(css, /\.rm2-pet-bubble\{[^}]*cursor:default/)
   assert.match(css, /\.rm2-pet-bubbles\{[^}]*cursor:default/)
+  const balanceBubble = harness.elements.find((node) => node.className === 'rm2-pet-bubble top')
+  const pageDot = harness.elements.find((node) => node.className === 'rm2-bubble-dot')
+  assert.equal(balanceBubble.title, '', 'balance bubble must not inherit dock title')
+  assert.equal(pageDot.title, '', 'page-switch dot must not inherit dock title')
+  assert.equal(pageDot.dataset.rm2Tip, '点击看余额呀~')
   harness.send({ ...base, sessions: [] })
   // 滚轮翻页：两个气泡容器都要接住 wheel（stopPropagation，不冒泡到 dock 缩放），
   // 且容器可命中（pointer-events:auto），卡片缝隙上的滚轮不再穿透。
@@ -471,5 +666,240 @@ test('bubble hover uses the default cursor and wheel flips pages instead of scal
   }
 })
 
+test('page-switch dot overlay tip follows the page and restores the card tip', () => {
+  const harness = createHarness()
+  harness.send({
+    ...base,
+    showBubble: true,
+    showBubbleStatus: true,
+    showBubbleUsage: true,
+    sessions: [{
+      sessionId: 's1',
+      state: 'WORKING',
+      phase: 'output',
+      message: '正在输出回答哦',
+      detail: 'dsh-pet-remielle · 输出阶段',
+    }],
+  })
+  const pageDot = harness.elements.find((node) => node.className === 'rm2-bubble-dot')
+  const card = harness.card('正在输出回答哦')
+  assert.equal(pageDot.title, '')
+  assert.equal(pageDot.dataset.rm2Tip, '点击看余额呀~')
+  const enter = pageDot.listeners.get('mouseenter')?.[0]
+  const leave = pageDot.listeners.get('mouseleave')?.[0]
+  assert.ok(enter && leave, 'missing switch-dot hover listeners')
+  enter({ stopPropagation() {} })
+  const tip = harness.elements.find((node) => node.className === 'rm2-pet-tip')
+  assert.ok(tip, 'missing .rm2-pet-tip')
+  assert.equal(tip.textContent, '点击看余额呀~')
+  leave({ relatedTarget: card })
+  assert.equal(tip.textContent, '点击跳到这里看一下~')
+  leave({})
+  assert.equal(tip.style.display, 'none')
+  harness.click(pageDot)
+  assert.equal(pageDot.dataset.rm2Tip, '点击回状态呀~')
+  assert.equal(pageDot.title, '')
+})
 
+test('deck order puts approval above ask above completion', () => {
+  const harness = createHarness()
+  harness.send({
+    ...base,
+    sessions: [
+      { sessionId: 'done', state: 'SUCCESS', message: '任务已完成', detail: '结果', completed: true, completionNotification: true, updatedAt: 3 },
+      { sessionId: 'ask-1', state: 'WAITING', phase: 'ask', message: '等待回答', detail: '问题', ask: true, attention: true, updatedAt: 2 },
+      { sessionId: 'appr-1', state: 'WAITING', phase: 'approval', message: '等待确认', detail: '审批', approval: true, attention: true, updatedAt: 1 },
+    ],
+  })
+  const titles = harness.elements
+    .filter((node) => node.className === 'rm2-pet-bubble-title' && node.textContent)
+    .map((node) => node.textContent)
+  // 牌叠只渲染首层真卡：approval 居首，ask/completion 都收进假背板的 +N。
+  assert.deepEqual(titles, ['等待确认'])
+})
+
+test('same-tier streaming sessions keep the top card stable (no width flapping)', () => {
+  const harness = createHarness()
+  const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
+  // 视觉顺序由 style.order 决定（DOM 顺序不变），因此断言卡片节点的 order 值。
+  const lastOrder = (node) => {
+    let last = Infinity
+    for (const w of harness.styleWrites) {
+      if (w.element === node && w.key === 'order') last = Number(w.value)
+    }
+    return last
+  }
+  const titleCount = (t) => harness.elements.filter((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === t).length
+  harness.send({ ...base, sessions: [mk('w1', 10), mk('w2', 5)] })
+  const topNode = harness.card('w1 的消息')
+  assert.equal(lastOrder(topNode), 0, 'w1 starts on top')
+  // w2 的 chunk 刷出更大的 updatedAt，但两者完全同级：顶层保持 w1，宽度不再抖动。
+  harness.send({ ...base, sessions: [mk('w1', 10), mk('w2', 20)] })
+  harness.send({ ...base, sessions: [mk('w1', 40), mk('w2', 30)] })
+  // 滞回失效的话 w1 会掉到第二层并被销毁重建（title 节点出现两份）。
+  assert.equal(titleCount('w1 的消息'), 1, 'top card is never unmounted by same-tier rotation')
+  assert.equal(lastOrder(topNode), 0, 'hysteresis keeps w1 on top')
+  // 层级变化（approval）不受滞回影响，照常上位；w1 让出顶层。
+  harness.send({
+    ...base,
+    sessions: [mk('w1', 50), { sessionId: 'w2', state: 'WAITING', phase: 'approval', message: '等待确认', approval: true, attention: true, updatedAt: 60 }],
+  })
+  assert.equal(lastOrder(harness.card('等待确认')), 0, 'tier change overrides hysteresis')
+})
+
+test('deck keeps one real top card plus the backboard across three streaming sessions', () => {
+  const harness = createHarness()
+  const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
+  const lastOrder = (node) => {
+    let last = Infinity
+    for (const w of harness.styleWrites) {
+      if (w.element === node && w.key === 'order') last = Number(w.value)
+    }
+    return last
+  }
+  const titleCount = (t) => harness.elements.filter((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === t).length
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 50), mk('w3', 10)] })
+  assert.equal(lastOrder(harness.card('w1 的消息')), 0, 'w1 leads initially')
+  // 三个 WORKING 会话在场，前两名轮流刷新 updatedAt：滞回让 w1 始终守在顶层。
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 150), mk('w3', 10)] })
+  harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 150), mk('w3', 10)] })
+  harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 300), mk('w3', 10)] })
+  assert.equal(lastOrder(harness.card('w1 的消息')), 0, 'top-2 hysteresis keeps w1 on top')
+  assert.equal(titleCount('w1 的消息'), 1, 'rotation never unmounts and rebuilds the top card')
+  // 第三名刷出更大的 updatedAt：新会话照常接管顶层（滞回只锁互为倒序的相邻对）。
+  harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 300), mk('w3', 400)] })
+  assert.equal(lastOrder(harness.card('w3 的消息')), 0, 'a third same-tier session may take over the top')
+  // 随后新的前两名轮流刷新，顶层同样保持稳定（w1 已收进背板的 +N）。
+  harness.send({ ...base, sessions: [mk('w1', 200), mk('w2', 500), mk('w3', 400)] })
+  assert.equal(lastOrder(harness.card('w3 的消息')), 0, 'new top stays stable too')
+})
+
+test('approval tier change still surfaces above a stabilized deck', () => {
+  const harness = createHarness()
+  const mk = (id, updatedAt) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, detail: '', updatedAt })
+  const lastOrder = (node) => {
+    let last = Infinity
+    for (const w of harness.styleWrites) {
+      if (w.element === node && w.key === 'order') last = Number(w.value)
+    }
+    return last
+  }
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 50)] })
+  harness.send({ ...base, sessions: [mk('w1', 100), mk('w2', 150)] })
+  assert.equal(lastOrder(harness.card('w1 的消息')), 0, 'deck is stabilized by top-2 hysteresis')
+  // 层级变化（WAITING+approval）不受滞回影响，照常上位到第一名。
+  harness.send({
+    ...base,
+    sessions: [
+      mk('w1', 100),
+      { sessionId: 'appr-1', state: 'WAITING', phase: 'approval', message: '等待确认', approval: true, attention: true, updatedAt: 60 },
+    ],
+  })
+  assert.equal(lastOrder(harness.card('等待确认')), 0, 'tier change overrides top-2 hysteresis')
+})
+
+test('single-session deck renders no backboard', () => {
+  const harness = createHarness()
+  harness.send({
+    ...base,
+    sessions: [{ sessionId: 'only', state: 'WORKING', phase: 'tool-call', message: '独自工作中', detail: '', updatedAt: 1 }],
+  })
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  assert.equal(backboard, undefined, 'no backboard for a single session')
+  harness.click(harness.card('独自工作中'))
+  assert.deepEqual(harness.opened, ['only'])
+})
+
+test('current-session uplink fires on mount/select and clears on page unload', () => {
+  const harness = createHarness()
+  const currentPosts = () => harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/session/current'))
+  // 挂载时即上报当前会话（fire-and-forget，宿主随下次快照带出）
+  assert.ok(currentPosts().length >= 1, 'mount should report the current session')
+  assert.equal(JSON.parse(currentPosts().at(-1).options.body).sessionId, 'other')
+  // 切换会话时重新上报
+  harness.select('ws9')
+  assert.ok(currentPosts().length >= 2, 'selecting a session should re-report')
+  assert.equal(JSON.parse(currentPosts().at(-1).options.body).sessionId, 'ws9')
+  // 卸载清空：注册 pagehide/beforeunload 上报，sendBeacon 优先、fetch keepalive 兜底
+  // （harness 的 window 不派发卸载事件，此处对 lib 产物做静态断言）
+  const code = readFileSync(CLIENT, 'utf8')
+  assert.match(code, /addEventListener\('pagehide',\s*clearReportedCurrentSession\)/)
+  assert.match(code, /addEventListener\('beforeunload',\s*clearReportedCurrentSession\)/)
+  assert.match(code, /navigator\.sendBeacon/)
+  assert.match(code, /keepalive:\s*true/)
+})
+
+test('desktop bubble click (session-action without approve) opens its conversation only', () => {
+  const harness = createHarness()
+  harness.send({ kind: 'session-action', sessionId: 'desk-9', approve: false })
+  assert.ok(harness.opened.includes('desk-9'), 'should open the session')
+  assert.deepEqual(harness.allowClicks, [])
+})
+
+test('desktop completion-card click opens the conversation and acknowledges', async () => {
+  const harness = createHarness()
+  harness.send({ kind: 'session-action', sessionId: 'done-9', approve: false, completed: true })
+  assert.ok(harness.opened.includes('done-9'), 'should open the completed session')
+  assert.deepEqual(harness.allowClicks, [])
+  await Promise.resolve()
+  assert.ok(harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'done-9' })))
+})
+
+test('内联 SUCCESS_COPY_POOL 与 status-copy.js 的 success 池逐字一致（防漂移护栏）', () => {
+  // 网页包不含 status-copy 模块，client.core.js 内联了 success 文案池；
+  // 两处必须同步维护，这里静态断言内容一致，防止后续只改一处导致漂移。
+  const core = readFileSync(CLIENT_CORE, 'utf8')
+  const copySource = readFileSync(STATUS_COPY, 'utf8')
+  // 从源码字面量中提取全部单引号字符串，得到字符串数组
+  const parsePool = (literal) => {
+    const items = [...literal.matchAll(/'([^']*)'/g)].map((match) => match[1])
+    assert.ok(items.length >= 1, `文案池不应为空：${literal}`)
+    return items
+  }
+  const inlineMatch = core.match(/\bSUCCESS_COPY_POOL\s*=\s*(\[[^\]]*\])/)
+  assert.ok(inlineMatch, 'client.core.js 中应存在内联 SUCCESS_COPY_POOL 字面量')
+  const statusMatch = copySource.match(/\bsuccess:\s*(\[[^\]]*\])/)
+  assert.ok(statusMatch, 'status-copy.js 中应存在 success 池字面量')
+  assert.deepEqual(parsePool(inlineMatch[1]), parsePool(statusMatch[1]))
+})
+
+test('lib bundle inlines session-order ahead of mountPet（拼接顺序护栏）', () => {
+  // __rm2SessionOrder / __rm2PetTip 必须在 mountPet 定义前就位，否则消费端早失败守卫会抛错、
+  // 宠物模块整体失效。此断言防止 build-client.mjs 的前置拼接被意外破坏。
+  const code = readFileSync(CLIENT, 'utf8')
+  const orderAt = code.indexOf('__rm2SessionOrder')
+  const tipAt = code.indexOf('__rm2PetTip')
+  assert.notEqual(orderAt, -1, 'lib/client.js 应包含 session-order 拼接产物')
+  assert.notEqual(tipAt, -1, 'lib/client.js 应包含 pet-tip 拼接产物')
+  const mountAt = code.indexOf('function mountPet')
+  assert.notEqual(mountAt, -1, 'lib/client.js 应包含 mountPet 定义')
+  assert.ok(orderAt < mountAt, 'session-order 必须拼接在 mountPet 之前')
+  assert.ok(tipAt < mountAt, 'pet-tip 必须拼接在 mountPet 之前')
+})
+
+test('unloading clears the reported current session via beacon or keepalive fetch（行为验证）', async () => {
+  // sendBeacon 可用：pagehide 清空上报走 sendBeacon
+  const harness = createHarness()
+  harness.select('ws9')
+  harness.dispatchWindowEvent('pagehide')
+  assert.equal(harness.beacons.length, 1)
+  assert.equal(JSON.parse(harness.beacons[0].body).sessionId, '')
+  assert.ok(String(harness.beacons[0].url).endsWith('/plugins/dsh-pet-remielle/session/current'))
+
+  // beforeunload 同样清空（重复清空无副作用）
+  harness.select('ws8')
+  harness.dispatchWindowEvent('beforeunload')
+  assert.equal(harness.beacons.length, 2)
+  assert.equal(JSON.parse(harness.beacons[1].body).sessionId, '')
+
+  // sendBeacon 不可用：兜底为 keepalive fetch
+  harness.navigator.sendBeacon = undefined
+  harness.select('ws7')
+  const before = harness.fetches.length
+  harness.dispatchWindowEvent('pagehide')
+  const fallback = harness.fetches.slice(before).find(({ url, options }) =>
+    String(url).endsWith('/session/current') && options.keepalive === true)
+  assert.ok(fallback, 'should fall back to keepalive fetch when sendBeacon is unavailable')
+  assert.equal(JSON.parse(fallback.options.body).sessionId, '')
+})
 

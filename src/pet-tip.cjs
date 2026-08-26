@@ -1,0 +1,112 @@
+/**
+ * Shared page-switch-dot hover copy, leave routing, and tip layout clamp.
+ * Web: inlined by scripts/build-client.mjs ahead of client.core.js.
+ * Desktop: served at /plugins/dsh-pet-remielle/pet-tip.js.
+ *
+ * 文件用 .cjs：包是 "type":"module"，与 session-order.cjs 同一套加载约定。
+ */
+;(function (global) {
+  'use strict'
+
+  function dotTipText(page) {
+    return page === 0 ? '点击看余额呀~' : '点击回状态呀~'
+  }
+
+  function backboardTipText(project, title) {
+    var parts = []
+    var p = String(project || '').trim()
+    var t = String(title || '').trim()
+    if (p) parts.push(p)
+    if (t && t !== p) parts.push(t)
+    if (!parts.length) return '点击跳到这里看一下~'
+    return '点击去看 ' + parts.join(' · ') + ' 哦~'
+  }
+
+  function applyDotTip(dot, page, anchor, show) {
+    if (!dot || !dot.dataset) return
+    dot.dataset.rm2Tip = dotTipText(page)
+    dot.title = ''
+    if (anchor === dot && typeof show === 'function') show(dot)
+  }
+
+  function onDotLeave(e, dot, dots, show, hide) {
+    var related = e && e.relatedTarget
+    if (related === dot || related === dots) return
+    var host = dots && dots.parentNode
+    if (related && host && host.dataset && host.dataset.rm2Tip && typeof host.contains === 'function' && host.contains(related)) {
+      if (typeof show === 'function') show(host)
+      return
+    }
+    if (typeof hide === 'function') hide()
+  }
+
+  // 先按单行量自然宽，超出可见 maxW 再换行；文案自带换行（审批全文）直接 wrap。
+  function fitTipWrap(petTip, maxW) {
+    if (!petTip || !petTip.style) return
+    var text = String(petTip.textContent || '')
+    if (text.indexOf('\n') !== -1) {
+      petTip.style.whiteSpace = 'pre-wrap'
+      petTip.style.wordBreak = 'break-all'
+      return
+    }
+    petTip.style.whiteSpace = 'nowrap'
+    petTip.style.wordBreak = 'normal'
+    petTip.style.maxWidth = 'none'
+    if (petTip.offsetWidth > maxW) {
+      petTip.style.whiteSpace = 'pre-wrap'
+      petTip.style.wordBreak = 'break-all'
+    }
+  }
+
+  // 网页/桌面同一套钳位：用可见宽度自然展开，再把盒子钳进光晕内（可向空侧偏置）。
+  // 桌面 showPetTip 在首帧后再按 getWorkArea 收紧 L/T/R/B，算法仍走这里。
+  function layoutPetTip(petTip, anchor, L, T, R, B) {
+    if (!petTip || !anchor) return
+    var pad = 24
+    var gap = 6
+    var win = typeof window !== 'undefined' ? window : null
+    var W = (win && win.innerWidth) || 1280
+    var H = (win && win.innerHeight) || 800
+    var visL = Math.max(0, L)
+    var visT = Math.max(0, T)
+    var visR = Math.min(W, R)
+    var visB = Math.min(H, B)
+    if (visR - visL < 80) { visL = 0; visR = W }
+    if (visB - visT < 40) { visT = 0; visB = H }
+    var r = anchor.getBoundingClientRect()
+    var cx = r.left + r.width / 2
+    var visW = visR - visL - pad * 2
+    var maxW = Math.min(420, Math.max(80, visW))
+    fitTipWrap(petTip, maxW)
+    petTip.style.maxWidth = maxW + 'px'
+    var tw = petTip.offsetWidth
+    var th = petTip.offsetHeight
+    var minL = visL + pad
+    var maxL = visR - tw - pad
+    var left = cx - tw / 2
+    if (maxL < minL) left = visL + Math.max(0, (visR - visL - tw) / 2)
+    else left = Math.min(Math.max(minL, left), maxL)
+    var minT = visT + pad
+    var maxT = visB - th - pad
+    var above = r.top - th - gap
+    var below = r.bottom + gap
+    var top
+    if (above >= minT) top = above
+    else if (below + th <= visB - pad) top = below
+    else if (maxT >= minT) top = Math.min(Math.max(minT, above), maxT)
+    else top = visT + Math.max(0, (visB - visT - th) / 2)
+    petTip.style.left = left + 'px'
+    petTip.style.top = top + 'px'
+  }
+
+  global.__rm2PetTip = {
+    dotTipText: dotTipText,
+    backboardTipText: backboardTipText,
+    applyDotTip: applyDotTip,
+    onDotLeave: onDotLeave,
+    layoutPetTip: layoutPetTip,
+  }
+  if (typeof module === 'object' && module.exports && typeof window === 'undefined') {
+    module.exports = global.__rm2PetTip
+  }
+})(typeof window !== 'undefined' ? window : globalThis)

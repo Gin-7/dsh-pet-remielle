@@ -10,6 +10,7 @@
  *    client shows them until the deadline, then falls back to durable state).
  */
 
+import { createRequire } from 'node:module'
 import {
   PetMessageKind,
   PetState,
@@ -21,6 +22,8 @@ import {
   statusCopy,
   taskCopy,
 } from './status-copy.js'
+
+const { compareSessions } = createRequire(import.meta.url)('./session-order.cjs')
 
 const statePriority = Object.freeze({
   [PetState.WAITING]: 60,
@@ -55,6 +58,21 @@ function cleanProjectName(value) {
   const pathParts = text.split(/[\\/]/u).filter(Boolean)
   const candidate = pathParts.length > 1 ? pathParts.at(-1) : text
   return candidate.replace(/\s+/gu, ' ').slice(0, 40) || undefined
+}
+
+function conversationTitleOf(session, event) {
+  if (event?.type === 'session/title') {
+    const text = String(event?.data?.title ?? '').trim()
+    if (text) return text.slice(0, 80)
+  }
+  const events = session?.events
+  if (!Array.isArray(events)) return undefined
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]?.type !== 'session/title') continue
+    const text = String(events[i]?.data?.title ?? '').trim()
+    if (text) return text.slice(0, 80)
+  }
+  return undefined
 }
 
 function projectNameOf(session, event) {
@@ -170,6 +188,7 @@ export class PetReducer {
     record.subagent = subagent
     record.lastSeq = Number(event.seq ?? record.lastSeq)
     record.project = projectNameOf(session, event) ?? record.project
+    record.title = conversationTitleOf(session, event) ?? record.title
 
     switch (event.type) {
       case 'turn/start':
@@ -317,6 +336,21 @@ export class PetReducer {
   }
 
   /**
+   * 打开该会话即已读：只收口耐久 ERROR（turn/end 失败），回 IDLE，牌叠不再渲染。
+   * WAITING（审批/提问）和工具报错脉冲不走这里。
+   */
+  dismissError(sessionId) {
+    const record = this.sessions.get(String(sessionId ?? ''))
+    if (!record || record.state !== PetState.ERROR) return []
+    this.#update(record, PetState.IDLE, {
+      phase: 'turn-end',
+      stage: '已停止',
+      message: statusCopy('stopped'),
+    })
+    return this.#render()
+  }
+
+  /**
    * One renderable state per active or attention-needing session. IDLE and
    * DISCONNECTED records remain internally tracked for primary-state fallback,
    * but are omitted from the card deck so completed/stopped turns disappear.
@@ -335,21 +369,19 @@ export class PetReducer {
         message: record.payload.message ?? '',
         detail: detailFor(record),
         project: record.project,
+        title: record.title,
         task: record.task,
         progress: record.progress,
         // Only an unresolved approval wait may render the actionable ✓.
         // Generic WAITING (ask_user_question) and ERROR must not inherit it.
         approval: record.waits.some((wait) => wait.kind === 'approval'),
+        // 等待用户回答（ask_user_question）单独暴露，供气泡排序置于审批之下、完成之上。
+        ask: record.waits.some((wait) => wait.kind === 'ask'),
         attention: record.state === PetState.WAITING || record.state === PetState.ERROR,
         updatedAt: record.updatedAt,
       })
     }
-    out.sort((left, right) => {
-      const attention = Number(right.attention) - Number(left.attention)
-      if (attention !== 0) return attention
-      const priority = (statePriority[right.state] ?? 0) - (statePriority[left.state] ?? 0)
-      return priority || right.updatedAt - left.updatedAt || left.sessionId.localeCompare(right.sessionId)
-    })
+    out.sort((left, right) => compareSessions(left, right))
     return out
   }
 
@@ -507,6 +539,8 @@ export class PetReducer {
       phase: 'turn-end',
       message: statusCopy('success', event.seq),
       detail: detailFor(record, '本轮已完成'),
+      project: record.project,
+      title: record.title,
     })
     if ([PetState.WAITING, PetState.ERROR].includes(selection.record.state)) {
       return [...this.#render(selection), pulse]
@@ -521,7 +555,7 @@ export class PetReducer {
     record = {
       id: sessionId,
       state: PetState.IDLE,
-      payload: { phase: 'session-created', message: '蕾米埃尔待命中' },
+      payload: { phase: 'session-created', message: '蕾米埃尔待机中~' },
       turnActive: false,
       openTools: new Map(),
       askTools: new Set(),
@@ -531,6 +565,7 @@ export class PetReducer {
       task: undefined,
       progress: undefined,
       project: undefined,
+      title: undefined,
       subagent: false,
       lastSeq: -1,
       updatedAt: ++this.clock,
@@ -571,7 +606,7 @@ export class PetReducer {
       return
     }
     record.state = record.savedState ?? PetState.THINKING
-    record.payload = record.savedPayload ?? { phase: 'wait-end', message: '蕾米埃尔待命中' }
+    record.payload = record.savedPayload ?? { phase: 'wait-end', message: '蕾米埃尔待机中~' }
     record.savedState = undefined
     record.savedPayload = undefined
   }
@@ -579,7 +614,7 @@ export class PetReducer {
   #waitPayload(record) {
     return record.waits.find((wait) => wait.kind === 'approval')?.payload
       ?? record.waits.at(-1)?.payload
-      ?? { phase: 'wait-end', message: '蕾米埃尔待命中' }
+      ?? { phase: 'wait-end', message: '蕾米埃尔待机中~' }
   }
 
   #select() {
@@ -589,7 +624,7 @@ export class PetReducer {
         record: {
           id: 'dsh-host',
           state: PetState.IDLE,
-          payload: { phase: 'no-session', message: '蕾米埃尔待命中' },
+          payload: { phase: 'no-session', message: '蕾米埃尔待机中~' },
           updatedAt: ++this.clock,
         },
       }
@@ -613,6 +648,7 @@ export class PetReducer {
       task: selection.record.task,
       progress: selection.record.progress,
       project: selection.record.project,
+      title: selection.record.title,
       detail: detailFor(selection.record),
     })]
   }

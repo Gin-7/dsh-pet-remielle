@@ -3,9 +3,10 @@
  *
  * - setClickThrough(on): toggles window mouse-event pass-through for the
  *   transparent regions (the pet image itself stays interactive).
- * - moveWindow(dx, dy): moves the window by an offset (JS-driven dragging
- *   from the pet image only — the old whole-window -webkit-app-region drag
- *   made far-away empty space draggable).
+ * - dragStart/dragMove/dragEnd(): JS-driven dragging from the pet image only
+ *   (the old whole-window -webkit-app-region drag made far-away empty space
+ *   draggable). The main process positions the window relative to the live
+ *   cursor, so renderer screenX deltas never accumulate DPI rounding error.
  *
  * Sandboxed preloads may require('electron') for contextBridge/ipcRenderer.
  */
@@ -16,8 +17,22 @@ contextBridge.exposeInMainWorld('petBridge', {
   setClickThrough: (on) => ipcRenderer.send('set-click-through', Boolean(on)),
   setForceInteractive: (on) => ipcRenderer.send('force-interactive', Boolean(on)),
   setHitRects: (rects) => ipcRenderer.send('hit-rects', rects),
-  moveWindow: (dx, dy) => ipcRenderer.send('move-window', Number(dx) || 0, Number(dy) || 0),
+  dragStart: (clientX, clientY) => ipcRenderer.send('drag-start', Number(clientX) || 0, Number(clientY) || 0),
+  dragMove: () => ipcRenderer.send('drag-move'),
+  dragEnd: () => ipcRenderer.send('drag-end'),
   getPosition: () => ipcRenderer.invoke('get-position'),
+  // 右键菜单：工作区坐标 + 按包围盒扩窗，invoke 返回 {width,height,dx,dy}
+  getWorkArea: () => ipcRenderer.invoke('get-work-area'),
+  menuExpand: (left, top, right, bottom) => ipcRenderer.invoke(
+    'menu-expand',
+    Number(left) || 0,
+    Number(top) || 0,
+    Number(right) || 0,
+    Number(bottom) || 0,
+  ),
+  menuRestore: () => ipcRenderer.invoke('menu-restore'),
+  // 无网页在线时点击卡片：请主进程用系统浏览器打开 DSH 网页端（URL 由主进程决定）
+  openDshPage: () => ipcRenderer.invoke('open-dsh-page'),
   // 绘画作品：独立窗口显示在桌面右上角（不遮气泡）
   artworkOpen: (w, h) => ipcRenderer.send('artwork-open', Number(w) || 240, Number(h) || 240),
   artworkSet: (dataUrl) => ipcRenderer.send('artwork-set', String(dataUrl)),

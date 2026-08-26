@@ -1,11 +1,11 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, createCompletionAckHandler, createSessionOpenHandler, createStateSnapshot } from '../src/index.js'
+import { applyCompletionAck, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
-function snapshotWith({ latest, pulse = null, config = {}, petId, getStates, getCompletions }) {
+function snapshotWith({ latest, pulse = null, config = {}, petId, getStates, getCompletions, getCurrent }) {
   return createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
@@ -13,6 +13,7 @@ function snapshotWith({ latest, pulse = null, config = {}, petId, getStates, get
     getPetId: () => petId,
     getStates,
     getCompletions,
+    getCurrent,
   })()
 }
 
@@ -34,6 +35,17 @@ function request(method, body) {
   return req
 }
 
+function stubStreamRes() {
+  const writes = []
+  const res = {
+    writes,
+    write(chunk) { writes.push(String(chunk)); return true },
+    end() {},
+    on() { return res },
+  }
+  return res
+}
+
 const idle = createMessage(PetMessageKind.STATE, {
   sessionId: 's1',
   state: PetState.IDLE,
@@ -41,6 +53,25 @@ const idle = createMessage(PetMessageKind.STATE, {
   phase: 'turn-end',
   message: '任务完成咯，干得漂亮',
   detail: 's1 · 本轮已完成',
+})
+
+test('snapshot fills session title from getSessionTitle when missing', () => {
+  const snapshot = createStateSnapshot({
+    getLatest: () => idle,
+    getPulse: () => null,
+    getConfig: () => ({}),
+    getStates: () => [{
+      sessionId: 's1',
+      state: PetState.THINKING,
+      mood: '04',
+      message: '让我想想最优解是什么',
+      project: 'dsh-pet-remielle',
+      updatedAt: 1,
+    }],
+    getSessionTitle: (sessionId) => sessionId === 's1' ? '审查提示框颜色与溢出问题' : undefined,
+  })()
+  assert.equal(snapshot.sessions[0].title, '审查提示框颜色与溢出问题')
+  assert.equal(snapshot.sessions[0].project, 'dsh-pet-remielle')
 })
 
 test('snapshot carries config fields for the client', () => {
@@ -178,6 +209,33 @@ test('expired pulse falls back to durable state', () => {
 test('disabled config is reflected in the snapshot', () => {
   const snapshot = snapshotWith({ latest: idle, config: { enabled: false } })
   assert.equal(snapshot.enabled, false)
+})
+
+test('snapshot sessions follow session-order: approval > ask > completion > current > recency', () => {
+  const snapshot = snapshotWith({
+    latest: idle,
+    getCurrent: () => 'cur',
+    getStates: () => [
+      { sessionId: 'think', state: PetState.THINKING, attention: false, updatedAt: 9 },
+      { sessionId: 'cur', state: PetState.WORKING, attention: false, updatedAt: 1 },
+      { sessionId: 'ask', state: PetState.WAITING, ask: true, attention: true, updatedAt: 2 },
+      { sessionId: 'appr', state: PetState.WAITING, approval: true, attention: true, updatedAt: 3 },
+    ],
+    getCompletions: () => [{
+      sessionId: 'done',
+      message: '任务已完成',
+      detail: '任务已完成',
+      phase: 'turn-end',
+      updatedAt: 8,
+    }],
+  })
+  assert.deepEqual(snapshot.sessions.map((entry) => entry.sessionId), [
+    'appr',
+    'ask',
+    'completion:done',
+    'cur',
+    'think',
+  ])
 })
 
 test('snapshot carries one entry per tracked session for stacked bubbles', () => {
@@ -341,6 +399,14 @@ test('desktop session open notifies the browser client and reports delivery', as
   assert.equal(body.ok, true)
   assert.equal(body.delivered, true)
 
+  // 完成卡点击：completed 必须透传给网页端（决定是否顺带 ack）
+  const completedRes = responseRecorder()
+  await handler(request('POST', { sessionId: 's1c', approve: false, completed: true }), completedRes)
+  assert.equal(notified[1].kind, 'session-action')
+  assert.equal(notified[1].sessionId, 's1c')
+  assert.equal(notified[1].approve, false)
+  assert.equal(notified[1].completed, true)
+
   // 没有网页客户端订阅时（notify 返回 0）：仍 200，但 delivered=false
   const silentHandler = createSessionOpenHandler({ notify: () => 0 })
   const silentRes = responseRecorder()
@@ -359,4 +425,154 @@ test('desktop session open rejects missing session ids and non-POST methods', as
   const wrongMethod = responseRecorder()
   await handler(request('GET'), wrongMethod)
   assert.equal(wrongMethod.status, 405)
+})
+
+test('undelivered session-action is stashed for replay when no web client is online', async () => {
+  const store = createPendingActionStore()
+  const handler = createSessionOpenHandler({
+    notify: () => 0,
+    onUndelivered: (action) => store.stash(action),
+  })
+  const res = responseRecorder()
+  await handler(request('POST', { sessionId: 's1', approve: false, completed: true }), res)
+  assert.equal(res.status, 200)
+  assert.equal(JSON.parse(res.body).delivered, false)
+  // 完整动作被暂存：SSE 订阅处 take() 后原样下发，网页端 applySnapshot 可直接消费
+  assert.deepEqual(store.take(), {
+    protocolVersion: 1,
+    kind: 'session-action',
+    sessionId: 's1',
+    approve: false,
+    completed: true,
+  })
+  // take 即清空：不重复重放
+  assert.equal(store.take(), null)
+})
+
+test('delivered session-action is not stashed and only the latest one is kept', async () => {
+  const stashed = []
+  const deliveredHandler = createSessionOpenHandler({ notify: () => 2, onUndelivered: (a) => stashed.push(a) })
+  const okRes = responseRecorder()
+  await deliveredHandler(request('POST', { sessionId: 's1' }), okRes)
+  assert.equal(stashed.length, 0)
+
+  const store = createPendingActionStore()
+  const handler = createSessionOpenHandler({ notify: () => 0, onUndelivered: (a) => store.stash(a) })
+  await handler(request('POST', { sessionId: 'old' }), responseRecorder())
+  await handler(request('POST', { sessionId: 'new' }), responseRecorder())
+  // 只保留最新一条
+  assert.equal(store.take().sessionId, 'new')
+})
+
+test('pending action store starts empty and clears after take', () => {
+  const store = createPendingActionStore()
+  assert.equal(store.take(), null)
+  store.stash({ sessionId: 's1' })
+  assert.equal(store.take().sessionId, 's1')
+  assert.equal(store.take(), null)
+})
+
+test('approval actions are never stashed for delayed replay', async () => {
+  const store = createPendingActionStore()
+  const handler = createSessionOpenHandler({ notify: () => 0, onUndelivered: (a) => store.stash(a) })
+  const res = responseRecorder()
+  await handler(request('POST', { sessionId: 's1', approve: true }), res)
+  assert.equal(res.status, 200)
+  assert.equal(JSON.parse(res.body).delivered, false)
+  // 审批时效性强：不暂存，避免网页长时间离线后重连握手时自动批准过时请求
+  assert.equal(store.take(), null)
+})
+
+test('pending replay skips pet-window subscribers (?client=pet)', () => {
+  // 桌宠窗口订阅带 ?client=pet 且丢弃带 kind 的帧，绝不能让它抢收重放
+  assert.equal(streamClientOf('/plugins/dsh-pet-remielle/stream?client=pet'), 'pet')
+  // 网页端不带参数（或带其他值）照常重放
+  assert.equal(streamClientOf('/plugins/dsh-pet-remielle/stream'), 'web')
+  assert.equal(streamClientOf('/plugins/dsh-pet-remielle/stream?client=web'), 'web')
+  // 异常 url 兜底为网页订阅者
+  assert.equal(streamClientOf(undefined), 'web')
+})
+
+test('hub notify counts only web clients as delivered', () => {
+  const hub = createStreamHub({ serve: () => ({ state: 'IDLE' }) })
+  const pet = stubStreamRes()
+  const web = stubStreamRes()
+  hub.add(pet, { client: 'pet' })
+  hub.add(web)
+  assert.equal(hub.size, 2)
+  // 桌宠常驻订阅不再把 session-action 顶成“已送达”
+  assert.equal(hub.notify({ kind: 'session-action', sessionId: 's1' }), 1)
+  // pet 窗口仍收到帧（其页面自行忽略带 kind 的帧），但不计数
+  assert.ok(pet.writes.join('').includes('"sessionId":"s1"'))
+  assert.equal(hub.notify({ kind: 'session-action' }), 1)
+  hub.close()
+})
+
+test('desktop-only subscription keeps the click fallback alive end to end', async () => {
+  const store = createPendingActionStore()
+  const hub = createStreamHub({ serve: () => ({ state: 'IDLE' }) })
+  const handler = createSessionOpenHandler({
+    notify: (payload) => hub.notify(payload),
+    onUndelivered: (action) => store.stash(action),
+  })
+  // 只有桌宠窗口在线：delivered=false，动作必须进暂存而不是被顶成已送达
+  hub.add(stubStreamRes(), { client: 'pet' })
+  const res = responseRecorder()
+  await handler(request('POST', { sessionId: 's9', approve: false }), res)
+  assert.equal(JSON.parse(res.body).delivered, false)
+  assert.equal(store.take()?.sessionId, 's9')
+  hub.close()
+})
+
+test('session current uplink stores and clears the reported session id', async () => {
+  let stored = ''
+  const handler = createSessionCurrentHandler({ accept: (id) => { stored = id } })
+  const res = responseRecorder()
+  await handler(request('POST', { sessionId: 's1' }), res)
+  assert.equal(res.status, 200)
+  assert.equal(JSON.parse(res.body).ok, true)
+  assert.equal(stored, 's1')
+  // 空串=清除（用户关掉所有对话/页面卸载时上报）
+  const cleared = responseRecorder()
+  await handler(request('POST', { sessionId: '' }), cleared)
+  assert.equal(cleared.status, 200)
+  assert.equal(stored, '')
+})
+
+test('session current uplink rejects non-string ids and non-POST methods', async () => {
+  let stored = 'untouched'
+  const handler = createSessionCurrentHandler({ accept: (id) => { stored = id } })
+  const bad = responseRecorder()
+  await handler(request('POST', { sessionId: 42 }), bad)
+  assert.equal(bad.status, 400)
+  assert.equal(stored, 'untouched')
+  const wrongMethod = responseRecorder()
+  await handler(request('GET'), wrongMethod)
+  assert.equal(wrongMethod.status, 405)
+})
+
+test('snapshot carries the reported current session id', () => {
+  const snapshot = createStateSnapshot({
+    getLatest: () => idle,
+    getPulse: () => null,
+    getConfig: () => ({}),
+    getPetId: () => DEFAULT_PET_ID,
+    getCurrent: () => 's1',
+  })()
+  assert.equal(snapshot.currentSessionId, 's1')
+})
+
+test('snapshot omits currentSessionId when unset or cleared', () => {
+  const unset = snapshotWith({ latest: idle })
+  assert.equal(unset.currentSessionId, undefined)
+  // 空串（清除态）同样回落为缺失：JSON 序列化后字段不存在
+  const cleared = createStateSnapshot({
+    getLatest: () => idle,
+    getPulse: () => null,
+    getConfig: () => ({}),
+    getPetId: () => DEFAULT_PET_ID,
+    getCurrent: () => '',
+  })()
+  assert.equal(cleared.currentSessionId, undefined)
+  assert.equal('currentSessionId' in JSON.parse(JSON.stringify(cleared)), false)
 })

@@ -1,9 +1,9 @@
 /**
  * dsh-pet-remielle balance controller (client side).
  *
- * This controller owns NO DOM. It only fetches the balance, keeps the
- * rolling-number animation and the 5-second auto-collapse timer, then emits
- * "display frames" that the pet's OWN status bubble renders.
+ * This controller owns NO DOM. It fetches the balance, keeps the
+ * rolling-number animation, then emits "display frames" that the pet's
+ * OWN status bubble renders.
  *
  * Emitted frames (via subscribe):
  *   { kind: 'status' }                         -> show the pet's session status
@@ -12,8 +12,8 @@
  * Interactions:
  *   - 60s auto-refresh (silent; the balance number rolls if it changes while
  *     the balance view is open)
- *   - pet click -> manual refresh + switch the bubble to balance/time-period,
- *     5 seconds later it returns to the session status automatically
+ *   - showBalance / showStatus: page-based navigation (dot / wheel); stays
+ *     on the current page until the user switches
  */
 
 ;(function () {
@@ -23,7 +23,6 @@
   var BALANCE_URL = '/plugins/dsh-pet-remielle/balance'
   var REFRESH_MS = 60000
   var ANIM_MS = 700
-  var BUBBLE_MS = 5000
   var FETCH_TIMEOUT_MS = 25000
 
   var usageMode = 'ledger'
@@ -32,7 +31,6 @@
   var busy = false
   var animId = null
   var mode = 'status' // 'status' | 'balance' | 'random'
-  var bubbleTimer = null
   var pollTimer = null
   var polling = true
   var listeners = []
@@ -108,20 +106,6 @@
     animId = requestAnimationFrame(step)
   }
 
-  // ---- mode/timer ----
-  function enterBalance() {
-    mode = 'balance'
-    if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
-    emitBalance(shown)
-    bubbleTimer = setTimeout(function () {
-      bubbleTimer = null
-      if (mode === 'balance') {
-        mode = 'status'
-        emit({ kind: 'status' })
-      }
-    }, BUBBLE_MS)
-  }
-
   // ---- refresh ----
   function refresh(manual) {
     if (busy) return
@@ -194,23 +178,17 @@
         pollTimer = setInterval(function () { refresh(false) }, REFRESH_MS)
       }
     },
-    /** Pet single-click: manual refresh + switch the bubble to balance/time period. */
-    click: function () {
-      enterBalance()
-      refresh(true)
-    },
-    /** Switch to balance mode (no 5s auto-collapse) for page-based navigation. */
+    /** Switch to balance mode for page-based navigation. */
     showBalance: function () {
-      if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
       mode = 'balance'
       emitBalance(shown)
       refresh(false)
     },
     /** Switch back to status mode. */
     showStatus: function () {
-      if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
       mode = 'status'
-      emit({ kind: 'status' })    },
+      emit({ kind: 'status' })
+    },
     subscribe: function (cb) {
       listeners.push(cb)
       return function () {

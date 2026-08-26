@@ -15,6 +15,7 @@
  * polls the state endpoint, or in an optional desktop floating window.
  */
 
+import { createRequire } from 'node:module'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -40,6 +41,10 @@ import {
   upsertPet,
 } from './pets.js'
 import { createBalanceService, normalizeUsageMode } from './balance.js'
+import { statusCopy } from './status-copy.js'
+import { TURN_WATCHDOG_INTERVAL_MS, createTurnWatchdog } from './turn-watchdog.js'
+
+const { compareSessions } = createRequire(import.meta.url)('./session-order.cjs')
 
 export const name = 'dsh-pet-remielle'
 export const inject = ['sessions', 'credentials']
@@ -48,6 +53,7 @@ export const STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
 export const STREAM_ENDPOINT = '/plugins/dsh-pet-remielle/stream'
 export const COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
 export const SESSION_OPEN_ENDPOINT = '/plugins/dsh-pet-remielle/session/open'
+export const SESSION_CURRENT_ENDPOINT = '/plugins/dsh-pet-remielle/session/current'
 export const PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 export const ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 export const PET_VIEW_ENDPOINT = '/plugins/dsh-pet-remielle/pet-view'
@@ -222,7 +228,36 @@ export function createCompletionAckHandler({ acknowledge, broadcast = () => {} }
   }
 }
 
-export function createSessionOpenHandler({ notify }) {
+/**
+ * Slot for the latest undelivered session-action: when no web client was
+ * online (`delivered === 0`), a desktop bubble-card click would be silently
+ * lost. The action is stashed here and replayed exactly once to the next SSE
+ * subscriber (stream handshake), so the browser still lands on the chat.
+ */
+export function createPendingActionStore() {
+  let pending = null
+  return {
+    stash: (action) => { pending = action },
+    /** Take-and-clear: returns the stashed action or null. */
+    take: () => { const action = pending; pending = null; return action },
+  }
+}
+
+/**
+ * Subscriber type from a stream request url. The desktop pet window
+ * identifies itself with ?client=pet; everything else (including malformed
+ * urls) is treated as a web client.
+ * @param reqUrl - raw request url (path + query).
+ */
+export function streamClientOf(reqUrl) {
+  try {
+    return new URL(reqUrl ?? '/', 'http://localhost').searchParams.get('client') === 'pet' ? 'pet' : 'web'
+  } catch {
+    return 'web'
+  }
+}
+
+export function createSessionOpenHandler({ notify, onUndelivered }) {
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method !== 'POST') {
@@ -233,15 +268,46 @@ export function createSessionOpenHandler({ notify }) {
       const body = await readJsonBody(req)
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
       if (!sessionId) throw new Error('sessionId must be a non-empty string')
-      // delivered=false：当前没有任何网页客户端订阅 SSE，桌面“允许一次”的
-      // 广播无人接收——调用方可以此区分成功与静默丢失。
-      const delivered = notify({
+      const action = {
         protocolVersion: 1,
         kind: 'session-action',
         sessionId,
         approve: body.approve === true,
-      }) > 0
+        // 完成卡点击：网页端需要 completed 决定是否顺带 ack
+        completed: body.completed === true,
+      }
+      // delivered=false：当前没有任何网页客户端订阅 SSE，桌面“允许一次”的
+      // 广播无人接收——调用方可以此区分成功与静默丢失。
+      const delivered = notify(action) > 0
+      // 没人在线：暂存最新一条，下一个 SSE 订阅者握手时重放（拉起兜底）。
+      // approve:true 不暂存——审批动作时效性强，网页长时间离线后重连时
+      // 自动批准可能已过时的请求，风险大于收益；宁可不重放（桌面端可重新
+      // 发起），也不延迟执行。跳转类（approve:false）无此风险，照常暂存。
+      if (!delivered && !action.approve && typeof onUndelivered === 'function') onUndelivered(action)
       jsonResponse(res, 200, { ok: true, delivered })
+    } catch (error) {
+      jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+}
+
+/**
+ * Web-client current-session uplink: POST { sessionId } (empty string clears).
+ * Fire-and-forget — the host only remembers the id; the next snapshot or SSE
+ * push carries it to every client, so no broadcast happens here.
+ */
+export function createSessionCurrentHandler({ accept }) {
+  return async (req, res) => {
+    if (!localOnly(req, res)) return
+    if (req.method !== 'POST') {
+      jsonResponse(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    try {
+      const body = await readJsonBody(req)
+      if (typeof body.sessionId !== 'string') throw new Error('sessionId must be a string')
+      accept(body.sessionId)
+      jsonResponse(res, 200, { ok: true })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
     }
@@ -377,12 +443,20 @@ export function createAssetsHandler(petsRoot) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates, getCompletions }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates, getCompletions, getCurrent, getSessionTitle }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
   const activePetOf = typeof getActivePet === 'function' ? getActivePet : () => undefined
   const statesOf = typeof getStates === 'function' ? getStates : () => []
   const completionsOf = typeof getCompletions === 'function' ? getCompletions : () => []
+  const currentOf = typeof getCurrent === 'function' ? getCurrent : () => undefined
+  const titleOf = typeof getSessionTitle === 'function' ? getSessionTitle : () => undefined
+  const withTitle = (entry) => {
+    if (!entry || entry.title) return entry
+    const sid = entry.targetSessionId || entry.sessionId
+    const title = sid ? titleOf(sid) : undefined
+    return title ? { ...entry, title } : entry
+  }
   return () => {
     const config = publicConfig(getConfig())
     const now = Date.now()
@@ -398,24 +472,26 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
     const sessions = stateEntries.map((entry) => {
       if (activePulse && activePulse.sessionId === entry.sessionId) {
         pulseMatched = true
-        return {
+        return withTitle({
           ...entry,
           state: activePulse.state,
           mood: activePulse.mood ?? entry.mood,
           phase: activePulse.phase ?? entry.phase,
           message: activePulse.message ?? entry.message,
           detail: activePulse.detail ?? entry.detail,
+          title: activePulse.title ?? entry.title,
           approval: entry.approval === true,
+          ask: entry.ask === true,
           completed: activePulse.state === PetState.SUCCESS,
           pulseUntil: activePulse.until,
-        }
+        })
       }
-      return entry
+      return withTitle(entry)
     })
     // Completed sessions are absent from reducer.states(). Add the transient
     // pulse card while it is live; persistent reminders are merged below.
     if (activePulse && activePulse.sessionId && !pulseMatched) {
-      sessions.push({
+      sessions.push(withTitle({
         sessionId: activePulse.sessionId,
         state: activePulse.state,
         mood: activePulse.mood ?? '06',
@@ -427,10 +503,12 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         progress: activePulse.progress,
         attention: activePulse.state === PetState.WAITING || activePulse.state === PetState.ERROR,
         approval: false,
+        ask: false,
         completed: activePulse.state === PetState.SUCCESS,
         updatedAt: now,
         pulseUntil: activePulse.until,
-      })
+        title: activePulse.title,
+      }))
     }
     for (const completion of completionsOf()) {
       const liveIndex = sessions.findIndex((entry) => entry.sessionId === completion.sessionId)
@@ -445,7 +523,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         }
         continue
       }
-      sessions.push({
+      sessions.push(withTitle({
         ...completion,
         sessionId: `completion:${completion.sessionId}`,
         targetSessionId: completion.sessionId,
@@ -455,8 +533,11 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         completionNotification: true,
         attention: false,
         approval: false,
-      })
+        ask: false,
+      }))
     }
+    const currentId = currentOf() || undefined
+    sessions.sort((left, right) => compareSessions(left, right, currentId))
     return {
       ok: true,
       enabled: config.enabled === true,
@@ -475,13 +556,15 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       desktopActive: desktopActiveOf(),
       desktopMode: config.desktopMode === true,
       petId: petIdOf() ?? DEFAULT_PET_ID,
+      // 网页端上报的「用户正在看的会话」；空串=清除，回落为缺失（JSON 序列化时省略该字段）
+      currentSessionId: currentOf() || undefined,
       posX: config.posX ?? null,
       posY: config.posY ?? null,
       pics: activePetOf()?.pics ?? 0,
       state: source?.state ?? PetState.IDLE,
       mood: activePulse?.mood ?? source?.mood ?? '06',
       phase: source?.phase ?? 'no-session',
-      message: activePulse?.message ?? source?.message ?? '蕾米埃尔待命中',
+      message: activePulse?.message ?? source?.message ?? '蕾米埃尔待机中~',
       detail: activePulse?.detail ?? source?.detail ?? 'DSH',
       project: base?.project ?? undefined,
       task: base?.task ?? undefined,
@@ -501,9 +584,15 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
  * EventSource handshake doubles as a state read), then every `broadcast()`
  * pushes the latest snapshot. Heartbeat comment frames keep proxies from
  * timing the connection out; `close()` ends every client.
+ *
+ * Subscribers carry a client type: `add(res, { client: 'pet' })` marks the
+ * desktop pet window, which keeps a permanent subscription but drops any
+ * frame carrying a `kind` field. `notify()` therefore counts only web
+ * clients as delivered — otherwise a running desktop window would make
+ * every session-action look delivered and starve the pending-action replay.
  */
 export function createStreamHub({ serve }) {
-  const clients = new Set()
+  const clients = new Map() // res -> { client: 'pet' | 'web' }
   const send = (res, payload) => {
     try {
       res.write(`data: ${JSON.stringify(payload)}\n\n`)
@@ -512,7 +601,7 @@ export function createStreamHub({ serve }) {
     }
   }
   const heartbeat = setInterval(() => {
-    for (const res of clients) {
+    for (const res of [...clients.keys()]) {
       try {
         res.write(': ping\n\n')
       } catch {
@@ -522,8 +611,8 @@ export function createStreamHub({ serve }) {
   }, 25000)
   heartbeat.unref?.()
   return {
-    add(res) {
-      clients.add(res)
+    add(res, { client } = {}) {
+      clients.set(res, { client: client === 'pet' ? 'pet' : 'web' })
       try {
         res.write('retry: 3000\n\n')
         send(res, serve())
@@ -535,15 +624,20 @@ export function createStreamHub({ serve }) {
     },
     broadcast() {
       const payload = serve()
-      for (const res of [...clients]) send(res, payload)
+      for (const res of [...clients.keys()]) send(res, payload)
     },
-    /** Push an arbitrary message (e.g. download progress) to every client. */
+    /**
+     * Push an arbitrary message (e.g. download progress / session-action) to
+     * every client. Returns the number of WEB clients reached — pet-window
+     * subscribers still receive the frame (their page ignores kind frames)
+     * but never count as delivered.
+     */
     notify(payload) {
       let delivered = 0
-      for (const res of [...clients]) {
+      for (const [res, meta] of [...clients]) {
         try {
           res.write(`data: ${JSON.stringify(payload)}\n\n`)
-          delivered++
+          if (meta.client !== 'pet') delivered++
         } catch {
           clients.delete(res)
         }
@@ -555,7 +649,7 @@ export function createStreamHub({ serve }) {
     },
     close() {
       clearInterval(heartbeat)
-      for (const res of [...clients]) {
+      for (const res of [...clients.keys()]) {
         try {
           res.end()
         } catch {
@@ -608,10 +702,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     mood: '06',
     phase: 'plugin-start',
     stage: '待机中',
-    message: '蕾米埃尔待命中',
+    message: '蕾米埃尔待机中~',
     detail: 'DSH · 等待下一次任务',
   })
   let pulse = null
+  // 网页端上报的当前会话 id（空串=清除）：只存内存，随下次快照/SSE 自然带出，
+  // 上报本身 fire-and-forget，不触发 broadcast。附带 TTL：页面崩溃/被杀时
+  // pagehide 清空上报不会执行，陈旧的 currentSessionId 会让桌面端持续误置顶、
+  // 并对用户没看过的完成卡误自动 ack——超过时效后回落为「无当前会话」，
+  // 用户下次任意操作即重新上报恢复。TTL 取 10 分钟，远大于正常浏览间隔。
+  const CURRENT_SESSION_TTL_MS = 10 * 60 * 1000
+  let reportedCurrentSessionId = ''
+  let reportedCurrentSessionAt = 0
   // Completed turns stay visible until the user opens their conversation.
   const completionQueue = new Map()
 
@@ -621,9 +723,13 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       if (message.state === PetState.SUCCESS && message.sessionId) {
         completionQueue.set(message.sessionId, {
           sessionId: message.sessionId,
-          message: message.message ?? '任务已完成',
+          // 与 reducer 的 SUCCESS 文案同池（status-copy.js success）；种子取
+          // sessionId 保持确定性（Date.now() 每次随机）。允许与 reducer/client
+          // 端变体不同，池一致性由防漂移测试保证。
+          message: message.message ?? statusCopy('success', message.sessionId ?? ''),
           detail: message.detail ?? '任务已完成',
           project: message.project,
+          title: message.title,
           task: message.task,
           progress: message.progress,
           phase: 'turn-end',
@@ -641,7 +747,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         state: message.resumeState ?? PetState.IDLE,
         mood: message.resumeMood ?? '06',
         phase: message.phase ?? 'pulse-end',
-        message: message.resumeMessage ?? '蕾米埃尔待命中',
+        message: message.resumeMessage ?? '蕾米埃尔待机中~',
         detail: message.resumeDetail ?? 'DSH',
         task: latest.task,
         progress: latest.progress,
@@ -699,9 +805,21 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
     getStates: () => reducer.states(),
     getCompletions: () => [...completionQueue.values()],
+    getCurrent: () => (Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''),
+    getSessionTitle: (sessionId) => {
+      try {
+        const session = ctx.sessions?.get?.(sessionId)
+        const title = ctx.sessionTitle?.get?.(session)?.title
+        return title ? String(title).trim() : undefined
+      } catch {
+        return undefined
+      }
+    },
   })
 
   const hub = createStreamHub({ serve: serveState })
+  // 无网页在线时的点击卡兜底：只保留最新一条，下一个 SSE 订阅者握手时重放
+  const pendingActions = createPendingActionStore()
 
   let desktopActive = false
 
@@ -718,21 +836,68 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     const id = completionSessionIdOf(session)
     if (id && completionQueue.delete(id)) hub.broadcast()
   }
+  const currentSessionNow = () => (
+    Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''
+  )
+  const dismissErrorIfNeeded = (sessionId) => {
+    if (!sessionId) return
+    const hadError = reducer.states().some((entry) => entry.sessionId === sessionId && entry.state === PetState.ERROR)
+    if (!hadError) return
+    for (const message of reducer.dismissError(sessionId)) onMessage(message)
+    // #render 只在选中会话签名变化时发消息；后台 ERROR 已读时可能返回 []，
+    // 但 states() 已经少了这张卡，必须照样推快照。
+    hub.broadcast()
+  }
   const offEvent = eventCtx.on('session/event', (session, event) => {
     const eventType = String(event?.type ?? '')
+    // 看门狗活跃度：任何事件都刷新该会话的「最近活动」时间戳；
+    // turn/end 已收尾回合，条目随之移除，不再参与悬挂判定。
+    watchdog.feed(completionSessionIdOf(session))
+    if (eventType === 'turn/end') watchdog.end(completionSessionIdOf(session))
     if (eventType === 'turn/start' || eventType === 'tool/call') dropCompletion(session)
-    for (const message of reducer.handle(session, event)) {
-      onMessage(message)
-      hub.broadcast()
-    }
+    const outgoing = [...reducer.handle(session, event)]
+    const sessionId = completionSessionIdOf(session)
+    const currentFailed = eventType === 'turn/end'
+      && sessionId
+      && sessionId === currentSessionNow()
+      && reducer.states().some((entry) => entry.sessionId === sessionId && entry.state === PetState.ERROR)
+    // 失败发生时人已经在这个对话里：当场已读，不进粉圈提醒。
+    if (currentFailed) outgoing.push(...reducer.dismissError(sessionId))
+    for (const message of outgoing) onMessage(message)
+    if (outgoing.length || currentFailed || eventType === 'session/title') hub.broadcast()
   }, { global: true })
   const offDisposed = eventCtx.on('session/disposed', (session) => {
     dropCompletion(session)
+    watchdog.end(completionSessionIdOf(session))
     for (const message of reducer.disposeSession(session)) {
       onMessage(message)
       hub.broadcast()
     }
   }, { global: true })
+
+  // Turn 悬挂看门狗：GUI 强杀会话时 DSH 不向 live 总线补发 turn/end（仅
+  // 冷读日志时 repair），事件流戛然而止，reducer 永远停在 THINKING「分析阶段」。
+  // 每 30 秒扫描一次：THINKING/WORKING 的会话超过 3 分钟无任何事件，即合成
+  // turn/end{kind:'aborted'} 复用现有收尾路径回 IDLE「已停止」（不传 seq，
+  // record.lastSeq 保持不变；stopped 文案种子经 status-copy 的 seedNumber 稳定回落）。
+  // WAITING/ERROR 可合法等待很久（审批/等待回答），不判悬挂。
+  // turn 序号硬编码 0 是安全的：reducer 的 aborted 分支只读 reason.kind、
+  // 不校验 turn 序号（见 pet-reducer.js 的 turn/end 分支）。
+  const watchdog = createTurnWatchdog()
+  const watchdogTimer = setInterval(() => {
+    for (const sessionId of watchdog.tick(reducer.states())) {
+      watchdog.end(sessionId)
+      logger.info?.(`dsh-pet-remielle: turn hung with no events, force-ending session ${sessionId} as aborted`)
+      for (const message of reducer.handle(
+        { header: { id: sessionId } },
+        { type: 'turn/end', data: { turn: 0, reason: { kind: 'aborted' } } },
+      )) {
+        onMessage(message)
+        hub.broadcast()
+      }
+    }
+  }, TURN_WATCHDOG_INTERVAL_MS)
+  watchdogTimer.unref?.() // 双保险：即使宿主未走下方 dispose 钩子也不阻止进程退出
 
   const unwatch = settings.watch((next) => {
     for (const message of reducer.setIncludeSubagents(next.includeSubagents === true)) {
@@ -864,6 +1029,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         balanceWidgetJs = await readFile(new URL('../src/balance-widget.js', import.meta.url), 'utf8')
         return balanceWidgetJs
       }
+      let sessionOrderJs = null
+      const readSessionOrder = async () => {
+        if (sessionOrderJs) return sessionOrderJs
+        sessionOrderJs = await readFile(new URL('../src/session-order.cjs', import.meta.url), 'utf8')
+        return sessionOrderJs
+      }
+      let petTipJs = null
+      const readPetTip = async () => {
+        if (petTipJs) return petTipJs
+        petTipJs = await readFile(new URL('../src/pet-tip.cjs', import.meta.url), 'utf8')
+        return petTipJs
+      }
 
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: CONFIG_ENDPOINT, handler: createConfigHandler(settings) }),
@@ -894,10 +1071,30 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           kind: 'exact',
           path: SESSION_OPEN_ENDPOINT,
           handler: createSessionOpenHandler({
-            notify: (payload) => hub.notify(payload),
+            notify: (payload) => {
+              const delivered = hub.notify(payload)
+              if (payload?.sessionId) dismissErrorIfNeeded(payload.sessionId)
+              return delivered
+            },
+            onUndelivered: (action) => pendingActions.stash(action),
           }),
         }),
         'dsh-pet-remielle: desktop session open/approve bridge',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: SESSION_CURRENT_ENDPOINT,
+          handler: createSessionCurrentHandler({
+            accept: (sessionId) => {
+              reportedCurrentSessionId = sessionId
+              // 空串（清除上报）同样刷新时间戳：清除态本身也是一种有效状态
+              reportedCurrentSessionAt = Date.now()
+              dismissErrorIfNeeded(sessionId)
+            },
+          }),
+        }),
+        'dsh-pet-remielle: web client current-session uplink',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: BALANCE_ENDPOINT, handler: async (req, res) => {
@@ -915,7 +1112,25 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         () => httpCtx.webServer.register({ kind: 'exact', path: STREAM_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return
           sseHeaders(res)
-          hub.add(res)
+          // 订阅者类型入 hub：?client=pet（桌宠窗口）不参与 delivered 计数，
+          // 否则它常驻订阅会让 session-action 永远“已送达”，暂存兜底成死代码。
+          const client = streamClientOf(req.url)
+          hub.add(res, { client })
+          // 无网页在线时点卡的动作在此重放：新网页订阅者握手即补收最新一条
+          // session-action。桌宠窗口会丢弃带 kind 的帧——跳过重放，防止
+          // 它断线重连时把暂存动作抢收吞掉。
+          if (client !== 'pet') {
+            const replay = pendingActions.take()
+            if (replay) {
+              try {
+                res.write(`data: ${JSON.stringify(replay)}\n\n`)
+              } catch {
+                // 客户端已断开：回滚暂存，动作留给下一个网页订阅者，
+                // 避免先 take 后 write 失败导致动作静默丢失。
+                pendingActions.stash(replay)
+              }
+            }
+          }
         } }),
         'dsh-pet-remielle: local state stream endpoint',
       )
@@ -942,6 +1157,30 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           res.end(js)
         } }),
         'dsh-pet-remielle: balance bubble client script',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/session-order.js', handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const js = await readSessionOrder()
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'cache-control': 'no-store',
+          })
+          res.end(js)
+        } }),
+        'dsh-pet-remielle: shared bubble order script',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/pet-tip.js', handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const js = await readPetTip()
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'cache-control': 'no-store',
+          })
+          res.end(js)
+        } }),
+        'dsh-pet-remielle: shared pet tip script',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({
@@ -1031,6 +1270,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   }
 
   ctx.effect(() => () => {
+    clearInterval(watchdogTimer)
     offEvent?.()
     offDisposed?.()
     unwatch()

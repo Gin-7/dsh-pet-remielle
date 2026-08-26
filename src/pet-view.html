@@ -2,16 +2,40 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<!-- 页面资源全部同源（fetch/SSE 相对路径、favicon.svg）+ dataURL 图像 + 内联
+     script/style；声明 CSP 同时消除 Electron 的无 CSP 开发警告。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'">
 <title>蕾米埃尔桌宠</title>
 <style>
   html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  /* 主进程按真实系统缩放写入 --rm2-ui-zoom；阴影长度除以 zoom，
+     透明窗光晕的物理尺寸不随 DPI 膨胀（网页端没有这层 zoom）。
+     粉影用负 spread 把亮边收进卡片底下：透明 HWND 上普通 box-shadow
+     的半透明粉会整圈 Bloom，看起来比网页（落在不透明底上）更大更亮。 */
+  :root {
+    --rm2-ui-zoom: 1;
+    --rm2-glow:
+      0 calc(1px / var(--rm2-ui-zoom)) calc(3px / var(--rm2-ui-zoom)) rgba(0, 0, 0, .45),
+      0 calc(3px / var(--rm2-ui-zoom)) calc(8px / var(--rm2-ui-zoom)) calc(-3px / var(--rm2-ui-zoom)) rgba(140, 40, 80, .16);
+    --rm2-glow-top:
+      0 calc(2px / var(--rm2-ui-zoom)) calc(4px / var(--rm2-ui-zoom)) rgba(0, 0, 0, .48),
+      0 calc(4px / var(--rm2-ui-zoom)) calc(10px / var(--rm2-ui-zoom)) calc(-3px / var(--rm2-ui-zoom)) rgba(140, 40, 80, .18);
+  }
+  /* 内容定位职责在下方 .pet 固定锚层（见其注释），body 只负责铺满与禁选中 */
   body {
     width: 100vw; height: 100vh;
-    display: flex; align-items: flex-end; justify-content: center;
     user-select: none; -webkit-user-select: none;
     font-family: system-ui, sans-serif;
   }
-  .pet { position: relative; display: flex; flex-direction: column; align-items: center; }
+  /* .pet 固定锚层：尺寸钉在窗口基准（400×520 = pet-window.cjs 的
+     PET_CONTENT_W/H），fixed 贴视口左上。菜单扩窗优先向右/下长（原点不动），
+     本层不随视口伸缩，内容屏幕位置不变。贴右翻左时主进程减小 x，渲染层用
+     inline left 把本层推回。子元素纵向贴底、水平居中。 */
+  .pet {
+    position: fixed; left: 0; top: 0;
+    width: 400px; height: 520px;
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+  }
   .rm2-pet-bubbles {
     position: relative;
     margin-bottom: 12px;
@@ -34,7 +58,7 @@
     border-radius: 22px;
     background: #fff0f5;
     border: 1px solid rgba(240, 120, 160, .45);
-    box-shadow: 0 6px 20px rgba(190, 70, 110, .20);
+    box-shadow: var(--rm2-glow);
     font-size: 12px;
     line-height: 1.45;
     text-align: left;
@@ -46,7 +70,7 @@
     width: fit-content;
     height: 68px;
     min-height: 68px;
-    box-shadow: 0 8px 24px rgba(190, 70, 110, .25);
+    box-shadow: var(--rm2-glow);
     pointer-events: auto;
     cursor: pointer;
     overflow: hidden;
@@ -54,6 +78,25 @@
   }
   .rm2-pet-bubble-title { font-weight: 600; color: #b03a60; min-width: 0; flex: none; white-space: nowrap; overflow: visible; text-overflow: clip; line-height: 1.35; }
   .rm2-pet-bubble-detail { color: #c2607f; margin-top: 2px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  /* 自绘悬停提示浮层：原生 title 不吃 setZoomFactor，高缩放屏（如 200%）上文字过小。
+     阴影与菜单同套，不用网页 8/24。 */
+  .rm2-pet-tip {
+    position: fixed; z-index: 999;
+    box-sizing: border-box;
+    max-width: min(420px, calc(100vw - 48px));
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: #fff0f5;
+    border: 1px solid rgba(240, 120, 160, .45);
+    box-shadow: var(--rm2-glow);
+    font-family: system-ui, sans-serif;
+    font-size: 13px; line-height: 1.5; color: #8a2f52;
+    white-space: pre-wrap; word-break: break-all;
+    display: none; pointer-events: none;
+  }
+  @media (prefers-color-scheme: dark) {
+    .rm2-pet-tip { background: #48142a; border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
+  }
   .rm2-pet-bubble-header { display: flex; align-items: center; min-width: 0; min-height: 22px; }
   .rm2-pet-bubble.title-clipped .rm2-pet-bubble-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
   .rm2-pet-bubble-action { display: inline-flex; flex: none; order: 2; align-items: center; justify-content: center; width: 22px; height: 22px; margin-left: 8px; margin-right: 0; border-radius: 50%; background: #e8508a; color: #fff; font-size: 15px; font-weight: 700; line-height: 1; }
@@ -67,7 +110,7 @@
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-action,
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-completion { visibility: hidden; }
-  .rm2-pet-bubble.top { border-color: #b03a60; box-shadow: 0 10px 28px rgba(190, 70, 110, .38); }
+  .rm2-pet-bubble.top { border-color: #b03a60; box-shadow: var(--rm2-glow-top); }
   .rm2-pet-bubble.attention { border-color: #e8508a; animation: rm2-pet-attention 1.6s ease-in-out infinite; }
   @keyframes rm2-pet-attention { 0%,100% { box-shadow: 0 0 0 0 rgba(232,80,138,.35); } 50% { box-shadow: 0 0 0 6px rgba(232,80,138,0); } }
   .rm2-bubble-dots { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 120; }
@@ -76,30 +119,38 @@
   .rm2-bubble-balance { box-sizing: border-box; height: 68px; min-height: 68px; max-width: 330px; }
   .rm2-bubble-balance .rm2-pet-bubble-title { line-height: 22px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   img { width: 180px; height: auto; display: block; }
-  @media (prefers-color-scheme: dark) {
-    .rm2-pet-bubble { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); }
-    .rm2-pet-bubble-title { color: #ffd6e4; }
-    .rm2-pet-bubble-detail { color: #f0a8c0; }
-    .rm2-pet-bubble.top { border-color: #ffb3c9; }
-    .rm2-pet-bubble.attention { border-color: #ff6fa8; }
-    .menu { background: rgba(72, 20, 42, .96); border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
-    .menu-item:hover { background: rgba(255, 150, 185, .16); }
-    .menu-item .tick { color: #ffb3c9; }
-    .menu-item .mute { color: #f0a8c0; }
-    .menu-sep { background: rgba(255, 150, 185, .25); }
-    /* 深色菜单上的下拉框：压过内联浅色样式，保证可读 */
-    .menu select { color: #ffd6e4 !important; background: rgba(255, 150, 185, .12) !important; }
-    .menu select option { color: #8a2f52; background: #fff0f5; }
+  /* 审批未送达 toast：单例提示条，悬在气泡堆叠上方（bottom 由 JS 按堆叠实时计算）；
+     pointer-events 放行桌面点击，z-index 低于右键菜单（#menu:999） */
+  .rm2-pet-toast {
+    /* 水平锚在 400 基准中心（与 .pet 锚层同基准）：left:50% 会随菜单扩窗后
+       变宽的视口漂到新中心，宠物不动而 toast 横移 */
+    position: fixed; left: 200px;
+    display: none; align-items: center; gap: 8px;
+    padding: 7px 16px 7px 9px;
+    border-radius: 17px;
+    background: #fff0f5;
+    border: 1px solid rgba(240, 120, 160, .55);
+    box-shadow: var(--rm2-glow);
+    font-size: 12px; color: #c2607f;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 900;
+    opacity: 0;
+    transform: translate(-50%, 6px);
+    transition: opacity .18s ease-out, transform .18s ease-out;
   }
-  /* Right-click menu — pink palette, matching the status bubble and the
-     in-page pet menu (both sides use the same hardcoded pink values). */
+  .rm2-pet-toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .rm2-pet-toast.hide { opacity: 0; transform: translate(-50%, 4px); transition: opacity .22s, transform .22s; }
+  .rm2-pet-toast-icon { flex: none; width: 20px; height: 20px; border-radius: 50%; background: #e8508a; color: #fff; font-size: 13px; font-weight: 700; line-height: 20px; text-align: center; }
+  .rm2-pet-toast b { color: #b03a60; font-weight: 600; }
+  /* Right-click menu — fill/border 与网页同色；阴影见上方气泡注释。 */
   .menu {
     display: none; position: fixed; z-index: 999;
     min-width: 200px;
     background: #fff0f5;
     border: 1px solid rgba(240, 120, 160, .45);
     border-radius: 10px;
-    box-shadow: 0 8px 24px rgba(190, 70, 110, .22);
+    box-shadow: var(--rm2-glow);
     padding: 6px;
     font-family: system-ui, sans-serif;
     font-size: 13px; color: #8a2f52;
@@ -111,18 +162,43 @@
   .menu-item .mute { color: #c2607f; font-size: 12px; }
   .menu-sep { height: 1px; background: rgba(240, 120, 160, .25); margin: 5px 6px; }
   .menu-status { opacity: .85; cursor: default; }
+  /* 深色适配放在浅色基础规则之后：同特异性靠源顺序取胜，
+     否则下方的 .menu 浅色底会盖回深色壳，仅 select 的 !important
+     字色残留，出现浅粉字配浅粉底的不可读组合 */
+  @media (prefers-color-scheme: dark) {
+    /* 实色底：半透明壳会透出粉影，边缘看起来更亮。 */
+    .rm2-pet-bubble { background: #48142a; border-color: rgba(255, 150, 185, .42); }
+    .rm2-pet-bubble-title { color: #ffd6e4; }
+    .rm2-pet-bubble-detail { color: #f0a8c0; }
+    .rm2-pet-bubble.top { border-color: #ffb3c9; }
+    .rm2-pet-bubble.attention { border-color: #ff6fa8; }
+    .rm2-pet-toast { background: #48142a; border-color: rgba(255, 150, 185, .5); color: #e8a8bf; }
+    .rm2-pet-toast b { color: #ffb3c9; }
+    .menu { background: #48142a; border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
+    .menu-item:hover { background: rgba(255, 150, 185, .16); }
+    .menu-item .tick { color: #ffb3c9; }
+    .menu-item .mute { color: #f0a8c0; }
+    .menu-sep { background: rgba(255, 150, 185, .25); }
+    /* 深色菜单上的下拉框：压过内联浅色样式，保证可读 */
+    .menu select { color: #ffd6e4 !important; background: rgba(255, 150, 185, .12) !important; }
+    /* 展开的选项列表：深酒红底 + 浅粉字，贴合菜单壳；
+       用实色而非半透明，原生下拉不会透出白底层 */
+    .menu select option { color: #ffd6e4; background: #48142a; }
+  }
 </style>
 </head>
 <body>
   <script src="/plugins/dsh-pet-remielle/balance-widget.js"></script>
+  <script src="/plugins/dsh-pet-remielle/session-order.js"></script>
+  <script src="/plugins/dsh-pet-remielle/pet-tip.js"></script>
   <div class="menu" id="menu"></div>
   <div class="pet">
-    <div class="rm2-pet-bubbles" id="bubbleStack"></div>
-    <div class="rm2-pet-bubble top" id="bubble" style="position:relative;">
+    <div class="rm2-pet-bubbles" id="bubbleStack" title=""></div>
+    <div class="rm2-pet-bubble top" id="bubble" style="position:relative;" title="">
       <div class="rm2-pet-bubble-title" id="title"></div>
       <div class="rm2-pet-bubble-detail" id="detail"></div>
-      <div class="rm2-bubble-dots" id="bubbleDots">
-        <div class="rm2-bubble-dot" id="bubbleDot" title="切到余额"></div>
+      <div class="rm2-bubble-dots" id="bubbleDots" title="">
+        <div class="rm2-bubble-dot" id="bubbleDot" title=""></div>
       </div>
     </div>
     <img id="pet" alt="蕾米埃尔" draggable="false">
@@ -132,6 +208,7 @@
   var titleEl = document.getElementById('title')
   var detailEl = document.getElementById('detail')
   var imgEl = document.getElementById('pet')
+  var petBox = document.querySelector('.pet')
   var bubbleStack = document.getElementById('bubbleStack')
   var bubbleDots = document.getElementById('bubbleDots')
   var bubbleDot = document.getElementById('bubbleDot')
@@ -141,10 +218,67 @@
   var SESSION_OPEN_ENDPOINT = '/plugins/dsh-pet-remielle/session/open'
   var COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
   var BUBBLE_MIN_W = 208
-  var MAX_BUBBLES = 2
+  // 牌叠第二层假背板的固定 sessionId（不对应真实会话，仅承载 +N 与点击跳转）。
+  var BUBBLE_BACKBOARD_ID = '__pet_backboard__'
+  var backboardTarget = ''
+  // 当前会话完成卡的自动 ack 标记（sessionId -> true）：见 updateBubbles 内说明
+  var autoAckedCompletions = new Map()
   var currentSessionId = undefined
   var lastTopEntry = null
   var bubbleEls = new Map()
+  // 自绘悬停提示浮层：原生 title 由系统渲染、不随 setZoomFactor 缩放，
+  // 高 DPI 屏（200%）上文字过小。文本存卡片 dataset.rm2Tip，悬停时显示浮层。
+  // 定位钳在「窗口 ∩ 工作区」内并留出光晕，避免贴屏边时文字出屏、阴影被 overflow:hidden 竖切。
+  var petTip = null
+  var petTipAnchor = null
+  var __tip = window.__rm2PetTip
+  if (!__tip) throw new Error('__rm2PetTip is missing: pet-tip.js script failed to load')
+  function hidePetTip() {
+    petTipAnchor = null
+    if (petTip) petTip.style.display = 'none'
+  }
+  function layoutPetTip(anchor, L, T, R, B) {
+    __tip.layoutPetTip(petTip, anchor, L, T, R, B)
+  }
+  function showPetTip(anchor) {
+    var text = anchor && anchor.dataset ? anchor.dataset.rm2Tip : ''
+    if (!text) { hidePetTip(); return }
+    if (!petTip) {
+      petTip = document.createElement('div')
+      petTip.className = 'rm2-pet-tip'
+      document.body.appendChild(petTip)
+    }
+    petTip.textContent = text
+    petTip.style.left = '-9999px'
+    petTip.style.top = '0px'
+    petTip.style.display = 'block'
+    petTipAnchor = anchor
+    var W = window.innerWidth || 400
+    var H = window.innerHeight || 520
+    layoutPetTip(anchor, 0, 0, W, H)
+    if (window.petBridge && window.petBridge.getWorkArea) {
+      window.petBridge.getWorkArea().then(function (wa) {
+        if (petTipAnchor !== anchor || !petTip || petTip.style.display === 'none') return
+        var L = Number(wa && wa.left)
+        var T = Number(wa && wa.top)
+        var R = Number(wa && wa.right)
+        var B = Number(wa && wa.bottom)
+        layoutPetTip(
+          anchor,
+          Number.isFinite(L) ? L : 0,
+          Number.isFinite(T) ? T : 0,
+          Number.isFinite(R) ? R : W,
+          Number.isFinite(B) ? B : H,
+        )
+      }).catch(function () {})
+    }
+  }
+  function syncDotTip() {
+    __tip.applyDotTip(bubbleDot, currentBubblePage, petTipAnchor, showPetTip)
+  }
+  function onDotLeave(e) {
+    __tip.onDotLeave(e, bubbleDot, bubbleDots, showPetTip, hidePetTip)
+  }
   var __petMeasureEl = null
   function ensureMeasureEl() {
     if (!__petMeasureEl) {
@@ -172,10 +306,9 @@
   }
   function switchBubblePage(p) {
     currentBubblePage = p
-    bubbleDot.title = p === 0 ? '切到余额' : '切到状态'
+    syncDotTip()
     if (p === 0) {
       balanceFrame = null
-      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
       if (lastSnapshot) apply(lastSnapshot)
       if (window.__petBalance && window.__petBalance.showStatus) window.__petBalance.showStatus()
     } else if (p === 1 && window.__petBalance && window.__petBalance.showBalance) {
@@ -192,6 +325,9 @@
     switchBubblePage(currentBubblePage === 0 ? 1 : 0)
   }
   bubbleDot.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(currentBubblePage === 0 ? 1 : 0) })
+  bubbleDot.addEventListener('mouseenter', function (e) { if (e && e.stopPropagation) e.stopPropagation(); showPetTip(bubbleDot) })
+  bubbleDot.addEventListener('mouseleave', onDotLeave)
+  syncDotTip()
   bubbleEl.addEventListener('wheel', onBubbleWheel, { passive: false })
   bubbleStack.addEventListener('wheel', onBubbleWheel, { passive: false })
   // 气泡区域吞掉桌宠交互事件：双击气泡不再触发画画（window dblclick），
@@ -237,9 +373,6 @@
     }
   }
   var BUBBLE_TITLE_MS = 2000
-  var lastBubbleMood = ''
-  var lastBubbleText = ''
-  var lastBubbleDetail = ''
   var dragState = null
   var menuOpen = false
   var lockedNow = false
@@ -313,7 +446,7 @@
     slider.min = 0.5
     slider.max = 2
     slider.step = 0.05
-    slider.style.cssText = 'width:110px;margin:0 4px;'
+    slider.style.cssText = 'width:110px;margin:0 4px;accent-color:#e8508a;'
     var pct = document.createElement('span')
     pct.className = 'tick'
     pct.style.cssText = 'min-width:42px;text-align:right;font-size:12px;'
@@ -338,11 +471,15 @@
     row.appendChild(pct)
     return row
   }
+  // 与网页端 MOODS（src/client.core.js）一致的 mood 文字映射
+  var MOOD_TEXTS = { '01': '绘制中', '02': '摸鱼中', '03': '得意中', '04': '思考中', '05': '等待中', '06': '待机中' }
   function buildMenu() {
     menuEl.textContent = ''
     var snap = lastSnapshot
     var running = snap && (snap.state === 'THINKING' || snap.state === 'WORKING' || snap.state === 'WAITING' || snap.state === 'ERROR')
-    menuEl.appendChild(menuRow((snap ? snap.message : '连接中') + (running ? ' · 运行中' : ''), null, null))
+    // mood 取值与 apply() 一致：优先临时覆盖（点击切换/画画），否则用快照值
+    var menuMood = moodOverride && moodOverride.until > Date.now() ? moodOverride.mood : ((snap && snap.mood) || '06')
+    menuEl.appendChild(menuRow((MOOD_TEXTS[menuMood] || '待机中') + ' · ' + (snap ? snap.message : '连接中') + (running ? ' · 运行中' : ''), null, null))
     menuEl.appendChild(menuSep())
     menuEl.appendChild(menuSliderRow())
     menuEl.appendChild(menuRow('锁定位置', lockedNow, function () {
@@ -401,39 +538,123 @@
       }).catch(function () {}).then(function () { window.close() })
     }, true))
   }
-  // Menu anchors to the character's top-right corner (outside the pet, never
-  // covering it). Falls back: top-left when the right side is too narrow,
-  // then above the pet when neither side fits (small desktop window).
+  // 与网页端 openMenuAt 同一套：平时锚角色（紧凑），菜单矩形与气泡相交才改走
+  // 包围盒避让。约束用工作区。落点选出后再扩窗包住菜单+光晕。needT 钳 ≥0，
+  // 不向上改 y。贴右向左扩由主进程 setOpacity(0) 后再改 bounds，避免左右抽动。
+  var MENU_GLOW = 20
+  function menuBoxOf(el) {
+    if (!el) return null
+    var cr = el.getBoundingClientRect()
+    if (cr.width < 1 || cr.height < 1) return null
+    return { top: cr.top, left: cr.left, right: cr.right, bottom: cr.bottom }
+  }
+  function unionMenuBox(a, b) {
+    if (!a) return b
+    if (!b) return a
+    return {
+      top: Math.min(a.top, b.top),
+      left: Math.min(a.left, b.left),
+      right: Math.max(a.right, b.right),
+      bottom: Math.max(a.bottom, b.bottom),
+    }
+  }
+  function clusterRect() {
+    return unionMenuBox(menuBoxOf(imgEl), unionMenuBox(menuBoxOf(bubbleStack), menuBoxOf(bubbleEl)))
+  }
+  function applyPetShift(dx, dy) {
+    dx = Number(dx) || 0
+    dy = Number(dy) || 0
+    if (petBox) {
+      petBox.style.left = dx ? dx + 'px' : ''
+      petBox.style.top = dy ? dy + 'px' : ''
+    }
+    if (toastEl) toastEl.style.left = (200 + dx) + 'px'
+  }
+  window.__rm2ApplyPetShift = applyPetShift
+  function sideMenuPos(r, mw, mh, L, T, R, B) {
+    var left, top
+    if (r.right + 8 + mw <= R - 4) {
+      left = r.right + 8
+      top = Math.max(T + 4, Math.min(r.top, B - mh - 4))
+    } else if (r.left - 8 - mw >= L + 4) {
+      left = r.left - mw - 8
+      top = Math.max(T + 4, Math.min(r.top, B - mh - 4))
+    } else {
+      left = Math.max(L + 4, Math.min(r.right - mw, R - mw - 4))
+      top = Math.max(T + 4, r.top - mh - 8)
+    }
+    return { left: left, top: top }
+  }
+  function pickMenuPos(mw, mh, L, T, R, B) {
+    var pet = menuBoxOf(imgEl) || clusterRect()
+    var bubble = unionMenuBox(menuBoxOf(bubbleStack), menuBoxOf(bubbleEl))
+    var cluster = unionMenuBox(pet, bubble) || pet
+    var compact = sideMenuPos(pet, mw, mh, L, T, R, B)
+    if (bubble && compact.left < bubble.right && compact.left + mw > bubble.left && compact.top < bubble.bottom && compact.top + mh > bubble.top) {
+      return sideMenuPos(cluster, mw, mh, L, T, R, B)
+    }
+    return compact
+  }
+  function layoutMenu(W, H, mw, mh) {
+    var pos = pickMenuPos(mw, mh, 0, 0, W, H)
+    menuEl.style.left = pos.left + 'px'
+    menuEl.style.top = pos.top + 'px'
+    menuOpen = true
+    reportHitRects()
+  }
   function openMenuAt() {
     buildMenu()
-    menuEl.style.display = 'block'
     setForceInteractive(true)
+    // 先离屏测量：fixed 元素未设 left/top 时会停在文档默认位置，扩窗往返期间
+    // 会闪现一下；测完再定位到目标位置。
+    menuEl.style.left = '-9999px'
+    menuEl.style.top = '0px'
+    menuEl.style.display = 'block'
     var mw = menuEl.offsetWidth
     var mh = menuEl.offsetHeight
     var W = window.innerWidth || 380
     var H = window.innerHeight || 430
-    var r = imgEl.getBoundingClientRect()
-    var left, top
-    if (r.right + 8 + mw <= W - 4) {
-      left = r.right + 8
-      top = Math.max(4, Math.min(r.top, H - mh - 4))
-    } else if (r.left - 8 - mw >= 4) {
-      left = r.left - mw - 8
-      top = Math.max(4, Math.min(r.top, H - mh - 4))
-    } else {
-      left = Math.max(4, Math.min(r.right - mw, W - mw - 4))
-      top = Math.max(4, r.top - mh - 8)
+    function expandTo(pos) {
+      var needL = Math.round(Math.min(0, pos.left - MENU_GLOW))
+      var needT = Math.round(Math.max(0, pos.top - MENU_GLOW))
+      var needR = Math.round(pos.left + mw + MENU_GLOW)
+      var needB = Math.round(pos.top + mh + MENU_GLOW)
+      if (!(window.petBridge && window.petBridge.menuExpand) || (needL >= 0 && needT >= 0 && needR <= W && needB <= H)) {
+        layoutMenu(W, H, mw, mh)
+        return
+      }
+      window.petBridge.menuExpand(needL, needT, needR, needB).then(function (dim) {
+        if (menuEl.style.display !== 'block') return
+        applyPetShift(dim && dim.dx, dim && dim.dy)
+        var W2 = (dim && Number(dim.width)) || window.innerWidth || W
+        var H2 = (dim && Number(dim.height)) || window.innerHeight || H
+        layoutMenu(W2, H2, mw, mh)
+      }).catch(function () {
+        if (menuEl.style.display !== 'block') return
+        layoutMenu(W, H, mw, mh)
+      })
     }
-    menuEl.style.left = left + 'px'
-    menuEl.style.top = top + 'px'
-    menuOpen = true
-    reportHitRects()
+    if (window.petBridge && window.petBridge.getWorkArea) {
+      window.petBridge.getWorkArea().then(function (wa) {
+        if (menuEl.style.display !== 'block') return
+        var L = (wa && Number(wa.left)) || 0
+        var T = (wa && Number(wa.top)) || 0
+        var R = (wa && Number(wa.right)) || W
+        var B = (wa && Number(wa.bottom)) || H
+        expandTo(pickMenuPos(mw, mh, L, T, R, B))
+      }).catch(function () { expandTo(pickMenuPos(mw, mh, 0, 0, W, H)) })
+      return
+    }
+    expandTo(pickMenuPos(mw, mh, 0, 0, W, H))
   }
   function closeMenu() {
     menuOpen = false
     menuEl.style.display = 'none'
     setForceInteractive(false)
     reportHitRects()
+    var restore = window.petBridge && window.petBridge.menuRestore && window.petBridge.menuRestore()
+    if (restore && restore.then) restore.then(function () { applyPetShift(0, 0) }).catch(function () { applyPetShift(0, 0) })
+    else applyPetShift(0, 0)
   }
   document.addEventListener('pointerdown', function (e) {
     if (menuOpen && !menuEl.contains(e.target)) closeMenu()
@@ -445,28 +666,13 @@
 
   // --- drag: only from the pet image, JS-driven window move ---
   function syncCursor() {
-    imgEl.style.cursor = lockedNow ? 'default' : 'grab'
+    // 按住期间保持握拳：快照 apply() 每次都会走到这里，不能无条件打回 grab。
+    imgEl.style.cursor = lockedNow ? 'default' : dragState ? 'grabbing' : 'grab'
   }
-  imgEl.addEventListener('mousedown', function (e) {
-    if (e.button !== 0 || lockedNow) return
-    dragState = { x: e.screenX, y: e.screenY, moved: false }
-    imgEl.style.cursor = 'grabbing'
-    setForceInteractive(true)
-  })
-  window.addEventListener('mousemove', function (e) {
-    if (!dragState) return
-    if (!(e.buttons & 1)) { dragState = null; if (!menuOpen) setForceInteractive(false); syncCursor(); return }
-    var dx = e.screenX - dragState.x
-    var dy = e.screenY - dragState.y
-    if (Math.abs(dx) + Math.abs(dy) > 6) dragState.moved = true
-    if (window.petBridge) {
-      window.petBridge.moveWindow(dx, dy)
-    }
-    dragState = { x: e.screenX, y: e.screenY, moved: dragState.moved }
-  })
-  window.addEventListener('mouseup', function () {
+  function endPetDrag() {
+    if (window.petBridge && window.petBridge.dragEnd) window.petBridge.dragEnd()
     if (dragState && !dragState.moved) {
-      // plain click: switch mood, same as the in-page pet
+      // 单击：随机换心情，与网页宠物一致
       var moods = ['01', '02', '03', '04', '05', '06']
       var current = lastSnapshot ? (lastSnapshot.mood || '06') : '06'
       var pick = moods.filter(function (m) { return m !== current })
@@ -476,7 +682,33 @@
     dragState = null
     if (!menuOpen) setForceInteractive(false)
     syncCursor()
+  }
+  imgEl.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0 || lockedNow) return
+    dragState = { x: e.screenX, y: e.screenY, moved: false }
+    imgEl.style.cursor = 'grabbing'
+    setForceInteractive(true)
+    // 捕获后窗外松开仍能收到 pointerup，不再用 mousemove 的 buttons 猜测松手
+    // （透明窗上 buttons 会在按住时掉成 0，握拳被提前打回张手）。
+    if (imgEl.setPointerCapture) imgEl.setPointerCapture(e.pointerId)
+    if (window.petBridge && window.petBridge.dragStart) window.petBridge.dragStart(e.clientX, e.clientY)
   })
+  window.addEventListener('pointermove', function (e) {
+    if (!dragState) return
+    var dx = e.screenX - dragState.x
+    var dy = e.screenY - dragState.y
+    if (Math.abs(dx) + Math.abs(dy) > 6) dragState.moved = true
+    // 拖动采用主进程闭环绝对定位（光标 - 抓取偏移）：渲染层 screenX 在
+    // Windows 显示缩放 ≠ 100% 时与 Electron 坐标存在换算差，增量式移动
+    // 会累积成 pet 相对鼠标的持续漂移；这里只负责通知主进程重新对齐。
+    if (window.petBridge && window.petBridge.dragMove) window.petBridge.dragMove()
+    dragState = { x: e.screenX, y: e.screenY, moved: dragState.moved }
+  })
+  window.addEventListener('pointerup', function (e) {
+    if (e.button !== undefined && e.button !== 0) return
+    endPetDrag()
+  })
+  window.addEventListener('pointercancel', function () { endPetDrag() })
 
   function mk(tag, style, text) {
     var n = document.createElement(tag)
@@ -484,43 +716,73 @@
     if (text !== undefined) n.textContent = text
     return n
   }
-  function stateRank(state) {
-    switch (state) {
-      case 'WAITING': return 60
-      case 'ERROR': return 50
-      case 'SUCCESS': return 70
-      case 'WORKING': return 30
-      case 'THINKING': return 20
-      case 'DISCONNECTED': return -1
-      default: return 0
-    }
-  }
-  function attentionOf(entry) {
-    return entry.attention === true || entry.state === 'WAITING' || entry.state === 'ERROR'
-  }
-  function completionOf(entry) {
-    return entry.completionNotification === true
-  }
-  function targetSessionOf(entry) {
-    return entry.targetSessionId || entry.sessionId
-  }
-  function approvalOf(entry) {
-    return entry.approval === true
-  }
+  // 排序逻辑与网页客户端共用 src/session-order.cjs（宿主仍以 /session-order.js 提供）：
+  // 审批 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
+  var __order = window.__rm2SessionOrder
+  // 宿主 /session-order.js 加载失败时早失败并给出可定位的成因（与网页端一致）
+  if (!__order) throw new Error('__rm2SessionOrder is missing: session-order.js script failed to load')
+  var attentionOf = __order.attentionOf
+  var completionOf = __order.completionOf
+  var targetSessionOf = __order.targetSessionOf
+  var approvalOf = __order.approvalOf
   function orderSessions(sessions) {
-    return sessions.slice().sort(function (a, b) {
-      var aDone = completionOf(a) ? 1 : 0
-      var bDone = completionOf(b) ? 1 : 0
-      if (aDone !== bDone) return bDone - aDone
-      var aAtt = attentionOf(a) ? 1 : 0
-      var bAtt = attentionOf(b) ? 1 : 0
-      if (aAtt !== bAtt) return bAtt - aAtt
-      var aCur = a.sessionId === currentSessionId ? 1 : 0
-      var bCur = b.sessionId === currentSessionId ? 1 : 0
-      if (aCur !== bCur) return bCur - aCur
-      var priority = stateRank(b.state) - stateRank(a.state)
-      return priority || (b.updatedAt || 0) - (a.updatedAt || 0)
-    })
+    return __order.orderSessions(sessions, currentSessionId)
+  }
+  // --- approval toast：“允许一次”未送达时的气泡内提示 ---
+  // 单例节点首次调用时创建挂 body，重复触发只刷新文案与倒计时不叠加；
+  // 悬在气泡堆叠上方 8px，多卡堆叠增高时随 getBoundingClientRect 自动跟随。
+  var TOAST_TEXTS = [
+    '呜…允许一次没有送到呢，打开 DSH 网页再试一次嘛~',
+    '诶？没有找到接收的人，去 DSH 网页再按一次吧~',
+    '批准没有送到哦，打开 DSH 网页后再来一次~',
+  ]
+  var toastEl = null
+  var toastMsg = null
+  var toastFadeTimer = 0
+  var toastGoneTimer = 0
+  function showToast() {
+    if (!toastEl) {
+      toastEl = mk('div', '')
+      toastEl.className = 'rm2-pet-toast'
+      var icon = mk('span', '', '✓')
+      icon.className = 'rm2-pet-toast-icon'
+      toastMsg = mk('span', '', '')
+      toastEl.appendChild(icon)
+      toastEl.appendChild(toastMsg)
+      document.body.appendChild(toastEl)
+    }
+    // 重置上一轮计时器：连续触发时不叠加、不提前熄灭
+    if (toastFadeTimer) { window.clearTimeout(toastFadeTimer); toastFadeTimer = 0 }
+    if (toastGoneTimer) { window.clearTimeout(toastGoneTimer); toastGoneTimer = 0 }
+    // 每次随机取一条文案，第一个逗号前的片段加粗
+    var text = TOAST_TEXTS[Math.floor(Math.random() * TOAST_TEXTS.length)]
+    var cut = text.indexOf('，')
+    var head = cut >= 0 ? text.slice(0, cut) : text
+    var tail = cut >= 0 ? text.slice(cut + 1) : ''
+    toastMsg.innerHTML = '<b>' + head + '</b>，' + tail
+    // bottom 相对视口：堆叠容器顶缘上方 8px
+    var sr = bubbleStack.getBoundingClientRect()
+    toastEl.style.bottom = (window.innerHeight - sr.top + 8) + 'px'
+    toastEl.style.left = (200 + (parseFloat(petBox && petBox.style.left) || 0)) + 'px'
+    // 隐藏/淡出中都需要重新入场：复位初始态并强制 reflow，保证过渡可靠触发；
+    // 可见中重复触发则保持 .show 不闪动
+    if (!toastEl.classList.contains('show')) {
+      toastEl.classList.remove('hide')
+      toastEl.style.display = 'flex'
+      void toastEl.offsetWidth
+      toastEl.classList.add('show')
+    }
+    // 3500ms 后开始淡出，再 400ms 后彻底隐藏
+    toastFadeTimer = window.setTimeout(function () {
+      toastFadeTimer = 0
+      toastEl.classList.remove('show')
+      toastEl.classList.add('hide')
+      toastGoneTimer = window.setTimeout(function () {
+        toastGoneTimer = 0
+        toastEl.classList.remove('hide')
+        toastEl.style.display = 'none'
+      }, 400)
+    }, 3500)
   }
   function approveSession(sessionId) {
     if (!sessionId) return
@@ -531,9 +793,28 @@
     })
       .then(function (r) { return r.ok ? r.json() : null })
       .then(function (data) {
-        // delivered=false：没有网页客户端在线接收审批广播，“允许一次”没有生效
+        // delivered=false：没有网页客户端在线接收审批广播，“允许一次”没有生效，
+        // 弹 toast 提示用户到 DSH 网页重试
         if (data && data.delivered === false) {
-          console.warn('[dsh-pet-remielle] 允许一次未生效：没有网页客户端在线接收审批动作')
+          showToast()
+        }
+      })
+      .catch(function () {})
+  }
+  // 点击整张气泡卡：经宿主广播 session-action(approve=false)，由网页客户端跳转到该对话。
+  function requestSessionOpen(sessionId, completed) {
+    if (!sessionId) return
+    fetch(SESSION_OPEN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: sessionId, approve: false, completed: completed === true }),
+    })
+      .then(function (r) { return r.ok ? r.json() : null })
+      .then(function (data) {
+        // delivered=false：没有网页客户端在线——请宿主把浏览器拉到前台兜底
+        // （动作已由宿主暂存，网页端 SSE 握手后会重放并直达该对话）。
+        if (data && data.delivered === false && window.petBridge && window.petBridge.openDshPage) {
+          window.petBridge.openDshPage()
         }
       })
       .catch(function () {})
@@ -593,23 +874,38 @@
     node.appendChild(header)
     node.appendChild(detail)
     node.appendChild(stackCount)
-    var el = { node: node, header: header, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
+    var el = { node: node, header: header, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, completed: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
     var activate = function (event) {
       event.preventDefault()
       event.stopPropagation()
+      // 与网页端一致（src/client.core.js activate）：占位卡不可交互，
+      // 否则点击「待机中」会以 __pet_idle__ 广播打开不存在的会话，
+      // 无网页在线时还会误触 openDshPage 弹出浏览器。
+      if (el.node.dataset.idlePlaceholder === 'true') return
+      // 假背板：点击时按当帧排序动态解析第 2 名会话并跳转。
+      if (el.targetSessionId === BUBBLE_BACKBOARD_ID) {
+        if (backboardTarget) requestSessionOpen(backboardTarget, false)
+        return
+      }
+      requestSessionOpen(el.targetSessionId, el.completed)
       if (el.completed) acknowledgeCompletion(el.targetSessionId)
     }
+    // 与网页端一致（src/client.core.js）：图标点击除审批外一律走整卡激活
+    // （requestSessionOpen + completed 顺带 ack），不再保留“仅消除提醒、
+    // 不跳转”的桌面独占分支。
     action.addEventListener('click', function (event) {
       event.preventDefault()
       event.stopPropagation()
       if (el.canApprove) approveSession(el.targetSessionId)
-      else if (el.completed) acknowledgeCompletion(el.targetSessionId)
+      else activate(event)
     })
     node.addEventListener('pointerdown', function (event) { event.stopPropagation() })
     node.addEventListener('click', activate)
     node.addEventListener('keydown', function (event) {
       if (event.key === 'Enter' || event.key === ' ') activate(event)
     })
+    node.addEventListener('mouseenter', function () { showPetTip(node) })
+    node.addEventListener('mouseleave', hidePetTip)
     bubbleStack.appendChild(node)
     bubbleEls.set(sessionId, el)
     return el
@@ -669,16 +965,39 @@
   function renderBubble(el, entry, index) {
     var text = entry.message || ''
     var detail = entry.detail || ''
+    if (entry.backboard) {
+      // 假背板：固定高度空方框，仅展示 +N；点击由 activate 动态解析第二层。
+      commitBubbleTitle(el, '', '')
+      el.detail.style.display = 'none'
+      el.action.style.display = 'none'
+      el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
+      el.node.className = 'rm2-pet-bubble backboard' + (entry.summaryCount ? ' summary-backboard' : '')
+      el.node.setAttribute('aria-disabled', 'false')
+      el.node.style.cursor = 'pointer'
+      el.node.title = ''
+      el.node.dataset.rm2Tip = entry.backboardTip || ''
+      if (petTipAnchor === el.node) showPetTip(el.node)
+      el.node.style.zIndex = String(100 - index)
+      el.node.style.order = String(index)
+      el.node.style.marginTop = '-60px'
+      el.node.style.width = '100%'
+      el.node.style.opacity = String(Math.max(0.46, 0.82 - index * 0.1))
+      el.node.style.display = 'block'
+      return
+    }
     if (!text && !detail) {
       commitBubbleTitle(el, '', entry.mood || '')
       el.node.style.display = 'none'
+      if (petTipAnchor === el.node) hidePetTip()
       return
     }
     applyBubbleTitle(el, entry)
+    // 详情行为单行文本，用 block 使 overflow/ellipsis 生效（display:flex 会让 text-overflow 失效）
+    var detailShown = detail.replace(/^\s*[·•]\s*/, '· ')
     el.detail.style.display = detail ? 'block' : 'none'
     if (detail !== el.lastDetail) {
       el.lastDetail = detail
-      el.detailText.textContent = detail.replace(/^\s*[·•]\s*/, '· ')
+      el.detailText.textContent = detailShown
     }
     var attention = attentionOf(entry)
     var approval = approvalOf(entry)
@@ -690,18 +1009,27 @@
     if (actionNotif) {
       var glyph = approval ? '✓' : entry.phase === 'ask' ? '?' : '!'
       if (el.action.textContent !== glyph) el.action.textContent = glyph
-      el.action.setAttribute('aria-label', approval ? '允许一次，点击直接确认' : '需要处理')
+      el.action.setAttribute('aria-label', approval ? '允许一次，点击直接确认' : completed ? '任务已完成，点击查看' : '需要处理，点击跳转')
     } else if (el.action.firstChild !== el.brandImg) {
       el.action.textContent = ''
       el.action.appendChild(el.brandImg)
-      el.action.setAttribute('aria-label', completed ? '任务已完成，点击消除提醒' : '蕾米埃尔桌宠')
+      el.action.setAttribute('aria-label', '蕾米埃尔桌宠')
     }
     el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
     el.node.className = 'rm2-pet-bubble' + (index === 0 ? ' top' : '') + (attention ? ' attention' : '') + (approval ? ' approval' : '') + (completed ? ' completed' : '') + (entry.idlePlaceholder ? ' idle-placeholder' : '') + (entry.summaryCount ? ' summary-backboard' : '')
     el.node.setAttribute('aria-disabled', entry.idlePlaceholder ? 'true' : 'false')
-    el.node.style.cursor = (entry.idlePlaceholder || (!approval && !completed)) ? 'default' : 'pointer'
+    // 光标策略与网页端对齐（src/client.core.js）：点击行为统一为整卡跳转后，
+    // 工作卡同样可点，仅待机占位卡显示 default；旧的「非审批/完成即 default」
+    // 是 0.3.4 桌面点卡片不跳转时代的遗留，与 title 提示和实际行为矛盾。
+    el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
     el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
-    el.node.title = approval ? '允许一次：点击圆形勾号直接确认' : completed ? '任务已完成：点击消除完成提醒' : attention ? '需要处理' : ''
+    // 占位卡不可交互（activate 有守卫），提示不能落进「点击跳转」兜底文案。
+    // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，自绘
+    // 浮层才能读到请求内容；原生 title 不随 zoom 缩放已废弃；操作说明在勾号
+    // aria-label 里。title 置空避免与自绘浮层双重提示。
+    el.node.dataset.rm2Tip = entry.idlePlaceholder ? '' : approval ? (detailShown || '') : completed ? '完成啦~ 点击查看结果哦' : attention ? '轮到你啦，点击跳到这里处理呢' : '点击跳到这里看一下~'
+    el.node.title = ''
+    if (petTipAnchor === el.node) showPetTip(el.node)
     el.node.style.zIndex = String(100 - index)
     el.node.style.order = String(index)
     el.node.style.marginTop = index === 0 ? '0px' : '-60px'
@@ -717,12 +1045,18 @@
     sessions = sessions.filter(function (entry) {
       return entry && entry.state !== 'IDLE' && entry.state !== 'DISCONNECTED'
     })
+    // 打开该会话即已读：当前对话的耐久 ERROR 不再当提醒卡（与网页端同构）。
+    if (currentSessionId) {
+      sessions = sessions.filter(function (entry) {
+        return !(entry && entry.state === 'ERROR' && targetSessionOf(entry) === currentSessionId)
+      })
+    }
     if (sessions.length === 0 && snapshot.enabled !== false) {
       sessions = [{
         sessionId: '__pet_idle__',
         state: 'IDLE',
         mood: snapshot.mood || '06',
-        message: snapshot.message || '蕾米埃尔待命中',
+        message: snapshot.message || '蕾米埃尔待机中~',
         detail: '',
         phase: 'idle',
         updatedAt: snapshot.updatedAt || 0,
@@ -732,9 +1066,41 @@
     var ordered = orderSessions(sessions)
     lastTopEntry = ordered[0] || null
     if (lastTopEntry && lastTopEntry.mood) snapshot.mood = lastTopEntry.mood
-    var visibleEntries = ordered.slice(0, MAX_BUBBLES)
-    if (visibleEntries.length > 1) {
-      visibleEntries[1] = Object.assign({}, visibleEntries[1], { summaryCount: ordered.length - 1 })
+    // 自动 ack 与网页端同构（src/client.core.js updateBubbles）：在数据层对全量
+    // ordered 检查「当前会话是否有完成通知」，而不是只在渲染的顶层卡上检查——
+    // 完成卡被审批/回答压到假背板之下（不渲染）时同样要自动消除提醒。
+    // autoAckedCompletions 保证同一轮完成只 POST 一次；完成被宿主清除后该会话
+    // 的检查转为 false，标记随即删除，同一会话第二轮完成可再次 ack。
+    if (currentSessionId) {
+      var currentHasCompletion = ordered.some(function (entry) {
+        return completionOf(entry) && targetSessionOf(entry) === currentSessionId
+      })
+      if (currentHasCompletion && !autoAckedCompletions.get(currentSessionId)) {
+        autoAckedCompletions.set(currentSessionId, true)
+        acknowledgeCompletion(currentSessionId)
+      } else if (!currentHasCompletion) {
+        autoAckedCompletions.delete(currentSessionId)
+      }
+    }
+    // 牌叠只渲染首层真卡；第二层是无内容的假背板（仅 +N），不渲染第 2 名的
+    // 文字与图标——同级会话的 updatedAt 轮转因此不会造成背景卡闪换。
+    // 点击背板时按当帧排序动态解析第 2 名并跳转，这里只需记住它是谁。
+    var visibleEntries = ordered.slice(0, 1)
+    if (ordered.length > 1) {
+      visibleEntries.push({
+        sessionId: BUBBLE_BACKBOARD_ID,
+        state: 'IDLE',
+        message: '',
+        detail: '',
+        phase: '',
+        updatedAt: 0,
+        backboard: true,
+        summaryCount: ordered.length - 1,
+        backboardTip: __tip.backboardTipText(ordered[1].project, ordered[1].title),
+      })
+      backboardTarget = targetSessionOf(ordered[1]) || ''
+    } else {
+      backboardTarget = ''
     }
     var count = visibleEntries.length
     var seen = new Set()
@@ -793,6 +1159,8 @@
   function apply(snapshot) {
     if (!snapshot || snapshot.kind) return
     lastSnapshot = snapshot
+    // 网页端经宿主快照上报的当前会话；空串/缺失视为无（判空后回落 undefined）
+    currentSessionId = snapshot.currentSessionId || undefined
     if (window.__petBalance) {
       // 用量子开关关闭时停掉 60s 轮询（与网页端一致）
       window.__petBalance.setEnabled(snapshot.showBubble !== false && snapshot.showBubbleUsage === true)
@@ -828,7 +1196,6 @@
       currentBubblePage = 0
       balanceFrame = null
       balanceRequested = false
-      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
     }
     prevBubbleVisible = bubbleEnabled
     // 强制页面归属
@@ -837,7 +1204,6 @@
     if (statusOn && !usageOn) { currentBubblePage = 0 }
     if (statusOn && usageOn && currentBubblePage > 1) currentBubblePage = 0
     if (currentBubblePage !== pageBefore) {
-      lastBubbleMood = ''; lastBubbleText = ''; lastBubbleDetail = ''
       if (currentBubblePage === 0) balanceFrame = null
     }
     if (currentBubblePage === 1 && !(balanceFrame && balanceFrame.kind === 'balance') && window.__petBalance && !balanceRequested) {
@@ -851,7 +1217,7 @@
     bubbleEl.style.pointerEvents = bubblePointer
     bubbleStack.style.pointerEvents = bubblePointer
     bubbleDots.style.display = bothOn ? '' : 'none'
-    bubbleDot.title = currentBubblePage === 0 ? '切到余额' : '切到状态'
+    syncDotTip()
     var cur = currentBubblePage
     var show = anyOn && (cur === 0 ? statusOn : usageOn)
     if (cur === 0) {
@@ -894,7 +1260,10 @@
   }
 
   var source
-  try { source = new EventSource('/plugins/dsh-pet-remielle/stream') } catch (e) { /* fallback to polling */ }
+  // ?client=pet：向宿主表明这是桌宠窗口的订阅（与 index.js streamClientOf
+  // 的约定一致）——宿主据此把它排除在 session-action 重放计数之外，避免桌宠
+  // 抢收导致"无网页在线"判定永远不成立。
+  try { source = new EventSource('/plugins/dsh-pet-remielle/stream?client=pet') } catch (e) { /* fallback to polling */ }
   if (source) {
     source.onmessage = function (e) {
       try { apply(JSON.parse(e.data)) } catch (err) { /* ignore malformed frame */ }
