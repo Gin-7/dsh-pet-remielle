@@ -78,10 +78,32 @@ test('DesktopWindow start spawns electron with env config', () => {
   assert.equal(spawned.options.windowsHide, false)
   assert.ok(spawned.options.env.DSH_PET_URL.startsWith('http://127.0.0.1:50336/plugins/dsh-pet-remielle/pet-view'))
   assert.ok(spawned.options.env.DSH_PET_URL.includes('v='))
+  assert.equal(spawned.options.env.DSH_WEB_URL, 'http://127.0.0.1:50336')
   assert.equal(spawned.options.env.DSH_PET_PARENT_PID, '1234')
   assert.equal(window.running, true)
   window.stop()
   assert.equal(window.running, false)
+})
+
+test('DesktopWindow start passes DSH_WEB_URL when provided', () => {
+  let spawned = null
+  const window = new DesktopWindow({
+    url: 'http://127.0.0.1:50336/plugins/dsh-pet-remielle/pet-view',
+    webUrl: 'http://127.0.0.1:50336/?token=launch-token',
+    backend: { kind: 'electron', command: 'D:/plugins/vendor/electron-win32-x64/electron.exe', args: ['D:/plugins/src/pet-window.cjs'] },
+    spawnImpl: (command, args, options) => {
+      spawned = { command, args, options }
+      const child = new EventEmitter()
+      child.exitCode = null
+      child.killed = false
+      child.kill = () => { child.killed = true }
+      return child
+    },
+  })
+  window.start()
+  assert.equal(spawned.options.env.DSH_WEB_URL, 'http://127.0.0.1:50336/?token=launch-token')
+  assert.ok(spawned.options.env.DSH_PET_URL.startsWith('http://127.0.0.1:50336/plugins/dsh-pet-remielle/pet-view'))
+  window.stop()
 })
 
 test('DesktopWindow without a backend stays inert', () => {

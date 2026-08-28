@@ -148,6 +148,7 @@ export function resolveBackend(options) {
 export class DesktopWindow {
   constructor({
     url,
+    webUrl,
     backend = resolveBackend(),
     parentPid = process.pid,
     logger = console,
@@ -156,6 +157,7 @@ export class DesktopWindow {
   } = {}) {
     if (!url) throw new Error('DesktopWindow requires a --url')
     this.url = url
+    this.webUrl = webUrl
     this.backend = backend
     this.parentPid = parentPid
     this.logger = logger
@@ -185,6 +187,7 @@ export class DesktopWindow {
         ...process.env,
         ELECTRON_RUN_AS_NODE: undefined,
         DSH_PET_URL: this.url + (this.url.includes('?') ? '&' : '?') + 'v=' + this.startNonce,
+        DSH_WEB_URL: this.webUrl || new URL('/', this.url).origin,
         DSH_PET_PARENT_PID: String(this.parentPid),
       },
     })

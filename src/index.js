@@ -930,7 +930,15 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           hub.broadcast()
         }
       }
-      const desktopUrl = `http://127.0.0.1:${port}${PET_VIEW_ENDPOINT}`
+      const origin = `http://127.0.0.1:${port}`
+      const desktopUrl = `${origin}${PET_VIEW_ENDPOINT}`
+      // DSH 0.1.2-alpha.1 起 Web 壳根路径要带进程 token；旧宿主没有该方法则仍打开 origin。
+      const dshWebUrl = () => {
+        const connection = ctx.connection
+        return typeof connection?.authenticatedUrl === 'function'
+          ? connection.authenticatedUrl(origin)
+          : origin
+      }
       const onDesktopExit = () => {
         desktop = undefined
         if (desktopActive) { desktopActive = false; hub.broadcast() }
@@ -945,7 +953,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         if (!allowFetch && settings.get().desktopMode === false) return
         /** Create a DesktopWindow, attach it, and broadcast state. */
         const spawnWindow = () => {
-          const w = new DesktopWindow({ url: desktopUrl, logger, onExit: onDesktopExit })
+          const w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit })
           if (!w.backend) return false
           desktop = w
           w.start()
@@ -1003,7 +1011,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             // find the freshly installed runtime in time.
             const petWindowCjs = new URL('../src/pet-window.cjs', import.meta.url)
             const backend = { kind: 'electron', command: exe, args: [petWindowCjs.href.startsWith('file://') ? fileURLToPath(petWindowCjs) : String(petWindowCjs)] }
-            const w = new DesktopWindow({ url: desktopUrl, logger, onExit: onDesktopExit, backend })
+            const w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, backend })
             desktop = w
             w.start()
             if (!desktopActive) { desktopActive = true; hub.broadcast() }

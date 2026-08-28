@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixes
+- 桌面离线打开 DSH 网页：有 `ctx.connection.authenticatedUrl` 时带上 0.1.2 进程 token，旧宿主仍打开 origin。
+
 ## [0.3.6] — 2026-08-22
 
 ### Features
