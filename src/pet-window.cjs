@@ -5,8 +5,8 @@
  * Windows (crashes with exit -1 during app startup), while .cjs works.
  *
  * Configuration arrives via environment variables (DSH_PET_URL,
- * DSH_PET_PARENT_PID): passing extra CLI args to a spawned Electron on
- * Windows crashes with exit -1, while env is stable.
+ * DSH_WEB_URL, DSH_PET_PARENT_PID): passing extra CLI args to a spawned
+ * Electron on Windows crashes with exit -1, while env is stable.
  *
  * Creates a frameless, transparent, always-on-top window that loads the
  * plugin's pet-view page (pet GIF + status bubble over the SSE stream).
@@ -349,16 +349,14 @@ app.whenReady().then(() => {
     })
   })
 
-  // 无网页客户端在线时点击气泡卡：渲染层只发信号，URL 由这里从宿主给的
-  // DSH_PET_URL 推导（同源根路径即 DSH 网页端），用系统默认浏览器拉到前台。
-  // 已知限制：固定取 origin 根路径，若宿主部署在子路径（如 http://host/dsh/）
-  // 会落到错误页面；当前部署为根路径，待真有子路径需求再传 base path。
+  // 无网页客户端在线时点击气泡卡：渲染层只发信号，URL 由宿主经 DSH_WEB_URL
+  // 传入（DSH 0.1.2+ 为带进程 token 的根路径；旧宿主为 origin）。
+  // 用 href 而不是 origin：token 在 query 上，303 换 cookie 时也会丢掉其它参数。
   ipcMain.handle('open-dsh-page', () => {
     try {
-      const target = new URL('/', url)
-      // 只放行 http(s)：DSH_PET_URL 异常时不把其他协议的 URL 交给系统浏览器
+      const target = new URL(process.env.DSH_WEB_URL || new URL('/', url).origin)
       if (target.protocol !== 'http:' && target.protocol !== 'https:') return false
-      return shell.openExternal(target.origin)
+      return shell.openExternal(target.href)
     } catch {
       return Promise.resolve(false)
     }
