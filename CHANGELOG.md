@@ -7,6 +7,7 @@
 
 ### Fixes
 - 桌面离线打开 DSH 网页：有 `ctx.connection.authenticatedUrl` 时带上 0.1.2 进程 token，旧宿主仍打开 origin。
+- fnOS/TRIM gateway 前缀路由（`/app/<id>/`）支持：dsh web 挂载在前缀下时，宿主桥接只改写 HTML 静态 `src`/`fetch`/`EventSource`/`<script src>`，运行时 JS 赋值的 `img.src`（贴纸、双击画画 pics、气泡卡 favicon）不被改写，请求落到 NAS 根路径 404 → 宠物贴图消失（只剩文字气泡）、气泡吞掉 pointer 事件导致拖不动。现从本 bundle 的 `<script>` 加载路径检测前缀（回退页面 path），所有运行时绝对路径带前缀；直连模式（无前缀）行为不变。
 
 ## [0.3.6] — 2026-08-22
 
