@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Features
+- Linux 适配：插件不再仅限 Windows（`os` 增加 `linux`、`cpu` 增加 `arm64`）。桌面浮窗运行时改为按平台/架构解析（vendor 目录、二进制名、zip 名、跨平台解压），Electron 缺失时仍回落页面内宠物；桌面窗 DPI 注册表读取仅在 Windows 生效，其它平台回退 Electron screen API。
+
 ### Fixes
 - 桌面离线打开 DSH 网页：有 `ctx.connection.authenticatedUrl` 时带上 0.1.2 进程 token，旧宿主仍打开 origin。
 

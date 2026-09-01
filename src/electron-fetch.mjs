@@ -4,7 +4,11 @@
  * The floating desktop window needs a real Electron binary (~221MB, which is
  * why it is NOT bundled into the Git repo — see README "桌面模式运行时"). This
  * module lets the host fetch it automatically the first time desktop mode is
- * used, instead of making the user hunt down a 221MB zip by hand.
+ * used, instead of making the user hunt down a large zip by hand.
+ *
+ * Cross-platform: the artifact layout (vendor dir, executable name, zip name)
+ * is resolved from the current platform/arch, so the same code works on
+ * Windows, Linux and macOS.
  *
  * Behaviour policy ("用户不一定能访问外网"):
  *  - Tries the npmmirror binary mirror first (fast for CN users), then the
@@ -12,33 +16,54 @@
  *    falls back to the in-page pet — never crashes the plugin.
  *  - Concurrency-safe: concurrent calls while a fetch is in flight share one
  *    promise (single in-process lock across the whole host).
- *  - Idempotent: if `vendor/electron-win32-x64/electron.exe` already exists it
+ *  - Idempotent: if the runtime binary already exists in the vendor dir it
  *    resolves immediately without touching the network.
  *
- * Files land exactly where `desktop-window.js`'s `bundledElectron` path points,
- * so a later `resolveBackend()` picks the freshly installed runtime up with no
- * reconfiguration:    <repo>/vendor/electron-win32-x64/electron.exe
+ * Files land exactly where `desktop-window.js`'s bundled-Electron lookup points
+ * (`electronArtifact().exe`), so a later `resolveBackend()` picks the freshly
+ * installed runtime up with no reconfiguration.
  */
 
 import { spawn } from 'node:child_process'
-import { createReadStream, createWriteStream, existsSync, mkdirSync, rmSync } from 'node:fs'
-import { access } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { dirname, resolve } from 'node:path'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-export const VENDOR_DIR = resolve(here, '..', 'vendor', 'electron-win32-x64')
-export const ELECTRON_EXE = resolve(VENDOR_DIR, 'electron.exe')
 
-/** Electron major we target — a stock win32-x64 build in this range works. */
+/** Electron major we target — a stock build in this range works on any platform. */
 export const ELECTRON_VERSION = '33.0.0'
 
-/** Download candidates, best first. Each is the full zip URL (win32-x64). */
-export function downloadMirrors(version = ELECTRON_VERSION) {
+/**
+ * Resolve the Electron artifact layout for a platform/arch. `platform` uses
+ * node's tokens ('win32' | 'linux' | 'darwin'), which match Electron's release
+ * zip naming. `binary` is the executable name (electron.exe on Windows,
+ * electron elsewhere). `vendorDir`/`exe` point where the runtime is installed.
+ */
+export function electronArtifact({ platform = process.platform, arch = process.arch } = {}) {
+  const binary = platform === 'win32' ? 'electron.exe' : 'electron'
+  const dir = `electron-${platform}-${arch}`
+  return {
+    platform,
+    arch,
+    binary,
+    zipName: `electron-v${ELECTRON_VERSION}-${platform}-${arch}.zip`,
+    vendorDir: resolve(here, '..', 'vendor', dir),
+    exe: resolve(here, '..', 'vendor', dir, binary),
+  }
+}
+
+export const VENDOR_DIR = electronArtifact().vendorDir
+export const ELECTRON_EXE = electronArtifact().exe
+
+/**
+ * Download candidates, best first. Each is the full zip URL for the given
+ * platform/arch (defaults to the current one).
+ */
+export function downloadMirrors(version = ELECTRON_VERSION, platform = process.platform, arch = process.arch) {
   // npmmirror hosts the exact same release artifacts as GitHub releases and is
   // much faster / reliable from mainland China. Forward slashes only.
-  const name = `electron-v${version}-win32-x64.zip`
+  const name = `electron-v${version}-${platform}-${arch}.zip`
   return [
     `https://registry.npmmirror.com/-/binary/electron/v${version}/${name}`,
     `https://github.com/electron/electron/releases/download/v${version}/${name}`,
@@ -49,24 +74,26 @@ export function downloadMirrors(version = ELECTRON_VERSION) {
 let inflight = null
 
 /**
- * Ensure the bundled Electron runtime exists, downloading it on demand.
+ * Ensure the Electron runtime exists, downloading it on demand.
  *
  * @param {object} [options]
  * @param {string[]} [options.mirrors]   zip URLs to try, in order.
- * @param {string}  [options.vendorDir]  target directory for the runtime (defaults to <repo>/vendor/electron-win32-x64).
+ * @param {string}  [options.vendorDir]  target directory for the runtime (defaults to the platform vendor dir).
+ * @param {string}  [options.binary]     executable name to place / look for (defaults to the platform binary).
  * @param {(m: string) => void} [options.onProgress]  human-readable progress callback.
  * @param {(cmd: string, args: string[], opts: object) => import('node:child_process').ChildProcess} [options.spawnImpl] injectable spawn (for tests).
- * @returns {Promise<string>}  absolute path to electron.exe on success.
+ * @returns {Promise<string>}  absolute path to the Electron binary on success.
  * @throws  when every mirror fails and no runtime can be placed.
  */
 export async function ensureElectronRuntime({
   mirrors = downloadMirrors(),
   vendorDir = VENDOR_DIR,
+  binary = electronArtifact().binary,
   onProgress,
   spawnImpl = spawn,
   fetchImpl = fetch,
 } = {}) {
-  const electronExe = resolve(vendorDir, 'electron.exe')
+  const electronExe = resolve(vendorDir, binary)
   if (existsSync(electronExe)) return electronExe
   // Serialise concurrent requests across the whole host process.
   if (inflight) return inflight
@@ -94,10 +121,11 @@ export async function ensureElectronRuntime({
       }
       onProgress?.('正在解压 Electron…')
       await unzip(zip, work, spawnImpl)
+      const distDir = findDistDir(work, binary)
       mkdirSync(vendorDir, { recursive: true })
-      await moveContents(work, vendorDir)
+      await moveContents(distDir, vendorDir)
       if (!existsSync(electronExe)) {
-        throw new Error(`解压后未找到 electron.exe（${electronExe}）`)
+        throw new Error(`解压后未找到 ${binary}（${electronExe}）`)
       }
       onProgress?.('Electron 已就绪')
       return electronExe
@@ -144,16 +172,63 @@ async function downloadFile(url, dest, onProgress, fetchImpl = fetch) {
   if (received === 0) throw new Error('下载内容为空')
 }
 
-/** Extract a zip via the platform unzip. On win32 use bsdtar (ships with Windows). */
+/**
+ * Locate the Electron distribution dir inside `work`: either `work` itself
+ * (zip contents at the root) or the single top-level dir the zip contains.
+ * The Electron release zips are not consistent about the top-level dir, so
+ * handle both.
+ */
+function findDistDir(work, binary) {
+  if (existsSync(join(work, binary))) return work
+  const subdirs = readdirSync(work, { withFileTypes: true }).filter((e) => e.isDirectory())
+  for (const sub of subdirs) {
+    if (existsSync(join(work, sub.name, binary))) return join(work, sub.name)
+  }
+  if (subdirs.length === 1) return join(work, subdirs[0].name)
+  throw new Error(`未在解压目录找到 ${binary}：${work}`)
+}
+
+/**
+ * Extract a zip using whichever platform tool is available. On Windows the
+ * built-in bsdtar (tar.exe) handles zip; on Linux/macOS prefer `unzip`, then
+ * bsdtar, then tar. Tries candidates in order and succeeds on the first that
+ * runs cleanly.
+ */
 async function unzip(zip, dest, spawnImpl) {
   mkdirSync(dest, { recursive: true })
-  await runProgram(spawnImpl, 'tar.exe', ['-xf', zip, '-C', dest, '--strip-components=0'], dest)
+  const isWin = process.platform === 'win32'
+  const attempts = isWin
+    ? [
+        ['tar.exe', ['-xf', zip, '-C', dest, '--strip-components=0']],
+        ['unzip', ['-o', zip, '-d', dest]],
+      ]
+    : [
+        ['unzip', ['-o', zip, '-d', dest]],
+        ['bsdtar', ['-xf', zip, '-C', dest]],
+        ['tar', ['-xf', zip, '-C', dest]],
+      ]
+  let lastError = null
+  for (const [cmd, args] of attempts) {
+    try {
+      await runProgram(spawnImpl, cmd, args, dest)
+      return
+    } catch (error) {
+      lastError = error
+      // Clear any partial extraction before trying the next tool.
+      try {
+        for (const entry of readdirSync(dest)) {
+          rmSync(join(dest, entry), { recursive: true, force: true })
+        }
+      } catch { /* ignore */ }
+    }
+  }
+  throw lastError
 }
 
 /** Recursively move directory contents up into `target` (works across drives). */
 async function moveContents(src, target) {
   const { readdir, copyFile, mkdir } = await import('node:fs/promises')
-  const { join, relative } = await import('node:path')
+  const { join } = await import('node:path')
   await mkdir(target, { recursive: true })
   const entries = await readdir(src, { withFileTypes: true })
   for (const entry of entries) {

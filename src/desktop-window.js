@@ -24,9 +24,9 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { electronArtifact } from './electron-fetch.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const bundledElectron = resolve(here, '..', 'vendor', 'electron-win32-x64', 'electron.exe')
 
 /**
  * Walk up from `startDir` looking for a directory containing the given
@@ -89,9 +89,10 @@ export function backendCandidates({ platform = process.platform, cwd = process.c
     candidates.push({ kind: 'electron', command: process.env.DSH_PET_ELECTRON, args })
   }
 
-  // --- 2. Bundled vendor runtime (shipped with the plugin) ---
-  if (platform === 'win32' && existsSync(bundledElectron)) {
-    candidates.push({ kind: 'electron', command: bundledElectron, args })
+  // --- 2. Bundled vendor runtime (fetched on demand, per platform/arch) ---
+  const bundled = electronArtifact({ platform, arch: process.arch }).exe
+  if (existsSync(bundled)) {
+    candidates.push({ kind: 'electron', command: bundled, args })
   }
 
   // --- 3. npm global install — user ran `npm install -g electron` somewhere ---
