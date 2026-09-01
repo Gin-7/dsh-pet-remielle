@@ -4,9 +4,10 @@
  *
  * Electron backends, in preference order:
  *   1. DSH_PET_ELECTRON env var override.
- *   2. The bundled Electron runtime (vendor/electron-win32-x64) — ships with
- *      the plugin, so every user (plain web DSH host included) gets the same
- *      floating window with browser-engine GIF animation.
+ *   2. The bundled Electron runtime (vendor/electron-<platform>-<arch>,
+ *      resolved per-platform/arch via electronArtifact, fetched on demand)
+ *      — so every user (plain web DSH host included) gets the same floating
+ *      window with browser-engine GIF animation.
  *   3. npm global install (`npm install -g electron`) — find via
  *      `npm prefix -g` → node_modules/electron/dist/.
  *   4. The dsh binary root (derived from process.argv[1]) →
