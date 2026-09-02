@@ -133,16 +133,17 @@ dsh plugin --profile web add dsh-pet-remielle
 - 右键菜单：切换网页模式、锁定、气泡开关、角色大小、画画等。
 - 关闭/切换后自动回到页面内；随 DSH host 退出自动关闭。
 
-**Electron 运行时来源（按顺序探测）**：`DSH_PET_ELECTRON` 环境变量 → `vendor/electron-win32-x64/`（本目录不进 Git）→ 系统已安装的 Electron → 均无则仅页面内展示。
+**Electron 运行时来源（按顺序探测）**：`DSH_PET_ELECTRON` 环境变量 → `vendor/electron-<platform>-<arch>/`（本目录不进 Git，按当前系统自动下载对应平台包）→ 系统已安装的 Electron → 均无则仅页面内展示。
 
-> **首次运行**：若开启桌面悬浮模式但本机找不到 Electron 运行时，会**提示下载并安装**（需你确认，因 Electron 运行时约 200MB）；下载失败则自动回落页面内展示，不会影响其他功能。也可手动把任一 Electron win32-x64 发行包解压到 `vendor/electron-win32-x64/`，或设置 `DSH_PET_ELECTRON` 指向现有 `electron.exe`。
+> **首次运行**：若开启桌面悬浮模式但本机找不到 Electron 运行时，会**提示下载并安装**（需你确认，因 Electron 运行时约 100–220MB，Windows 最大）；下载失败则自动回落页面内展示，不会影响其他功能。也可手动把任一对应平台的 Electron 发行包解压到 `vendor/electron-<platform>-<arch>/`，或设置 `DSH_PET_ELECTRON` 指向现有 electron 可执行文件（Windows：`electron.exe`；macOS：`Electron.app/Contents/MacOS/Electron`；Linux：`electron`）。
 
 ### 平台能力
 
 | 平台 | 桌面悬浮窗 | 页面内桌宠 |
 |---|---|---|
-| Windows x64（Fairy 桌面版 / 纯 DSH） | ✓（Electron 透明置顶窗口） | 桌面模式下自动隐藏 |
-| macOS / Linux | ✗ | ✓（自动回落页面内） |
+| Windows x64 | ✓（Electron 透明置顶窗口） | 桌面模式下自动隐藏 |
+| macOS（arm64 / x64） | ✓（自动下载对应 darwin Electron） | 桌面模式下自动隐藏 |
+| Linux x64 | ✓（自动下载对应 linux Electron） | 桌面模式下自动隐藏 |
 
 ---
 

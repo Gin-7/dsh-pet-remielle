@@ -933,11 +933,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       const origin = `http://127.0.0.1:${port}`
       const desktopUrl = `${origin}${PET_VIEW_ENDPOINT}`
       // DSH 0.1.2-alpha.1 起 Web 壳根路径要带进程 token；旧宿主没有该方法则仍打开 origin。
+      // 容错：authenticatedUrl 在个别宿主/会话态下可能抛错；失败时回落 origin，
+      // 避免 startDesktop 因此抛异常导致桌面窗根本起不来。
       const dshWebUrl = () => {
-        const connection = ctx.connection
-        return typeof connection?.authenticatedUrl === 'function'
-          ? connection.authenticatedUrl(origin)
-          : origin
+        try {
+          const connection = ctx.connection
+          return typeof connection?.authenticatedUrl === 'function'
+            ? connection.authenticatedUrl(origin)
+            : origin
+        } catch (error) {
+          logger.warn?.(`dsh-pet-remielle: dshWebUrl() 失败，回落 origin（${String(error)}）`)
+          return origin
+        }
       }
       const onDesktopExit = () => {
         desktop = undefined
@@ -953,10 +960,22 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         if (!allowFetch && settings.get().desktopMode === false) return
         /** Create a DesktopWindow, attach it, and broadcast state. */
         const spawnWindow = () => {
-          const w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit })
+          let w
+          try {
+            w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit })
+          } catch (error) {
+            logger.error?.(`dsh-pet-remielle: 创建桌面窗失败：${String(error)}`)
+            return false
+          }
           if (!w.backend) return false
           desktop = w
-          w.start()
+          try {
+            w.start()
+          } catch (error) {
+            logger.error?.(`dsh-pet-remielle: 启动桌面窗进程失败：${String(error)}`)
+            desktop = undefined
+            return false
+          }
           if (!desktopActive) { desktopActive = true; hub.broadcast() }
           return true
         }

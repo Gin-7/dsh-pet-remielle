@@ -12,12 +12,12 @@
  *    falls back to the in-page pet — never crashes the plugin.
  *  - Concurrency-safe: concurrent calls while a fetch is in flight share one
  *    promise (single in-process lock across the whole host).
- *  - Idempotent: if `vendor/electron-win32-x64/electron.exe` already exists it
+ *  - Idempotent: if the runtime binary for the current platform already exists it
  *    resolves immediately without touching the network.
  *
  * Files land exactly where `desktop-window.js`'s `bundledElectron` path points,
  * so a later `resolveBackend()` picks the freshly installed runtime up with no
- * reconfiguration:    <repo>/vendor/electron-win32-x64/electron.exe
+ * reconfiguration:    <repo>/vendor/electron-<platform>-<arch>/<binary>
  */
 
 import { spawn } from 'node:child_process'
@@ -28,17 +28,48 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-export const VENDOR_DIR = resolve(here, '..', 'vendor', 'electron-win32-x64')
-export const ELECTRON_EXE = resolve(VENDOR_DIR, 'electron.exe')
 
-/** Electron major we target — a stock win32-x64 build in this range works. */
+/**
+ * Map an OS/arch to the Electron release artifact triple plus the on-disk
+ * folder name and the path (relative to that folder) of the launchable
+ * Electron binary.
+ *
+ * Windows keeps the exact original layout (`electron-win32-x64/electron.exe`)
+ * so Windows behaviour is byte-for-byte unchanged. macOS uses the `.app`
+ * bundle binary; Linux uses the bare `electron` binary.
+ *
+ * @param {string} [platform]  process.platform (injectable for tests).
+ * @param {string} [arch]      process.arch (injectable for tests).
+ */
+export function runtimeTarget(platform = process.platform, arch = process.arch) {
+  if (platform === 'win32') {
+    return { tag: 'win32-x64', folder: 'electron-win32-x64', sub: ['electron.exe'] }
+  }
+  if (platform === 'darwin') {
+    const a = arch === 'arm64' ? 'arm64' : 'x64'
+    return { tag: `darwin-${a}`, folder: `electron-darwin-${a}`, sub: ['Electron.app', 'Contents', 'MacOS', 'Electron'] }
+  }
+  if (platform === 'linux') {
+    return { tag: 'linux-x64', folder: 'electron-linux-x64', sub: ['electron'] }
+  }
+  return { tag: `${platform}-${arch}`, folder: `electron-${platform}-${arch}`, sub: ['electron'] }
+}
+
+/** Absolute path to the launchable Electron binary inside a dist/vendor root. */
+export function electronBinaryIn(dir, platform = process.platform, arch = process.arch) {
+  return resolve(dir, ...runtimeTarget(platform, arch).sub)
+}
+
+export const VENDOR_DIR = resolve(here, '..', 'vendor', runtimeTarget().folder)
+export const ELECTRON_EXE = electronBinaryIn(VENDOR_DIR)
+
+/** Electron major we target — a stock build in this range works on any OS. */
 export const ELECTRON_VERSION = '33.0.0'
 
-/** Download candidates, best first. Each is the full zip URL (win32-x64). */
-export function downloadMirrors(version = ELECTRON_VERSION) {
-  // npmmirror hosts the exact same release artifacts as GitHub releases and is
-  // much faster / reliable from mainland China. Forward slashes only.
-  const name = `electron-v${version}-win32-x64.zip`
+/** Download candidates, best first. Each is the full zip URL for the current
+ *  platform/arch (npmmirror first: fast in mainland China, then GitHub). */
+export function downloadMirrors(version = ELECTRON_VERSION, platform = process.platform, arch = process.arch) {
+  const name = `electron-v${version}-${runtimeTarget(platform, arch).tag}.zip`
   return [
     `https://registry.npmmirror.com/-/binary/electron/v${version}/${name}`,
     `https://github.com/electron/electron/releases/download/v${version}/${name}`,
@@ -65,8 +96,10 @@ export async function ensureElectronRuntime({
   onProgress,
   spawnImpl = spawn,
   fetchImpl = fetch,
+  platform = process.platform,
+  arch = process.arch,
 } = {}) {
-  const electronExe = resolve(vendorDir, 'electron.exe')
+  const electronExe = electronBinaryIn(vendorDir, platform, arch)
   if (existsSync(electronExe)) return electronExe
   // Serialise concurrent requests across the whole host process.
   if (inflight) return inflight
@@ -93,11 +126,16 @@ export async function ensureElectronRuntime({
         }
       }
       onProgress?.('正在解压 Electron…')
-      await unzip(zip, work, spawnImpl)
+      // 直接解压进 vendorDir，而不是先解到临时目录再逐文件 moveContents：
+      // macOS 的 Electron.app bundle 内含符号链接/特殊文件，copyFile 会因
+      // ENOTSUP 失败；bsdtar/tar 解压会原样保留它们。vendorDir 是全新目录
+      //（下载前已 rm），解压后直接校验可执行文件即可。
+      rmSync(vendorDir, { recursive: true, force: true })
       mkdirSync(vendorDir, { recursive: true })
-      await moveContents(work, vendorDir)
+      await unzip(zip, vendorDir, spawnImpl, platform)
       if (!existsSync(electronExe)) {
-        throw new Error(`解压后未找到 electron.exe（${electronExe}）`)
+        const target = runtimeTarget(platform, arch)
+        throw new Error(`解压后未找到 Electron 可执行文件（${electronExe}）——期望安装包内含 ${target.tag} 的 ${target.sub.join('/')}`)
       }
       onProgress?.('Electron 已就绪')
       return electronExe
@@ -144,29 +182,12 @@ async function downloadFile(url, dest, onProgress, fetchImpl = fetch) {
   if (received === 0) throw new Error('下载内容为空')
 }
 
-/** Extract a zip via the platform unzip. On win32 use bsdtar (ships with Windows). */
-async function unzip(zip, dest, spawnImpl) {
+/** Extract a zip via the platform unzip. On win32 use bsdtar (ships with
+ *  Windows); on macOS/Linux use the standard `tar` (bsdtar on macOS). */
+async function unzip(zip, dest, spawnImpl, platform = process.platform) {
   mkdirSync(dest, { recursive: true })
-  await runProgram(spawnImpl, 'tar.exe', ['-xf', zip, '-C', dest, '--strip-components=0'], dest)
-}
-
-/** Recursively move directory contents up into `target` (works across drives). */
-async function moveContents(src, target) {
-  const { readdir, copyFile, mkdir } = await import('node:fs/promises')
-  const { join, relative } = await import('node:path')
-  await mkdir(target, { recursive: true })
-  const entries = await readdir(src, { withFileTypes: true })
-  for (const entry of entries) {
-    const from = join(src, entry.name)
-    const to = join(target, entry.name)
-    if (entry.isDirectory()) {
-      // Recurse and then remove the emptied source dir.
-      await moveContents(from, to)
-      try { rmSync(from, { recursive: true, force: true }) } catch { /* ignore */ }
-    } else {
-      await copyFile(from, to)
-    }
-  }
+  const tar = platform === 'win32' ? 'tar.exe' : 'tar'
+  await runProgram(spawnImpl, tar, ['-xf', zip, '-C', dest, '--strip-components=0'], dest)
 }
 
 /** Run a child program to completion; reject on non-zero exit. */
