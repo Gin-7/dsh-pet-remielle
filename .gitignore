@@ -19,7 +19,7 @@ Thumbs.db
 # local test scratch
 .tmp/
 # Electron runtime is too large for Git (184MB exe exceeds GitHub's 100MB limit).
-# Get it from the release asset or unpack a stock Electron 33 win32-x64 build here
-# (folder name must stay 'electron-win32-x64'); without it desktop mode falls
-# back to the in-page pet, or set DSH_PET_ELECTRON to an existing Electron binary.
+# It is fetched on demand into a per-platform folder (electron-win32-x64,
+# electron-linux-x64, ...); without it desktop mode falls back to the in-page
+# pet, or set DSH_PET_ELECTRON to an existing Electron binary.
 vendor/

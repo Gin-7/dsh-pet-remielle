@@ -351,8 +351,9 @@ export async function checkHandler(req, res) {
 
 // ---- 注入点（宿主注册路由时设置，测试可覆盖）----
 // - stopDesktopWindow：更新前停掉桌面宠物窗并等待其进程退出。桌宠窗的
-//   electron.exe 就住在插件包目录里（vendor/electron-win32-x64），进程不退出时
-//   Windows 会锁住文件——pnpm/git 替换包内容直接 EPERM。未注入（单测/无桌面窗）则跳过。
+//   Electron 运行时就住在插件包目录里（vendor/electron-<platform>-<arch>，
+//   由 electronArtifact 按平台解析）；Windows 上进程不退出会锁住文件——pnpm/git
+//   替换包内容直接 EPERM。未注入（单测/无桌面窗）则跳过。
 // - run / resolveInstall：测试注入假实现用。
 const hooks = {
   stopDesktopWindow: null,

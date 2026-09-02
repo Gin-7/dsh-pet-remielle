@@ -50,6 +50,29 @@ var STREAM_ENDPOINT = '/plugins/dsh-pet-remielle/stream'
 var POLL_MS = 800
 var STABLE_POLL_MS = 3000
 
+// Gateway-prefix detection (fnOS / TRIM app-center style mounting).
+// When the dsh web is served under a path prefix (e.g. /app/<appId>/ via the
+// NAS webui), the host rewrites static HTML src/href and intercepts
+// fetch/EventSource/script-src, but runtime DOM assignments like
+// img.src = '/plugins/...' are NOT rewritten and would 404 at the NAS root.
+// Detect the prefix from this bundle's own <script> load URL (the bridge
+// rewrites it when mounted), falling back to the page path; '' when served
+// directly (127.0.0.1:3080).
+var RM_GATEWAY_PREFIX = (function () {
+  try {
+    var scripts = document.querySelectorAll('script[src*="dsh-pet-remielle"]')
+    for (var i = 0; i < scripts.length; i++) {
+      var s = scripts[i].src || ''
+      var idx = s.indexOf('/plugins/dsh-pet-remielle/')
+      if (idx > 0) return s.slice(0, idx)
+    }
+    var m = (location.pathname || '').match(/^\/app\/[^/]+/)
+    if (m) return m[0]
+  } catch (e) { /* non-browser context */ }
+  return ''
+})()
+function withPrefix(p) { return RM_GATEWAY_PREFIX + p }
+
 var CSS = [
   // Right-click menu — pink palette, matching the status bubble on both the
   // in-page pet and the desktop window (hardcoded, not DSW vars).
@@ -153,9 +176,9 @@ function mk(tag, style, text) {
   return n
 }
 
-/** Sticker URL for one pet + mood, served by the host. */
+/** Sticker URL for one pet + mood, served by the host (gateway-prefix aware). */
 function gifUrl(petId, mood) {
-  return ASSETS_PREFIX + '/' + encodeURIComponent(petId) + '/' + mood + '.gif'
+  return withPrefix(ASSETS_PREFIX) + '/' + encodeURIComponent(petId) + '/' + mood + '.gif'
 }
 
 /** Quick semver-ish compare (strips leading v, numeric dot segments). */
@@ -1418,7 +1441,7 @@ function mountPet(ctx) {
     action.className = 'rm2-pet-bubble-action'
     action.setAttribute('aria-label', '蕾米埃尔桌宠')
     var brandImg = document.createElement('img')
-    brandImg.src = '/favicon.svg'
+    brandImg.src = withPrefix('/favicon.svg')
     brandImg.alt = ''
     action.appendChild(brandImg)
     var title = mk('div', '')
@@ -2134,7 +2157,7 @@ function mountPet(ctx) {
     var count = snap && snap.pics ? snap.pics : 0
     if (!count) return
     var n = Math.floor(Math.random() * count) + 1
-    var src = ASSETS_PREFIX + '/' + encodeURIComponent(currentPetId) + '/pics/' + n + '.png'
+    var src = withPrefix(ASSETS_PREFIX) + '/' + encodeURIComponent(currentPetId) + '/pics/' + n + '.png'
     // 连续双击：picStop 清掉上一轮的动画与全部定时器，立即开始新一轮
     picStop()
     // 并立即清空画布内容：新图尚未加载完成前不得残留显示上一幅

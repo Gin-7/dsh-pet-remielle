@@ -54,6 +54,8 @@ const PET_CONTENT_H = 520
 // 这正是高缩放屏上桌宠物理尺寸减半的根因。因此改读注册表的 AppliedDPI
 // （REG_DWORD，十六进制如 0xc0=192），它不受 force-dsf 开关影响。
 function readSystemScaleFactor() {
+  // 注册表是 Windows 专属；其它平台直接回退，由调用方用 screen API 兜底。
+  if (process.platform !== 'win32') return null
   try {
     const out = execFileSync(
       'reg.exe',

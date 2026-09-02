@@ -3,6 +3,8 @@
  * idempotency, full download→unzip→place flow, and all-mirrors-fail fallback).
  *
  * These tests never touch the network: fetchImpl / spawnImpl are injected.
+ * They are platform-aware: the expected artifact name / binary name come from
+ * the current platform/arch via electronArtifact() / runtimeTarget().
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -10,7 +12,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname } from 'node:path'
 import { EventEmitter } from 'node:events'
-import { downloadMirrors, ensureElectronRuntime, runtimeTarget, electronBinaryIn } from '../src/electron-fetch.mjs'
+import { downloadMirrors, ensureElectronRuntime, electronArtifact, runtimeTarget, electronBinaryIn } from '../src/electron-fetch.mjs'
+
+/** The platform-specific executable name (electron.exe on Windows, electron elsewhere). */
+const BIN = electronArtifact().binary
 
 /** Minimal web ReadableStream carrying one chunk of payload. */
 function streamOf(chunk) {
@@ -36,7 +41,10 @@ function fakeFetch(ok) {
   }
 }
 
-/** Fake `tar -xf zip -C dest`: writes a fake electron.exe into dest (win32). */
+/**
+ * Fake zip extractor (platform-aware): on darwin writes the Electron.app bundle
+ * binary, otherwise writes the platform binary (BIN) into dest.
+ */
 function fakeSpawn(platform = 'win32') {
   return (command, args) => {
     const child = new EventEmitter()
@@ -44,17 +52,18 @@ function fakeSpawn(platform = 'win32') {
     child.killed = false
     child.kill = () => { child.killed = true }
     setImmediate(() => {
-      // args = ['-xf', zip, '-C', work]
-      const work = args[args.indexOf('-C') + 1]
-      mkdirSync(work, { recursive: true })
+      // args end with '-C', <dest> (both bsdtar/tar and unzip land files in dest)
+      const idx = args.indexOf('-C')
+      const dest = idx >= 0 ? args[idx + 1] : args[args.indexOf('-d') + 1]
+      mkdirSync(dest, { recursive: true })
       if (platform === 'darwin') {
-        const bin = join(work, 'Electron.app', 'Contents', 'MacOS', 'Electron')
+        const bin = join(dest, 'Electron.app', 'Contents', 'MacOS', 'Electron')
         mkdirSync(dirname(bin), { recursive: true })
         writeFileSync(bin, 'FAKE_ELECTRON')
-        writeFileSync(join(work, 'LICENSE'), 'fake')
+        writeFileSync(join(dest, 'LICENSE'), 'fake')
       } else {
-        writeFileSync(join(work, 'electron.exe'), 'FAKE_ELECTRON')
-        writeFileSync(join(work, 'LISEZ-moi.txt'), 'fake')
+        writeFileSync(join(dest, BIN), 'FAKE_ELECTRON')
+        writeFileSync(join(dest, 'LISEZ-moi.txt'), 'fake')
       }
       child.exitCode = 0
       child.emit('exit', 0)
@@ -65,15 +74,39 @@ function fakeSpawn(platform = 'win32') {
 
 function tempVendor() {
   const dir = mkdtempSync(join(tmpdir(), 'pet-electron-test-'))
-  const vendor = join(dir, 'vendor', 'electron-win32-x64')
+  const vendor = join(dir, 'vendor', 'electron-test')
   return { dir, vendor }
 }
 
 test('downloadMirrors: npmmirror first, then github, same artifact name', () => {
   const mirrors = downloadMirrors('33.0.0', 'win32', 'x64')
+  const name = 'electron-v33.0.0-win32-x64.zip'
   assert.equal(mirrors.length, 2)
-  assert.match(mirrors[0], /^https:\/\/registry\.npmmirror\.com\/-\/binary\/electron\/v33\.0\.0\/electron-v33\.0\.0-win32-x64\.zip$/)
-  assert.match(mirrors[1], /^https:\/\/github\.com\/electron\/electron\/releases\/download\/v33\.0\.0\/electron-v33\.0\.0-win32-x64\.zip$/)
+  assert.ok(mirrors[0].startsWith('https://registry.npmmirror.com/-/binary/electron/v33.0.0/'))
+  assert.ok(mirrors[0].endsWith(`/${name}`))
+  assert.ok(mirrors[1].startsWith('https://github.com/electron/electron/releases/download/v33.0.0/'))
+  assert.ok(mirrors[1].endsWith(`/${name}`))
+})
+
+test('downloadMirrors: platform-specific names (win32 -> .exe, others -> electron)', () => {
+  const win = downloadMirrors('33.0.0', 'win32', 'x64')
+  assert.ok(win[0].includes('electron-v33.0.0-win32-x64.zip'))
+  const linux = downloadMirrors('33.0.0', 'linux', 'x64')
+  assert.ok(linux[0].includes('electron-v33.0.0-linux-x64.zip'))
+  const linuxArm = downloadMirrors('33.0.0', 'linux', 'arm64')
+  assert.ok(linuxArm[0].includes('electron-v33.0.0-linux-arm64.zip'))
+})
+
+test('electronArtifact: binary name and vendor dir are platform-specific', () => {
+  const win = electronArtifact({ platform: 'win32', arch: 'x64' })
+  assert.equal(win.binary, 'electron.exe')
+  assert.ok(win.vendorDir.includes('electron-win32-x64'))
+  assert.equal(win.zipName, 'electron-v33.0.0-win32-x64.zip')
+
+  const linux = electronArtifact({ platform: 'linux', arch: 'x64' })
+  assert.equal(linux.binary, 'electron')
+  assert.ok(linux.vendorDir.includes('electron-linux-x64'))
+  assert.equal(linux.zipName, 'electron-v33.0.0-linux-x64.zip')
 })
 
 test('downloadMirrors targets darwin-arm64 on Apple Silicon', () => {
@@ -94,7 +127,7 @@ test('ensureElectronRuntime is idempotent when the runtime already exists', asyn
   const { dir, vendor } = tempVendor()
   try {
     mkdirSync(vendor, { recursive: true })
-    writeFileSync(join(vendor, 'electron.exe'), 'EXISTS')
+    writeFileSync(join(vendor, BIN), 'EXISTS')
     let fetchCalls = 0
     const exe = await ensureElectronRuntime({
       vendorDir: vendor,
@@ -103,14 +136,14 @@ test('ensureElectronRuntime is idempotent when the runtime already exists', asyn
       fetchImpl: async () => { fetchCalls += 1; throw new Error('must not fetch') },
       spawnImpl: () => { throw new Error('must not spawn') },
     })
-    assert.equal(exe, resolve(vendor, 'electron.exe'))
+    assert.equal(exe, resolve(vendor, BIN))
     assert.equal(fetchCalls, 0)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test('ensureElectronRuntime downloads, unzips and places electron.exe', async () => {
+test('ensureElectronRuntime downloads, unzips and places the Electron binary', async () => {
   const { dir, vendor } = tempVendor()
   const progress = []
   try {
@@ -123,8 +156,8 @@ test('ensureElectronRuntime downloads, unzips and places electron.exe', async ()
       fetchImpl: fakeFetch(true),
       spawnImpl: fakeSpawn('win32'),
     })
-    assert.ok(existsSync(exe), 'electron.exe should be placed')
-    assert.equal(exe, resolve(vendor, 'electron.exe'))
+    assert.ok(existsSync(exe), `${BIN} should be placed`)
+    assert.equal(exe, resolve(vendor, BIN))
     assert.match(progress.join(' '), /已就绪/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
