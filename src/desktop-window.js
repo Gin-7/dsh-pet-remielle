@@ -24,9 +24,9 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runtimeTarget, electronBinaryIn } from './electron-fetch.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const bundledElectron = resolve(here, '..', 'vendor', 'electron-win32-x64', 'electron.exe')
 
 /**
  * Walk up from `startDir` looking for a directory containing the given
@@ -79,9 +79,8 @@ function getNpmGlobalPrefix() {
  * injectable for tests.
  * @returns `[{ kind: 'electron', command, args }]`.
  */
-export function backendCandidates({ platform = process.platform, cwd = process.cwd() } = {}) {
+export function backendCandidates({ platform = process.platform, cwd = process.cwd(), arch = process.arch } = {}) {
   const candidates = []
-  const electron = platform === 'win32' ? 'electron.exe' : 'electron'
   const args = [resolve(here, 'pet-window.cjs')]
 
   // --- 1. DSH_PET_ELECTRON env var override (highest priority) ---
@@ -89,15 +88,16 @@ export function backendCandidates({ platform = process.platform, cwd = process.c
     candidates.push({ kind: 'electron', command: process.env.DSH_PET_ELECTRON, args })
   }
 
-  // --- 2. Bundled vendor runtime (shipped with the plugin) ---
-  if (platform === 'win32' && existsSync(bundledElectron)) {
-    candidates.push({ kind: 'electron', command: bundledElectron, args })
+  // --- 2. Bundled vendor runtime (ships with the plugin) ---
+  const bundled = electronBinaryIn(resolve(here, '..', 'vendor', runtimeTarget(platform, arch).folder), platform, arch)
+  if (existsSync(bundled)) {
+    candidates.push({ kind: 'electron', command: bundled, args })
   }
 
   // --- 3. npm global install — user ran `npm install -g electron` somewhere ---
   const npmPrefix = getNpmGlobalPrefix()
   if (npmPrefix) {
-    const globalElectron = resolve(npmPrefix, 'node_modules', 'electron', 'dist', electron)
+    const globalElectron = electronBinaryIn(resolve(npmPrefix, 'node_modules', 'electron', 'dist'), platform, arch)
     if (existsSync(globalElectron)) {
       candidates.push({ kind: 'electron', command: globalElectron, args })
     }
@@ -111,7 +111,7 @@ export function backendCandidates({ platform = process.platform, cwd = process.c
       resolve(dshRoot, 'node_modules', 'electron', 'dist'),
       resolve(dshRoot, 'desktop', 'node_modules', 'electron', 'dist'),
     ]) {
-      const command = resolve(base, electron)
+      const command = electronBinaryIn(base, platform, arch)
       if (existsSync(command)) {
         candidates.push({ kind: 'electron', command, args })
         break
@@ -124,7 +124,7 @@ export function backendCandidates({ platform = process.platform, cwd = process.c
     resolve(cwd, 'desktop/node_modules/electron/dist'),
     resolve(cwd, 'node_modules/electron/dist'),
   ]) {
-    const command = resolve(base, electron)
+    const command = electronBinaryIn(base, platform, arch)
     if (existsSync(command)) {
       candidates.push({ kind: 'electron', command, args })
       break

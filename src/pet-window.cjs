@@ -18,6 +18,11 @@ const { app, BrowserWindow, ipcMain, screen, shell } = require('electron')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 
+// Electron 在 macOS 上为透明窗（transparent:true）触发 'textured' 弃用警告。
+// 它无害（窗口正常工作），但会被子进程 stderr 转发进宿主终端造成噪音。
+// 关闭 DeprecationWarning 打印，保持终端干净；不影响任何功能。
+process.noDeprecation = true
+
 // Isolate the pet window's userData: sharing the default %APPDATA%/Electron
 // with the harness shell locks the disk cache and can serve stale cached
 // responses (the page kept running the old right-click-to-close logic).
@@ -29,7 +34,13 @@ const parentPid = Number(process.env.DSH_PET_PARENT_PID || 0)
 // 该 vendor 运行时在部分 100% 缩放的机器上会把 scaleFactor 误报为 1.1，
 // 导致 DIP↔物理换算有损：窗口随每次定位按 ~1.1 倍膨胀、拖动坐标漂移。
 // 真实屏幕缩放由系统决定；这里强制按 1 处理，使所有边界换算无损。
-app.commandLine.appendSwitch('force-device-scale-factor', '1')
+// macOS 例外：Electron 在 darwin 上自动按 Retina 背板尺寸渲染，强制 dsf=1
+// 让内容以 1x 物理像素绘制、窗口尺寸按点计算产生错位，故仅在非
+// macOS 上强制（macOS 走原生逻辑点，见下方 scaleRoot 的 darwin 分支）。
+const isMac = process.platform === 'darwin'
+if (!isMac) {
+  app.commandLine.appendSwitch('force-device-scale-factor', '1')
+}
 
 // 拖动定位时同时锁定的内容尺寸（与 BrowserWindow 创建参数一致），
 // 防止任何 bounds 往返误差累积改变窗口大小。
@@ -78,7 +89,10 @@ app.whenReady().then(() => {
   // 真实缩放渲染」的做法：非整数缩放下 DIP↔物理往返有截断误差，拖拽闭环会
   // 复发持续漂移（见 drag-move 去重注释）；保持 dsf=1 的无损换算再补偿。
   // 局限：多显示器缩放不同时以主屏为准，不做跨屏动态切换。
-  const scaleRoot = Math.min(2, Math.max(0.5, readSystemScaleFactor() || screen.getPrimaryDisplay().scaleFactor || 1))
+  // macOS：Electron 以逻辑点渲染，且自动按 Retina 背板倍数缩放；
+  // 无需强制 1x，也不用缩放补偿，window/内容都按 400×520 逻辑点即可。
+  // 其它平台沿用 readSystemScaleFactor（Windows）→ screen.scaleFactor 回退。
+  const scaleRoot = isMac ? 1 : Math.min(2, Math.max(0.5, readSystemScaleFactor() || screen.getPrimaryDisplay().scaleFactor || 1))
   const uiZoom = scaleRoot
   const petW = Math.round(PET_CONTENT_W * uiZoom)
   const petH = Math.round(PET_CONTENT_H * uiZoom)

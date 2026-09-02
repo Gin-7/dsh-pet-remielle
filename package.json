@@ -52,10 +52,13 @@
   },
   "license": "MIT",
   "os": [
-    "win32"
+    "win32",
+    "darwin",
+    "linux"
   ],
   "cpu": [
-    "x64"
+    "x64",
+    "arm64"
   ],
   "author": "dsh-pet-remielle contributors",
   "keywords": [

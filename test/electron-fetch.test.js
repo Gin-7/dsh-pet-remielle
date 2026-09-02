@@ -8,9 +8,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, dirname } from 'node:path'
 import { EventEmitter } from 'node:events'
-import { downloadMirrors, ensureElectronRuntime } from '../src/electron-fetch.mjs'
+import { downloadMirrors, ensureElectronRuntime, runtimeTarget, electronBinaryIn } from '../src/electron-fetch.mjs'
 
 /** Minimal web ReadableStream carrying one chunk of payload. */
 function streamOf(chunk) {
@@ -36,8 +36,8 @@ function fakeFetch(ok) {
   }
 }
 
-/** Fake `tar -xf zip -C dest`: writes a fake electron.exe into dest. */
-function fakeSpawn() {
+/** Fake `tar -xf zip -C dest`: writes a fake electron.exe into dest (win32). */
+function fakeSpawn(platform = 'win32') {
   return (command, args) => {
     const child = new EventEmitter()
     child.exitCode = null
@@ -47,8 +47,15 @@ function fakeSpawn() {
       // args = ['-xf', zip, '-C', work]
       const work = args[args.indexOf('-C') + 1]
       mkdirSync(work, { recursive: true })
-      writeFileSync(join(work, 'electron.exe'), 'FAKE_ELECTRON')
-      writeFileSync(join(work, 'LISEZ-moi.txt'), 'fake')
+      if (platform === 'darwin') {
+        const bin = join(work, 'Electron.app', 'Contents', 'MacOS', 'Electron')
+        mkdirSync(dirname(bin), { recursive: true })
+        writeFileSync(bin, 'FAKE_ELECTRON')
+        writeFileSync(join(work, 'LICENSE'), 'fake')
+      } else {
+        writeFileSync(join(work, 'electron.exe'), 'FAKE_ELECTRON')
+        writeFileSync(join(work, 'LISEZ-moi.txt'), 'fake')
+      }
       child.exitCode = 0
       child.emit('exit', 0)
     })
@@ -63,10 +70,24 @@ function tempVendor() {
 }
 
 test('downloadMirrors: npmmirror first, then github, same artifact name', () => {
-  const mirrors = downloadMirrors('33.0.0')
+  const mirrors = downloadMirrors('33.0.0', 'win32', 'x64')
   assert.equal(mirrors.length, 2)
   assert.match(mirrors[0], /^https:\/\/registry\.npmmirror\.com\/-\/binary\/electron\/v33\.0\.0\/electron-v33\.0\.0-win32-x64\.zip$/)
   assert.match(mirrors[1], /^https:\/\/github\.com\/electron\/electron\/releases\/download\/v33\.0\.0\/electron-v33\.0\.0-win32-x64\.zip$/)
+})
+
+test('downloadMirrors targets darwin-arm64 on Apple Silicon', () => {
+  const [m0, m1] = downloadMirrors('33.0.0', 'darwin', 'arm64')
+  assert.match(m0, /electron-v33\.0\.0-darwin-arm64\.zip$/)
+  assert.match(m1, /electron-v33\.0\.0-darwin-arm64\.zip$/)
+})
+
+test('runtimeTarget/electronBinaryIn map the launchable binary per platform', () => {
+  assert.deepEqual(runtimeTarget('win32', 'x64').sub, ['electron.exe'])
+  assert.equal(electronBinaryIn('/v', 'win32', 'x64'), resolve('/v', 'electron.exe'))
+  assert.deepEqual(runtimeTarget('darwin', 'arm64').sub, ['Electron.app', 'Contents', 'MacOS', 'Electron'])
+  assert.equal(electronBinaryIn('/v', 'darwin', 'arm64'), resolve('/v', 'Electron.app', 'Contents', 'MacOS', 'Electron'))
+  assert.deepEqual(runtimeTarget('darwin', 'x64').sub, ['Electron.app', 'Contents', 'MacOS', 'Electron'])
 })
 
 test('ensureElectronRuntime is idempotent when the runtime already exists', async () => {
@@ -77,6 +98,8 @@ test('ensureElectronRuntime is idempotent when the runtime already exists', asyn
     let fetchCalls = 0
     const exe = await ensureElectronRuntime({
       vendorDir: vendor,
+      platform: 'win32',
+      arch: 'x64',
       fetchImpl: async () => { fetchCalls += 1; throw new Error('must not fetch') },
       spawnImpl: () => { throw new Error('must not spawn') },
     })
@@ -94,13 +117,34 @@ test('ensureElectronRuntime downloads, unzips and places electron.exe', async ()
     const exe = await ensureElectronRuntime({
       mirrors: ['https://mirror.test/electron.zip'],
       vendorDir: vendor,
+      platform: 'win32',
+      arch: 'x64',
       onProgress: (m) => progress.push(m),
       fetchImpl: fakeFetch(true),
-      spawnImpl: fakeSpawn(),
+      spawnImpl: fakeSpawn('win32'),
     })
     assert.ok(existsSync(exe), 'electron.exe should be placed')
     assert.equal(exe, resolve(vendor, 'electron.exe'))
     assert.match(progress.join(' '), /已就绪/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ensureElectronRuntime places the Electron.app bundle binary on macOS', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pet-electron-test-'))
+  const vendor = join(dir, 'vendor', 'electron-darwin-arm64')
+  try {
+    const exe = await ensureElectronRuntime({
+      mirrors: ['https://mirror.test/electron.zip'],
+      vendorDir: vendor,
+      platform: 'darwin',
+      arch: 'arm64',
+      fetchImpl: fakeFetch(true),
+      spawnImpl: fakeSpawn('darwin'),
+    })
+    assert.equal(exe, resolve(vendor, 'Electron.app', 'Contents', 'MacOS', 'Electron'))
+    assert.ok(existsSync(exe), 'macOS Electron binary should be placed')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -113,6 +157,8 @@ test('ensureElectronRuntime rejects when every mirror fails', async () => {
       ensureElectronRuntime({
         mirrors: ['https://a.test/x.zip', 'https://b.test/y.zip'],
         vendorDir: vendor,
+        platform: 'win32',
+        arch: 'x64',
         fetchImpl: fakeFetch(false),
         spawnImpl: () => { throw new Error('must not spawn') },
       }),
@@ -130,12 +176,14 @@ test('ensureElectronRuntime falls through to the second mirror after the first f
     await ensureElectronRuntime({
       mirrors: ['https://mirror-1.test/a.zip', 'https://mirror-2.test/b.zip'],
       vendorDir: vendor,
+      platform: 'win32',
+      arch: 'x64',
       fetchImpl: async (url) => {
         tried.push(url)
         if (url.includes('mirror-1')) return { ok: false, status: 503, statusText: 'unavailable', headers: { get: () => null }, body: null }
         return { ok: true, status: 200, statusText: 'OK', headers: { get: (k) => (k === 'content-length' ? '5' : null) }, body: streamOf('hello') }
       },
-      spawnImpl: fakeSpawn(),
+      spawnImpl: fakeSpawn('win32'),
     })
     assert.equal(tried.length, 2, 'should have tried both mirrors')
   } finally {
