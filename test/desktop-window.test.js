@@ -236,6 +236,7 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   // 气泡缩放口径走共享 bubbleZoomOf（同步/固定两模式），不再直接用桌宠 scale
   assert.match(html, /bubbleEl\.style\.zoom = String\(bubbleZoom\)/)
   assert.match(html, /bubbleStack\.style\.zoom = String\(bubbleZoom\)/)
+  assert.match(html, /imgEl\.style\.transform = snapshot\.mirror === true \? 'scaleX\(-1\)' : ''/)
   assert.match(html, /clearPulse:\s*true/)
   // SSE 订阅带 ?client=pet：宿主据此把桌宠窗口排除在 session-action 重放计数之外
   // （与 index.js streamClientOf 的约定一致），否则"无网页在线"判定永远不成立。

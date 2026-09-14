@@ -239,6 +239,17 @@ test('bubble containers scale with the configured pet size', () => {
   assert.equal(bubbleStack.style.zoom, '0.75')
 })
 
+test('pet image mirrors without flipping bubble containers', () => {
+  const harness = createHarness()
+  harness.send({ ...base, mirror: true })
+  const image = harness.elements.find((node) => node.tag === 'img')
+  const bubbleStack = harness.elements.find((node) => node.className === 'rm2-pet-bubbles')
+  assert.equal(image.style.transform, 'scaleX(-1)')
+  assert.equal(bubbleStack.style.transform, undefined)
+  harness.send({ ...base, mirror: false })
+  assert.equal(image.style.transform, '')
+})
+
 test('bubble zoom follows sync-ratio or fixed-size mode from the snapshot', () => {
   // 同步模式：zoom = scale × bubbleScaleRatio
   const syncHarness = createHarness()

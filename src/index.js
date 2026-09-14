@@ -70,6 +70,7 @@ const petEntry = Schema.object({
 export const Config = Schema.object({
   enabled: Schema.boolean().default(true).description('启用桌宠'),
   scale: Schema.number().min(0.5).max(2).step(0.05).default(1).role('slider').description('角色大小'),
+  mirror: Schema.boolean().default(false).description('左右镜像角色图案'),
   bubbleScaleSync: Schema.boolean().default(true).description('消息气泡随桌宠同步缩放（关闭后气泡使用固定大小）'),
   bubbleScaleRatio: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡相对桌宠的大小（同步缩放时生效，1 = 与桌宠等比）'),
   bubbleFixedSize: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡固定大小（不随桌宠同步缩放时生效，1 = 基准大小）'),
@@ -93,6 +94,7 @@ export const Config = Schema.object({
 const defaults = Object.freeze({
   enabled: true,
   scale: 1,
+  mirror: false,
   bubbleScaleSync: true,
   bubbleScaleRatio: 1,
   bubbleFixedSize: 1,
@@ -117,6 +119,7 @@ function publicConfig(config = {}) {
   return {
     enabled: config.enabled ?? defaults.enabled,
     scale: config.scale ?? defaults.scale,
+    mirror: config.mirror ?? defaults.mirror,
     bubbleScaleSync: config.bubbleScaleSync ?? defaults.bubbleScaleSync,
     bubbleScaleRatio: config.bubbleScaleRatio ?? defaults.bubbleScaleRatio,
     bubbleFixedSize: config.bubbleFixedSize ?? defaults.bubbleFixedSize,
@@ -189,7 +192,7 @@ async function readJsonBody(req) {
 }
 
 export function createConfigHandler(settings) {
-  const allowed = new Set(['enabled', 'scale', 'bubbleScaleSync', 'bubbleScaleRatio', 'bubbleFixedSize', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus', 'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY'])
+  const allowed = new Set(['enabled', 'scale', 'mirror', 'bubbleScaleSync', 'bubbleScaleRatio', 'bubbleFixedSize', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus', 'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY'])
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method === 'GET') {
@@ -551,6 +554,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       ok: true,
       enabled: config.enabled === true,
       scale: config.scale,
+      mirror: config.mirror === true,
       bubbleScaleSync: config.bubbleScaleSync !== false,
       bubbleScaleRatio: config.bubbleScaleRatio,
       bubbleFixedSize: config.bubbleFixedSize,

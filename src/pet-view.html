@@ -1176,7 +1176,7 @@
     var bubbleZoom = __tip.bubbleZoomOf(snapshot)
     bubbleEl.style.zoom = String(bubbleZoom)
     bubbleStack.style.zoom = String(bubbleZoom)
-    imgEl.style.transform = ''
+    imgEl.style.transform = snapshot.mirror === true ? 'scaleX(-1)' : ''
   }
 
   function apply(snapshot) {
