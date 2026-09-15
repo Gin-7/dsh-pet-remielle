@@ -208,6 +208,9 @@ export class PetReducer {
     // 一次（titleFolded 置位）——否则"始终没有标题"的会话会每个事件都全量扫一遍日志
     // （snapshotEvents 每次 append 后缓存失效，代价是 O(n²)）。改名会派发新的
     // session/title 事件，仍走第一支更新。
+    // 折取抛错（snapshotEvents 的罕见异常）时也照样置位：这里是每个事件都走的热路径，
+    // 不为了重试反复扫日志——宿主侧 readSessionTitle 是每帧重试，两条口径刻意不同；
+    // 真拿到 session/title 事件时仍会更新。
     if (event.type === 'session/title' || !record.titleFolded) {
       record.title = conversationTitleOf(session, event) ?? record.title
       record.titleFolded = true

@@ -115,7 +115,7 @@ export const defaults = Object.freeze({
   pets: DEFAULT_PETS,
 })
 
-function publicConfig(config = {}) {
+export function publicConfig(config = {}) {
   return {
     enabled: config.enabled ?? defaults.enabled,
     scale: config.scale ?? defaults.scale,
@@ -191,8 +191,19 @@ async function readJsonBody(req) {
   return value
 }
 
+/**
+ * 允许通过 config 端点 PATCH 的字段。其余 schema 字段（`activePetId` / `pets`）走宠物
+ * 注册表端点，不进这里。字段清单散在 schema / defaults / publicConfig / 本白名单四处，
+ * 加字段时最容易漏掉某一处——`test/host-snapshot.test.js` 用集合差把四处钉在一起。
+ */
+export const CONFIG_PATCH_FIELDS = Object.freeze([
+  'enabled', 'scale', 'mirror', 'bubbleScaleSync', 'bubbleScaleRatio', 'bubbleFixedSize',
+  'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus',
+  'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY',
+])
+
 export function createConfigHandler(settings) {
-  const allowed = new Set(['enabled', 'scale', 'mirror', 'bubbleScaleSync', 'bubbleScaleRatio', 'bubbleFixedSize', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus', 'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY'])
+  const allowed = new Set(CONFIG_PATCH_FIELDS)
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method === 'GET') {
@@ -898,7 +909,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   }
   const dropCompletion = (session) => {
     const id = completionSessionIdOf(session)
-    if (id && completionQueue.delete(id)) hub.broadcast()
+    if (!id || !completionQueue.delete(id)) return
+    // 记账集合跟着队列走：卡没了就不必再记着它是子会话，集合大小因此与队列同阶。
+    subagentSessionIds.delete(id)
+    hub.broadcast()
   }
   const currentSessionNow = () => (
     Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''
@@ -1152,6 +1166,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           handler: createCompletionAckHandler({
             acknowledge: (sessionId, opts) => {
               pulse = applyCompletionAck(completionQueue, pulse, sessionId, opts)
+              subagentSessionIds.delete(sessionId)
             },
             broadcast: () => hub.broadcast(),
           }),

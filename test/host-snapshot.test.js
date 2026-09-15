@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, Config, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, defaults, dropSubagentCompletions, readSessionTitle, streamClientOf } from '../src/index.js'
+import { applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, defaults, dropSubagentCompletions, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -661,4 +661,15 @@ test('dropSubagentCompletions is a no-op without queued subagent cards', () => {
   }), true)
   assert.deepEqual([...throwing.keys()], ['a'])
   assert.equal(dropSubagentCompletions(new Map(), () => true), false)
+})
+
+// 配置字段实际散在四处：Config schema、defaults、publicConfig、config 端点白名单。
+// 上面那条只钉住前两处，这里把后两处也钉上——否则下一个人加字段漏改白名单时，
+// 开关会静默失效而测试全绿（mirror 就差点这样：它四处都在，但没有任何测试守着）。
+test('patch allowlist and publicConfig cover every user-facing config field', () => {
+  // activePetId 与 pets 走宠物注册表端点，不进 config PATCH，也不出现在 publicConfig。
+  const registryOnly = new Set(['activePetId', 'pets'])
+  const expected = Object.keys(Config.dict).filter((key) => !registryOnly.has(key)).sort()
+  assert.deepEqual([...CONFIG_PATCH_FIELDS].sort(), expected)
+  assert.deepEqual(Object.keys(publicConfig({})).sort(), expected)
 })
