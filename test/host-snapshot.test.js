@@ -539,6 +539,23 @@ test('session current uplink stores and clears the reported session id', async (
   assert.equal(stored, '')
 })
 
+// 桌面窗要靠宿主快照里的 currentSessionId 才知道「你在看哪个会话」，所以上报值真变化时
+// 宿主必须广播一次（否则它的完成卡绿点消失比网页端慢半拍）；重复上报同一个值不该广播。
+test('session current uplink reports only real changes', async () => {
+  const seen = []
+  const handler = createSessionCurrentHandler({ accept: (id, meta) => seen.push([id, meta.changed]) })
+  for (const sessionId of ['s1', 's1', 's2', '', '']) {
+    await handler(request('POST', { sessionId }), responseRecorder())
+  }
+  assert.deepEqual(seen, [
+    ['s1', true],  // 首次上报：从「不知道」到「s1」也算变化
+    ['s1', false], // 同一个值重复上报
+    ['s2', true],
+    ['', true],    // 清除同样是一次变化
+    ['', false],
+  ])
+})
+
 test('session current uplink rejects non-string ids and non-POST methods', async () => {
   let stored = 'untouched'
   const handler = createSessionCurrentHandler({ accept: (id) => { stored = id } })

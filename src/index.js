@@ -316,10 +316,13 @@ export function createSessionOpenHandler({ notify, onUndelivered }) {
 
 /**
  * Web-client current-session uplink: POST { sessionId } (empty string clears).
- * Fire-and-forget — the host only remembers the id; the next snapshot or SSE
- * push carries it to every client, so no broadcast happens here.
+ * Fire-and-forget，但值真的变化时通过 `accept` 的第二个参数把 changed 交给调用方：
+ * 桌面窗的「当前会话已读」完全依赖宿主快照里的 `currentSessionId`，这里不主动广播的话
+ * 它只能等下一次任意广播、或自己 5 秒轮询，完成卡绿点因此比网页端慢半拍。
+ * @param accept - (sessionId, { changed }) => void；changed = 与上一次上报值不同。
  */
 export function createSessionCurrentHandler({ accept }) {
+  let lastReported = null
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method !== 'POST') {
@@ -329,7 +332,9 @@ export function createSessionCurrentHandler({ accept }) {
     try {
       const body = await readJsonBody(req)
       if (typeof body.sessionId !== 'string') throw new Error('sessionId must be a string')
-      accept(body.sessionId)
+      const changed = body.sessionId !== lastReported
+      lastReported = body.sessionId
+      accept(body.sessionId, { changed })
       jsonResponse(res, 200, { ok: true })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -1193,11 +1198,14 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           kind: 'exact',
           path: SESSION_CURRENT_ENDPOINT,
           handler: createSessionCurrentHandler({
-            accept: (sessionId) => {
+            accept: (sessionId, { changed }) => {
               reportedCurrentSessionId = sessionId
               // 空串（清除上报）同样刷新时间戳：清除态本身也是一种有效状态
               reportedCurrentSessionAt = Date.now()
               dismissErrorIfNeeded(sessionId)
+              // 值变了就广播：桌面窗要靠快照里的 currentSessionId 才知道你在看哪个会话，
+              // 不广播它就得等下一次任意广播或自己的 5 秒轮询（绿点消失比网页端慢半拍）。
+              if (changed) hub.broadcast()
             },
           }),
         }),
