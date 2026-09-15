@@ -451,10 +451,56 @@ test('session/title is stored on states() without changing mood', () => {
 test('states() folds session/title from the session log', () => {
   const reducer = new PetReducer()
   const sess = session('s1', {
-    events: [{ type: 'session/title', data: { title: '审查提示框颜色与溢出问题' } }],
+    snapshotEvents: () => [{ type: 'session/title', data: { title: '审查提示框颜色与溢出问题' } }],
   })
   collect(reducer, sess, [event('turn/start')])
   assert.equal(reducer.states()[0].title, '审查提示框颜色与溢出问题')
+})
+
+test('states() folds the last session/title from the log (resumed session)', () => {
+  const reducer = new PetReducer()
+  // 恢复的老会话：标题事件在插件加载前就写进日志，实时只见到 turn/start 之后的事件。
+  const sess = session('s1', {
+    snapshotEvents: () => [
+      { type: 'session/title', data: { title: '旧标题' } },
+      { type: 'turn/start' },
+      { type: 'session/title', data: { title: '新标题' } },
+    ],
+  })
+  collect(reducer, sess, [event('turn/start'), event('step/start', {}, 2)])
+  assert.equal(reducer.states()[0].title, '新标题')
+})
+
+test('states() drops title folding when the host exposes no snapshotEvents()', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', { events: [{ type: 'session/title', data: { title: '不存在的内部字段' } }] })
+  collect(reducer, sess, [event('turn/start')])
+  // session.events 不是宿主 API，不得据此产出标题
+  assert.equal(reducer.states()[0].title, undefined)
+})
+
+test('states() clips a folded title at 80 chars', () => {
+  const reducer = new PetReducer()
+  const long = '标'.repeat(120)
+  const sess = session('s1', {
+    snapshotEvents: () => [{ type: 'session/title', data: { title: long } }],
+  })
+  collect(reducer, sess, [event('turn/start')])
+  assert.equal(reducer.states()[0].title, '标'.repeat(80))
+  assert.equal(reducer.states()[0].title.length, 80)
+})
+
+test('states() takes the project name from the session header cwd', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', { header: { cwd: 'D:\\workspace\\company\\A07' } })
+  collect(reducer, sess, [event('turn/start')])
+  assert.equal(reducer.states()[0].project, 'A07')
+})
+
+test('states() falls back to an event-carried cwd when the header has none', () => {
+  const reducer = new PetReducer()
+  collect(reducer, session('s1'), [event('turn/start', { cwd: '/home/dev/work/dsh' })])
+  assert.equal(reducer.states()[0].project, 'dsh')
 })
 
 test('states() returns one entry per session with mood/message/detail', () => {

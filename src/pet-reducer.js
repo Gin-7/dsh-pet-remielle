@@ -60,12 +60,14 @@ function cleanProjectName(value) {
   return candidate.replace(/\s+/gu, ' ').slice(0, 40) || undefined
 }
 
-function conversationTitleOf(session, event) {
-  if (event?.type === 'session/title') {
-    const text = String(event?.data?.title ?? '').trim()
-    if (text) return text.slice(0, 80)
-  }
-  const events = session?.events
+/**
+ * 从会话日志折出最新标题（取最后一个 `session/title` 事件，与 DSH 的
+ * foldSessionTitle 同口径）。宿主 Session 的公开快照 API 是 `snapshotEvents()`；
+ * `session.events` 并不存在（内部 log 不对外），只认实时事件会漏掉插件加载前
+ * 已写入的标题——DSH 重启后恢复运行的老会话就是这样，标题事件不会重放。
+ */
+export function titleFromSessionLog(session) {
+  const events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : undefined
   if (!Array.isArray(events)) return undefined
   for (let i = events.length - 1; i >= 0; i--) {
     if (events[i]?.type !== 'session/title') continue
@@ -75,16 +77,22 @@ function conversationTitleOf(session, event) {
   return undefined
 }
 
+function conversationTitleOf(session, event) {
+  if (event?.type === 'session/title') {
+    const text = String(event?.data?.title ?? '').trim()
+    if (text) return text.slice(0, 80)
+  }
+  return titleFromSessionLog(session)
+}
+
+/**
+ * 气泡第二行的项目名：优先 `header.cwd`——宿主把 cwd 只挂在 `SessionHeader` 上
+ * （`Session` 类本身没有 `cwd`/`title`/`name`/`context`，header 也只有
+ * version/id/createdAt/cwd/parentSession/... ），事件 payload 自带 cwd 时作兜底。
+ */
 function projectNameOf(session, event) {
   const candidates = [
-    session?.header?.title,
-    session?.header?.name,
-    session?.title,
-    session?.name,
     session?.header?.cwd,
-    session?.cwd,
-    session?.context?.cwd,
-    event?.data?.projectName,
     event?.data?.cwd,
   ]
   return candidates.map(cleanProjectName).find(Boolean)
@@ -188,7 +196,11 @@ export class PetReducer {
     record.subagent = subagent
     record.lastSeq = Number(event.seq ?? record.lastSeq)
     record.project = projectNameOf(session, event) ?? record.project
-    record.title = conversationTitleOf(session, event) ?? record.title
+    // 标题事件本身直接取；其余事件只在还没有标题时折一次日志（折取要全量扫
+    // 会话日志，不能每个事件都做）。改名的 session/title 事件同样走第一支。
+    if (event.type === 'session/title' || !record.title) {
+      record.title = conversationTitleOf(session, event) ?? record.title
+    }
 
     switch (event.type) {
       case 'turn/start':

@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, streamClientOf } from '../src/index.js'
+import { applyCompletionAck, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -575,4 +575,46 @@ test('snapshot omits currentSessionId when unset or cleared', () => {
   })()
   assert.equal(cleared.currentSessionId, undefined)
   assert.equal('currentSessionId' in JSON.parse(JSON.stringify(cleared)), false)
+})
+
+// 会话标题读取：sessionTitle 服务口径优先，服务不可用时回落会话日志折取
+// （宿主 Session 的公开 API 是 snapshotEvents()，不是 session.events）。
+
+function logSession(...titles) {
+  return { snapshotEvents: () => titles.map((title) => ({ type: 'session/title', data: { title } })) }
+}
+
+test('readSessionTitle prefers the sessionTitle service and trims it', () => {
+  const ctx = {
+    sessions: { get: (id) => (id === 's1' ? logSession('日志里的标题') : undefined) },
+    sessionTitle: { get: () => ({ title: '  服务口径标题  ' }) },
+  }
+  assert.equal(readSessionTitle(ctx, 's1'), '服务口径标题')
+})
+
+test('readSessionTitle folds the session log when the service throws', () => {
+  // cordis 上服务未加载/被隔离时属性访问会抛错，可选链拦不住，必须整体兜住
+  const ctx = {
+    sessions: { get: () => logSession('旧标题', '日志里的标题') },
+    get sessionTitle() { throw new Error('cannot get property "sessionTitle" without inject') },
+  }
+  assert.equal(readSessionTitle(ctx, 's1'), '日志里的标题')
+})
+
+test('readSessionTitle folds the session log when the service has no usable title', () => {
+  const session = logSession('日志里的标题')
+  assert.equal(
+    readSessionTitle({ sessions: { get: () => session }, sessionTitle: { get: () => undefined } }, 's1'),
+    '日志里的标题',
+  )
+  assert.equal(
+    readSessionTitle({ sessions: { get: () => session }, sessionTitle: { get: () => ({ title: '   ' }) } }, 's1'),
+    '日志里的标题',
+  )
+})
+
+test('readSessionTitle is undefined without a live session or without any title', () => {
+  assert.equal(readSessionTitle({ sessions: { get: () => undefined } }, 'nope'), undefined)
+  assert.equal(readSessionTitle({ sessions: { get: () => logSession() } }, 's1'), undefined)
+  assert.equal(readSessionTitle({ get sessions() { throw new Error('inactive context') } }, 's1'), undefined)
 })

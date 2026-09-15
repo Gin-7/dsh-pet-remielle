@@ -20,7 +20,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Schema from '@deepseek-ai/schemastery'
-import { PetReducer } from './pet-reducer.js'
+import { PetReducer, titleFromSessionLog } from './pet-reducer.js'
 import { PetMessageKind, PetState, createMessage } from './protocol.js'
 import { DesktopWindow } from './desktop-window.js'
 import { ensureElectronRuntime } from './electron-fetch.mjs'
@@ -450,6 +450,28 @@ export function createAssetsHandler(petsRoot) {
 }
 
 /**
+ * 一个会话的标题：优先 `sessionTitle` 服务的权威口径；服务未加载或被隔离时，
+ * cordis 的属性访问会直接抛错（可选链拦不住），静默失败就等于没标题——那就回落
+ * 到直接折会话日志。插件加载前已写入标题的老会话（DSH 重启后恢复运行的会话）
+ * 不会重放 `session/title` 事件，标题只在日志里。
+ */
+export function readSessionTitle(ctx, sessionId) {
+  let session
+  try {
+    session = ctx?.sessions?.get?.(sessionId)
+  } catch {
+    return undefined
+  }
+  if (!session) return undefined
+  try {
+    const title = ctx.sessionTitle?.get?.(session)?.title
+    const text = title ? String(title).trim() : ''
+    if (text) return text
+  } catch { /* 服务不可用：继续走日志折取 */ }
+  return titleFromSessionLog(session)
+}
+
+/**
  * Build the pet snapshot served to the browser: the active PULSE overlay
  * wins while its deadline is live, otherwise the reducer's latest state.
  * `petId` (the active pet) rides along so the client can resolve sticker
@@ -822,15 +844,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getStates: () => reducer.states(),
     getCompletions: () => [...completionQueue.values()],
     getCurrent: () => (Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''),
-    getSessionTitle: (sessionId) => {
-      try {
-        const session = ctx.sessions?.get?.(sessionId)
-        const title = ctx.sessionTitle?.get?.(session)?.title
-        return title ? String(title).trim() : undefined
-      } catch {
-        return undefined
-      }
-    },
+    getSessionTitle: (sessionId) => readSessionTitle(ctx, sessionId),
   })
 
   const hub = createStreamHub({ serve: serveState })
