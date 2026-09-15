@@ -647,6 +647,30 @@ test('expired reminder for the current conversation disappears immediately', asy
   assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务已完成'), false)
 })
 
+test('desktop mode still acks the viewed session completion', async () => {
+  // 桌面模式下 applySnapshot 会因 desktopActive 提前 return（隐藏页面宠物），渲染整段跳过；
+  // 但「我看着它完成」仍然成立，已读不能跟着渲染一起被跳过——否则绿点只能手动点击才消。
+  const harness = createHarness('watched')
+  harness.send({
+    ...base,
+    desktopActive: true,
+    sessions: [{
+      sessionId: 'completion:watched',
+      targetSessionId: 'watched',
+      state: 'SUCCESS',
+      message: '任务已完成',
+      detail: '结果',
+      completed: true,
+      completionNotification: true,
+    }],
+  })
+  await Promise.resolve()
+  assert.ok(
+    harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'watched' })),
+    'desktopActive 不应阻止当前会话的自动已读',
+  )
+})
+
 test('desktop session-action without approve opens the conversation (bubble-card jump)', () => {
   const harness = createHarness()
   harness.send({ ...base, desktopActive: true, sessions: [] })

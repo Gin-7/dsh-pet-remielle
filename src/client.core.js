@@ -1415,6 +1415,32 @@ function mountPet(ctx) {
     }
     confirm()
   }
+  /**
+   * 「当前正在看的会话已完成」即已读。这是**副作用**，不能挂在渲染路径里：桌面模式下
+   * applySnapshot 会因 `desktopActive` / `pendingDesktopHide` 提前 return（隐藏页面宠物），
+   * 渲染连同 ack 一起被跳过，绿点就只剩手动点击才消。所以它在快照入口处独立执行。
+   */
+  function ackCurrentSessionCompletion(snapshot) {
+    var list = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : []
+    var completions = list.filter(function (entry) { return entry && completionOf(entry) })
+    if (!completions.length) return
+    var target = currentSessionId
+    if (!target) {
+      // selected 不可用（刚加载/多标签互相覆盖）时的保守兜底：页面在前台且只有一张完成卡，
+      // 才认定它就是用户正在看的那个；多张时不动手，宁可留给手动点击。
+      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return
+      if (completions.length !== 1) return
+      target = targetSessionOf(completions[0])
+    }
+    if (!target) return
+    for (var i = 0; i < completions.length; i++) {
+      if (targetSessionOf(completions[i]) === target) {
+        acknowledgeCompletion(target)
+        return
+      }
+    }
+  }
+
   function openSession(sessionId, completed) {
     if (!sessionId) return
     // The sessions service owns selection and mounts the conversation scope.
@@ -1692,7 +1718,8 @@ function mountPet(ctx) {
     }
     sessions = sessions.map(function (entry) {
       if (!entry || !completionOf(entry) || targetSessionOf(entry) !== currentSessionId) return entry
-      acknowledgeCompletion(currentSessionId)
+      // 已读不在这里做（见 ackCurrentSessionCompletion：渲染会被桌面模式短路），
+      // 这里只负责把已读的卡从牌叠里摘掉。
       if (entry.state === 'SUCCESS' && entry.pulseUntil > Date.now()) {
         return { ...entry, completionNotification: false }
       }
@@ -2011,6 +2038,9 @@ function mountPet(ctx) {
     }
     var wasDesktopMode = lastSnapshot && lastSnapshot.desktopMode === true
     lastSnapshot = snapshot
+    // 已读是副作用，必须在渲染短路（desktopActive / pendingDesktopHide）之前处理：
+    // 桌面模式下页面宠物被隐藏、渲染整段跳过，但"我看着它完成"这件事仍然成立。
+    ackCurrentSessionCompletion(snapshot)
     // 余额控制器：初始化/同步用量模式；用量子开关关闭时停掉 60s 轮询
     if (window.__petBalance) {
       var usageEnabled = snapshot.showBubble !== false && snapshot.showBubbleUsage === true
