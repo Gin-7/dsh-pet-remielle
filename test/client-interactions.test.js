@@ -6,6 +6,12 @@ const CLIENT = new URL('../lib/client.js', import.meta.url)
 const CLIENT_CORE = new URL('../src/client.core.js', import.meta.url)
 const STATUS_COPY = new URL('../src/status-copy.js', import.meta.url)
 
+/** 牌叠卡片的真实高度来自 CSS（测试 stub 的 offsetHeight 只是近似值，不能当卡高用）。 */
+function cardHeightFromCss(css) {
+  const rule = /\.rm2-pet-bubbles \.rm2-pet-bubble\s*\{[^}]*\}/.exec(css)?.[0] ?? ''
+  return Number(/(?<!-)height:\s*(\d+)px/.exec(rule)?.[1])
+}
+
 function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = []) {
   const elements = []
   const fetches = []
@@ -280,7 +286,16 @@ test('multi-session deck renders an inert backboard with a dynamic click target'
   assert.ok(backboard, 'backboard card should exist')
   const writes = harness.styleWrites.filter(({ element, key }) => element === backboard && key === 'marginTop')
   assert.ok(writes.length >= 1)
-  assert.equal(backboard.offsetHeight - Math.abs(Number.parseInt(writes.at(-1).value, 10)), 8)
+  const lift = Math.abs(Number.parseInt(writes.at(-1).value, 10))
+  assert.equal(lift, 80)
+  // 卡高真值在 CSS 里（stub 的 offsetHeight=68 只是近似值），所以从源文件解析：
+  // 改 CSS 卡高时这里必须跟着失败，否则又是上一轮那种"假绿"。
+  const cardHeight = cardHeightFromCss(readFileSync(CLIENT_CORE, 'utf8'))
+  assert.equal(cardHeight, 91)
+  assert.ok(
+    Math.abs((cardHeight - lift) * 0.75 - 8) <= 0.5,
+    `75% 档位露出应约 8px，实际 ${(cardHeight - lift) * 0.75}px`,
+  )
   assert.equal(backboard.children.find((node) => node.className === 'rm2-pet-bubble-stack-count').textContent, '+2')
   assert.equal(hasCard('让我想想最优解是什么'), false)
   assert.equal(hasCard('正在检查剩余问题'), false)

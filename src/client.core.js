@@ -1302,11 +1302,16 @@ function mountPet(ctx) {
   var pulseFallbackTimer = 0
   var stream = null
 
+  /** 镜像只作用于宠物图案本身（气泡、圆点不翻转）；applyVisuals 与 applyOffset 共用。 */
+  function applyMirror(target, snapshot) {
+    target.style.transform = snapshot && snapshot.mirror === true ? 'scaleX(-1)' : ''
+  }
+
   function applyVisuals(snapshot) {
     var scale = snapshot.scale ?? 1
     var opacity = snapshot.opacity ?? 1
     img.style.width = Math.round(180 * scale) + 'px'
-    img.style.transform = snapshot.mirror === true ? 'scaleX(-1)' : ''
+    applyMirror(img, snapshot)
     // 气泡缩放口径与桌面端共用 pet-tip.cjs 的 bubbleZoomOf（同步/固定两模式）
     var bubbleZoom = __tip.bubbleZoomOf(snapshot)
     bubble.style.zoom = String(bubbleZoom)
@@ -1324,6 +1329,10 @@ function mountPet(ctx) {
   // 牌叠第二层假背板的固定 sessionId（不对应真实会话，仅承载 +N 与点击跳转）。
   var BUBBLE_BACKBOARD_ID = '__pet_backboard__'
   var BACKBOARD_TIP_DEBOUNCE_MS = 400
+  // 牌叠第二层（假背板）上移量：卡片高 91px（CSS 里写死）− 80px = 露出 11px；
+  // 同步缩放模式下 stack 的 zoom = 角色大小，故 75% 档位露出约 8px（固定模式随
+  // bubbleFixedSize，不再等于 8px）。桌面端 pet-view.html 用同一个值，别只改一端。
+  var STACK_LIFT_PX = 80
   var backboardStabilizer = __tip.createBackboardStabilizer(
     commitBackboardTarget,
     BACKBOARD_TIP_DEBOUNCE_MS,
@@ -1592,7 +1601,7 @@ function mountPet(ctx) {
       if (petTipAnchor === el.node) showPetTip(el.node)
       el.node.style.zIndex = String(100 - index)
       el.node.style.order = String(index)
-      el.node.style.marginTop = '-60px'
+      el.node.style.marginTop = '-' + STACK_LIFT_PX + 'px'
       el.node.style.width = '100%'
       el.node.style.opacity = String(Math.max(0.46, 0.82 - index * 0.1))
       el.node.style.display = 'block'
@@ -1646,7 +1655,7 @@ function mountPet(ctx) {
     // when a session moves between the front and the backboard slot.
     el.node.style.zIndex = String(100 - index)
     el.node.style.order = String(index)
-    el.node.style.marginTop = index === 0 ? '0px' : '-60px'
+    el.node.style.marginTop = index === 0 ? '0px' : '-' + STACK_LIFT_PX + 'px'
     // All cards share one width: the widest visible card determines the deck,
     // so a short front card never floats above a much wider lower card.
     el.node.style.width = '100%'
@@ -2142,7 +2151,7 @@ function mountPet(ctx) {
   function applyOffset(mood) {
     var scale = (lastSnapshot && lastSnapshot.scale) || 1
     img.style.width = Math.round(180 * scale) + 'px'
-    img.style.transform = lastSnapshot && lastSnapshot.mirror === true ? 'scaleX(-1)' : ''
+    applyMirror(img, lastSnapshot)
   }
 
   // Sticker URLs resolve per active pet; a missing artwork falls back to the
