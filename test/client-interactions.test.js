@@ -702,6 +702,34 @@ test('sidebar green-dot session (completed) is surfaced as a clickable completio
   assert.ok(harness.opened.includes('ws2'), 'clicking should open the completed session')
 })
 
+test('subagent sessions never become synthesized completion cards, fork sessions still do', () => {
+  const harness = createHarness('current', true, {
+    // 子会话：DSH 列表行带 origin=subagent。宿主在 includeSubagents=false 时完全忽略它，
+    // 网页端不得再兜底合成——否则关掉开关也会看到子 Agent 的完成提醒。
+    child: { id: 'child', title: '探针任务', completed: true, cwd: 'C:\\xx\\dsh-pet-remielle', origin: 'subagent', parentId: 'parent', updatedAt: 6 },
+    // fork 会话：只带 parentId、没有 origin。它不是子 Agent，且被中断/停止时宿主不会生成
+    // 完成卡（只有正常结束才入队），网页兜底是那种情况下唯一的提醒来源，不能被一起跳过。
+    forked: { id: 'forked', title: 'fork 出来的会话', completed: true, cwd: 'C:\\xx\\dsh-pet-remielle', parentId: 'parent', updatedAt: 5 },
+    // 对照：普通会话的绿点仍必须合成卡（防止过滤写过头）。
+    plain: { id: 'plain', title: '普通会话', completed: true, cwd: 'C:\\xx\\.dsh', updatedAt: 4 },
+  })
+  harness.send({ ...base, sessions: [] })
+  // 牌叠只给顶层卡渲染标题、其余退化成 +N 背板，所以「合成了几张卡」要看背板计数：
+  // child 被过滤 → 只剩 forked + plain 两张 → 背板 +1（漏过滤会变成 +2）。
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  assert.ok(backboard, '两张合成卡应产生一张背板')
+  const stackCount = backboard.children.find((node) => node.className === 'rm2-pet-bubble-stack-count')
+  assert.equal(stackCount.textContent, '+1')
+  // 顶层卡应是 updatedAt 最大的 forked（child 未被合成）；漏过滤时顶层会变成 child。
+  const completionTitles = ['这次任务搞定啦~', '这一轮顺利完成哦', '任务完成咯，干得漂亮']
+  const topTitle = harness.elements.find(
+    (node) => node.className === 'rm2-pet-bubble-title' && completionTitles.includes(node.textContent),
+  )
+  assert.ok(topTitle, 'missing synthesized completion card')
+  topTitle.parentNode.parentNode.listeners.get('click')[0]({ preventDefault() {}, stopPropagation() {} })
+  assert.deepEqual(harness.opened, ['forked'])
+})
+
 test('bubble area swallows pet interactions (click/dblclick/pointerdown/mousedown)', () => {
   const harness = createHarness()
   // 状态页牌叠（rm2-pet-bubbles）与余额页单气泡（rm2-pet-bubble top）都要拦截：

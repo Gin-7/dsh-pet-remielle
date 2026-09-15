@@ -20,7 +20,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Schema from '@deepseek-ai/schemastery'
-import { PetReducer, titleFromSessionLog } from './pet-reducer.js'
+import { PetReducer, isSubagent, titleFromSessionLog } from './pet-reducer.js'
 import { PetMessageKind, PetState, createMessage } from './protocol.js'
 import { DesktopWindow } from './desktop-window.js'
 import { ensureElectronRuntime } from './electron-fetch.mjs'
@@ -477,6 +477,32 @@ export function readSessionTitle(ctx, sessionId) {
 }
 
 /**
+ * 关掉「响应子 Agent」时，把队列里仍留着的子会话完成卡一并撤掉。那些卡是开关还开着时
+ * 入队的，网页端那层合成卡过滤管不到宿主队列，会一直显示到被点掉或该会话重新活动。
+ * 判定走宿主自己记录的 id 集合而不是 live Session：短命子会话往往在关开关前就已 dispose，
+ * 那时取不到 Session，靠它判断会漏清。
+ * @param completionQueue - 宿主完成提醒队列（key 是真实 sessionId）。
+ * @param isSubagentSession - 该 sessionId 是否属于子会话。
+ * @returns 是否真的删掉了条目（调用方据此决定要不要广播）。
+ */
+export function dropSubagentCompletions(completionQueue, isSubagentSession) {
+  let dropped = false
+  for (const sessionId of [...completionQueue.keys()]) {
+    let subagent = false
+    try {
+      subagent = isSubagentSession(sessionId) === true
+    } catch {
+      continue
+    }
+    if (subagent) {
+      completionQueue.delete(sessionId)
+      dropped = true
+    }
+  }
+  return dropped
+}
+
+/**
  * Build the pet snapshot served to the browser: the active PULSE overlay
  * wins while its deadline is live, otherwise the reducer's latest state.
  * `petId` (the active pet) rides along so the client can resolve sticker
@@ -759,6 +785,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   let reportedCurrentSessionAt = 0
   // Completed turns stay visible until the user opens their conversation.
   const completionQueue = new Map()
+  // 事件流里见过并被判定为子会话的 sessionId。关掉「响应子 Agent」时据此清掉队列里的
+  // 残留完成卡——不能靠 live Session 判断：短命子会话往往在关开关前就已 dispose。
+  const subagentSessionIds = new Set()
 
   const onMessage = (message) => {
     if (message.kind === PetMessageKind.PULSE) {
@@ -885,6 +914,11 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   }
   const offEvent = eventCtx.on('session/event', (session, event) => {
     const eventType = String(event?.type ?? '')
+    // 子会话 id 记账：供「响应子 Agent」关闭时清理残留完成卡（见 subagentSessionIds）。
+    if (isSubagent(session)) {
+      const subagentId = completionSessionIdOf(session)
+      if (subagentId) subagentSessionIds.add(subagentId)
+    }
     // 看门狗活跃度：任何事件都刷新该会话的「最近活动」时间戳；
     // turn/end 已收尾回合，条目随之移除，不再参与悬挂判定。
     watchdog.feed(completionSessionIdOf(session))
@@ -935,9 +969,17 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   watchdogTimer.unref?.() // 双保险：即使宿主未走下方 dispose 钩子也不阻止进程退出
 
   const unwatch = settings.watch((next) => {
-    for (const message of reducer.setIncludeSubagents(next.includeSubagents === true)) {
+    const includeSubagents = next.includeSubagents === true
+    const wasIncluding = reducer.includeSubagents === true
+    for (const message of reducer.setIncludeSubagents(includeSubagents)) {
       onMessage(message)
       hub.broadcast()
+    }
+    // 开关由开转关：队列里此前入队的子会话完成卡要一起撤掉（网页端过滤只管合成卡）。
+    if (wasIncluding && !includeSubagents) {
+      if (dropSubagentCompletions(completionQueue, (sessionId) => subagentSessionIds.has(sessionId))) {
+        hub.broadcast()
+      }
     }
     // 用量模式切换时使余额缓存失效，下次请求立即按新模式计算
     const mode = normalizeUsageMode(next.usageMode)

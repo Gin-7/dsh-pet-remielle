@@ -47,7 +47,7 @@ function sessionIdOf(session) {
   return String(session?.header?.id ?? session?.id ?? 'unknown-session')
 }
 
-function isSubagent(session) {
+export function isSubagent(session) {
   return session?.header?.origin === 'subagent'
     || Number(session?.header?.delegationDepth ?? 0) > 0
 }

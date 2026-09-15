@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, Config, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, defaults, readSessionTitle, streamClientOf } from '../src/index.js'
+import { applyCompletionAck, Config, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, defaults, dropSubagentCompletions, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -632,4 +632,33 @@ test('defaults mirrors the Config schema fields and their defaults', () => {
   for (const [key, field] of Object.entries(dict)) {
     assert.deepEqual(defaults[key], field.meta?.default, `${key} 的默认值与 schema 不一致`)
   }
+})
+
+// 关掉「响应子 Agent」时要撤掉队列里残留的子会话完成卡：网页端那层过滤只管合成卡，
+// 管不到宿主队列，否则开着开关时完成的子会话卡会一直显示下去。
+test('dropSubagentCompletions drops subagent cards and keeps the rest', () => {
+  const queue = new Map([
+    ['sub', { sessionId: 'sub' }],
+    ['plain', { sessionId: 'plain' }],
+    ['gone', { sessionId: 'gone' }],
+  ])
+  // 判定走宿主记账（已 dispose 的子会话照样认得），不依赖 live Session——
+  // 所以 'gone' 也能被清掉，普通会话保持不动。
+  const subagents = new Set(['sub', 'gone'])
+  assert.equal(dropSubagentCompletions(queue, (id) => subagents.has(id)), true)
+  assert.deepEqual([...queue.keys()], ['plain'])
+})
+
+test('dropSubagentCompletions is a no-op without queued subagent cards', () => {
+  const queue = new Map([['plain', { sessionId: 'plain' }]])
+  assert.equal(dropSubagentCompletions(queue, () => false), false)
+  assert.deepEqual([...queue.keys()], ['plain'])
+  // 判定函数抛错只跳过该条，不影响其他条目
+  const throwing = new Map([['a', {}], ['b', {}]])
+  assert.equal(dropSubagentCompletions(throwing, (id) => {
+    if (id === 'a') throw new Error('boom')
+    return true
+  }), true)
+  assert.deepEqual([...throwing.keys()], ['a'])
+  assert.equal(dropSubagentCompletions(new Map(), () => true), false)
 })
