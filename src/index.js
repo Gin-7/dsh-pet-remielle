@@ -524,9 +524,10 @@ export function dropSubagentCompletions(completionQueue, isSubagentSession) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates, getCompletions, getCurrent, getSessionTitle }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getWebClients, getActivePet, getStates, getCompletions, getCurrent, getSessionTitle }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
+  const webClientsOf = typeof getWebClients === 'function' ? getWebClients : () => 0
   const activePetOf = typeof getActivePet === 'function' ? getActivePet : () => undefined
   const statesOf = typeof getStates === 'function' ? getStates : () => []
   const completionsOf = typeof getCompletions === 'function' ? getCompletions : () => []
@@ -639,6 +640,9 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       paused: config.paused === true,
       hidden: config.hidden === true,
       desktopActive: desktopActiveOf(),
+      // 网页端订阅者数（不含桌宠窗）：桌面端据此判断「有没有网页开着」，
+      // 待机气泡不再重复打开系统浏览器。
+      webClients: webClientsOf(),
       desktopMode: config.desktopMode === true,
       petId: petIdOf() ?? DEFAULT_PET_ID,
       // 网页端上报的「用户正在看的会话」；空串=清除，回落为缺失（JSON 序列化时省略该字段）
@@ -676,13 +680,20 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
  * clients as delivered — otherwise a running desktop window would make
  * every session-action look delivered and starve the pending-action replay.
  */
-export function createStreamHub({ serve }) {
+export function createStreamHub({ serve, onClientsChanged }) {
   const clients = new Map() // res -> { client: 'pet' | 'web' }
+  // 订阅者集合变化（接入/断开/失败清理）时通知调用方：快照里的 webClients 就来自这里，
+  // 没有它的话「有没有网页开着」得等下一次广播才知道（待机气泡、自动已读都要用它）。
+  const notifyClientsChanged = typeof onClientsChanged === 'function' ? onClientsChanged : () => {}
+  const drop = (res) => {
+    if (!clients.delete(res)) return
+    notifyClientsChanged()
+  }
   const send = (res, payload) => {
     try {
       res.write(`data: ${JSON.stringify(payload)}\n\n`)
     } catch {
-      clients.delete(res)
+      drop(res)
     }
   }
   const heartbeat = setInterval(() => {
@@ -690,7 +701,7 @@ export function createStreamHub({ serve }) {
       try {
         res.write(': ping\n\n')
       } catch {
-        clients.delete(res)
+        drop(res)
       }
     }
   }, 25000)
@@ -702,10 +713,11 @@ export function createStreamHub({ serve }) {
         res.write('retry: 3000\n\n')
         send(res, serve())
       } catch {
-        clients.delete(res)
+        drop(res)
       }
-      res.on?.('close', () => clients.delete(res))
-      res.on?.('error', () => clients.delete(res))
+      res.on?.('close', () => drop(res))
+      res.on?.('error', () => drop(res))
+      notifyClientsChanged()
     },
     broadcast() {
       const payload = serve()
@@ -724,13 +736,19 @@ export function createStreamHub({ serve }) {
           res.write(`data: ${JSON.stringify(payload)}\n\n`)
           if (meta.client !== 'pet') delivered++
         } catch {
-          clients.delete(res)
+          drop(res)
         }
       }
       return delivered
     },
     get size() {
       return clients.size
+    },
+    /** 网页端订阅者数（不含桌宠窗）：判断「有没有网页开着」的权威信号。 */
+    get webSize() {
+      let total = 0
+      for (const meta of clients.values()) if (meta.client !== 'pet') total++
+      return total
     },
     close() {
       clearInterval(heartbeat)
@@ -742,6 +760,7 @@ export function createStreamHub({ serve }) {
         }
       }
       clients.clear()
+      notifyClientsChanged()
     },
   }
 }
@@ -884,12 +903,15 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     return refreshing
   }
 
+  // webClients 要在快照里读 hub，而 hub 又要靠这份快照做 serve —— 用延迟绑定打破这个环。
+  let hubRef = null
   const serveState = createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
     getConfig: settingsNow,
     getPetId: () => registry.activePetId,
     getDesktopActive: () => desktopActive,
+    getWebClients: () => (hubRef ? hubRef.webSize : 0),
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
     getStates: () => reducer.states(),
     getCompletions: () => [...completionQueue.values()],
@@ -897,7 +919,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getSessionTitle: (sessionId) => readSessionTitle(ctx, sessionId),
   })
 
-  const hub = createStreamHub({ serve: serveState })
+  const hub = createStreamHub({
+    serve: serveState,
+    // 订阅者接入/断开都要重算一次快照：webClients 变了，而待机气泡与自动已读都读它。
+    onClientsChanged: () => { if (hubRef) hubRef.broadcast() },
+  })
+  hubRef = hub
   // 无网页在线时的点击卡兜底：只保留最新一条，下一个 SSE 订阅者握手时重放
   const pendingActions = createPendingActionStore()
 

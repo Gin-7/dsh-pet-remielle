@@ -690,3 +690,17 @@ test('patch allowlist and publicConfig cover every user-facing config field', ()
   assert.deepEqual([...CONFIG_PATCH_FIELDS].sort(), expected)
   assert.deepEqual(Object.keys(publicConfig({})).sort(), expected)
 })
+
+// 桌面端靠这个字段判断「有没有网页开着」（待机气泡不再重复开系统浏览器），
+// 缺省必须是 0 而不是 undefined，否则客户端会把它当成"有网页在线"。
+test('snapshot carries the web subscriber count', () => {
+  const withClients = createStateSnapshot({
+    getLatest: () => idle,
+    getPulse: () => null,
+    getConfig: () => ({}),
+    getPetId: () => DEFAULT_PET_ID,
+    getWebClients: () => 3,
+  })()
+  assert.equal(withClients.webClients, 3)
+  assert.equal(snapshotWith({ latest: idle }).webClients, 0)
+})

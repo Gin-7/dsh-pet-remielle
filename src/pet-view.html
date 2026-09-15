@@ -897,7 +897,10 @@
       // 桌面端空闲占位卡单击打开带 token 的 DSH 根页面，
       // 不把 __pet_idle__ 当作真实会话发送给宿主。
       if (el.node.dataset.idlePlaceholder === 'true') {
-        __tip.openIdleDshPage(window.petBridge)
+        // 已经有网页开着就别再开一个（浏览器不会复用已有标签，只会越堆越多）：webClients
+        // 是宿主快照里的 SSE 订阅计数，比"10 分钟 TTL 的当前会话上报"可靠得多。
+        // 代价：网页在线时点击没有可见反馈——刻意取舍，宁可不响应也不堆标签。
+        if (!(lastSnapshot && lastSnapshot.webClients > 0)) __tip.openIdleDshPage(window.petBridge)
         return
       }
       // 假背板：点击时按当帧排序动态解析第 2 名会话并跳转。

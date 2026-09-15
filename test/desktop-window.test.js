@@ -310,6 +310,13 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   }
 })
 
+test('desktop idle-bubble click defers to an open web client', () => {
+  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  // 有网页在线时不重复调 openExternal（浏览器不会复用已有标签，只会越堆越多）；
+  // webClients 来自宿主快照的 SSE 订阅计数。
+  assert.match(html, /if \(!\(lastSnapshot && lastSnapshot\.webClients > 0\)\) __tip\.openIdleDshPage\(window\.petBridge\)/)
+})
+
 test('pet-view menu expands to the work-area box and restores on close', () => {
   const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
   // 打开菜单先离屏测量再定位：扩窗 ipc 往返期间菜单不能闪现在 fixed 默认位置
