@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, readSessionTitle, streamClientOf } from '../src/index.js'
+import { applyCompletionAck, Config, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, defaults, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -617,4 +617,19 @@ test('readSessionTitle is undefined without a live session or without any title'
   assert.equal(readSessionTitle({ sessions: { get: () => undefined } }, 'nope'), undefined)
   assert.equal(readSessionTitle({ sessions: { get: () => logSession() } }, 's1'), undefined)
   assert.equal(readSessionTitle({ get sessions() { throw new Error('inactive context') } }, 's1'), undefined)
+})
+
+test('readSessionTitle survives a throwing snapshotEvents()', () => {
+  const session = { snapshotEvents: () => { throw new Error('boom') } }
+  assert.equal(readSessionTitle({ sessions: { get: () => session } }, 's1'), undefined)
+})
+
+// 配置的字段清单散在 Config schema、defaults、publicConfig 三处，加字段时最容易漏改
+// 其中一处。这里钉住「schema 字段集 == defaults 字段集」且「默认值逐一相等」。
+test('defaults mirrors the Config schema fields and their defaults', () => {
+  const dict = Config.dict
+  assert.deepEqual(Object.keys(defaults).sort(), Object.keys(dict).sort())
+  for (const [key, field] of Object.entries(dict)) {
+    assert.deepEqual(defaults[key], field.meta?.default, `${key} 的默认值与 schema 不一致`)
+  }
 })

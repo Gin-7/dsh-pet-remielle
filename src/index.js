@@ -91,7 +91,7 @@ export const Config = Schema.object({
   pets: Schema.array(petEntry).default([{ id: DEFAULT_PET_ID, name: '蕾米埃尔', enabled: true }]).description('宠物注册表'),
 }).description('由 DeepSeek Harness 会话事件驱动的多宠物 Web 桌宠')
 
-const defaults = Object.freeze({
+export const defaults = Object.freeze({
   enabled: true,
   scale: 1,
   mirror: false,
@@ -468,7 +468,12 @@ export function readSessionTitle(ctx, sessionId) {
     const text = title ? String(title).trim() : ''
     if (text) return text
   } catch { /* 服务不可用：继续走日志折取 */ }
-  return titleFromSessionLog(session)
+  // 折取本身也可能抛（`snapshotEvents()` 的实现细节），不能让异常冒到快照构建。
+  try {
+    return titleFromSessionLog(session)
+  } catch {
+    return undefined
+  }
 }
 
 /**

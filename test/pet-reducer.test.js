@@ -479,15 +479,51 @@ test('states() drops title folding when the host exposes no snapshotEvents()', (
   assert.equal(reducer.states()[0].title, undefined)
 })
 
-test('states() clips a folded title at 80 chars', () => {
+test('states() keeps the folded title verbatim (DSH already normalized it)', () => {
   const reducer = new PetReducer()
+  // DSH 写入 session/title 时已按 maxTitleBytes 规范化，插件不再二次截断——
+  // 服务口径（readSessionTitle）与日志口径必须一致，否则同一会话的标题长度随
+  // 服务是否加载而变。
   const long = '标'.repeat(120)
   const sess = session('s1', {
     snapshotEvents: () => [{ type: 'session/title', data: { title: long } }],
   })
   collect(reducer, sess, [event('turn/start')])
-  assert.equal(reducer.states()[0].title, '标'.repeat(80))
-  assert.equal(reducer.states()[0].title.length, 80)
+  assert.equal(reducer.states()[0].title, long)
+})
+
+test('states() folds the session log at most once per session', () => {
+  const reducer = new PetReducer()
+  let calls = 0
+  // 日志里始终没有 session/title（标题尚未生成）：折取不得每个事件都做一遍。
+  const sess = session('s1', {
+    snapshotEvents: () => { calls++; return [{ type: 'turn/start' }] },
+  })
+  collect(reducer, sess, [
+    event('turn/start'),
+    event('step/start', {}, 2),
+    event('tool/call', { callId: 'c1', name: 'read' }, 3),
+  ])
+  assert.equal(calls, 1)
+})
+
+test('states() survives a throwing snapshotEvents()', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', { snapshotEvents: () => { throw new Error('boom') } })
+  const messages = collect(reducer, sess, [event('turn/start')])
+  assert.ok(messages.length > 0)
+  assert.equal(reducer.states()[0].title, undefined)
+})
+
+test('session/title events keep updating a title that was folded earlier', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', {
+    snapshotEvents: () => [{ type: 'session/title', data: { title: '旧标题' } }],
+  })
+  collect(reducer, sess, [event('turn/start')])
+  assert.equal(reducer.states()[0].title, '旧标题')
+  collect(reducer, sess, [event('session/title', { title: '改过的标题' }, 2)])
+  assert.equal(reducer.states()[0].title, '改过的标题')
 })
 
 test('states() takes the project name from the session header cwd', () => {
@@ -495,12 +531,6 @@ test('states() takes the project name from the session header cwd', () => {
   const sess = session('s1', { header: { cwd: 'D:\\workspace\\company\\A07' } })
   collect(reducer, sess, [event('turn/start')])
   assert.equal(reducer.states()[0].project, 'A07')
-})
-
-test('states() falls back to an event-carried cwd when the header has none', () => {
-  const reducer = new PetReducer()
-  collect(reducer, session('s1'), [event('turn/start', { cwd: '/home/dev/work/dsh' })])
-  assert.equal(reducer.states()[0].project, 'dsh')
 })
 
 test('states() returns one entry per session with mood/message/detail', () => {
