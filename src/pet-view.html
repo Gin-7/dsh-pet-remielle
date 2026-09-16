@@ -221,6 +221,9 @@
   // 牌叠第二层假背板的固定 sessionId（不对应真实会话，仅承载 +N 与点击跳转）。
   var BUBBLE_BACKBOARD_ID = '__pet_backboard__'
   var BACKBOARD_TIP_DEBOUNCE_MS = 400
+  // 牌叠第二层上移量：卡片高 91px − 80px = 露出 11px；zoom = 角色大小，
+  // 75% 档位露出约 8px。与网页端 client.core.js 的 STACK_LIFT_PX 同值，别只改一端。
+  var STACK_LIFT_PX = 80
   // 当前会话完成卡的自动 ack 标记（sessionId -> true）：见 updateBubbles 内说明
   var autoAckedCompletions = new Map()
   var currentSessionId = undefined
@@ -894,7 +897,10 @@
       // 桌面端空闲占位卡单击打开带 token 的 DSH 根页面，
       // 不把 __pet_idle__ 当作真实会话发送给宿主。
       if (el.node.dataset.idlePlaceholder === 'true') {
-        __tip.openIdleDshPage(window.petBridge)
+        // 已经有网页开着就别再开一个（浏览器不会复用已有标签，只会越堆越多）：webClients
+        // 是宿主快照里的 SSE 订阅计数，比"10 分钟 TTL 的当前会话上报"可靠得多。
+        // 代价：网页在线时点击没有可见反馈——刻意取舍，宁可不响应也不堆标签。
+        if (!(lastSnapshot && lastSnapshot.webClients > 0)) __tip.openIdleDshPage(window.petBridge)
         return
       }
       // 假背板：点击时按当帧排序动态解析第 2 名会话并跳转。
@@ -995,7 +1001,7 @@
       if (petTipAnchor === el.node) showPetTip(el.node)
       el.node.style.zIndex = String(100 - index)
       el.node.style.order = String(index)
-      el.node.style.marginTop = '-60px'
+      el.node.style.marginTop = '-' + STACK_LIFT_PX + 'px'
       el.node.style.width = '100%'
       el.node.style.opacity = String(Math.max(0.46, 0.82 - index * 0.1))
       el.node.style.display = 'block'
@@ -1048,7 +1054,7 @@
     if (petTipAnchor === el.node) showPetTip(el.node)
     el.node.style.zIndex = String(100 - index)
     el.node.style.order = String(index)
-    el.node.style.marginTop = index === 0 ? '0px' : '-60px'
+    el.node.style.marginTop = index === 0 ? '0px' : '-' + STACK_LIFT_PX + 'px'
     el.node.style.width = '100%'
     el.node.style.opacity = index === 0 ? '1' : String(Math.max(0.46, 0.82 - index * 0.1))
     el.node.style.display = 'block'
@@ -1176,7 +1182,7 @@
     var bubbleZoom = __tip.bubbleZoomOf(snapshot)
     bubbleEl.style.zoom = String(bubbleZoom)
     bubbleStack.style.zoom = String(bubbleZoom)
-    imgEl.style.transform = ''
+    imgEl.style.transform = snapshot.mirror === true ? 'scaleX(-1)' : ''
   }
 
   function apply(snapshot) {

@@ -47,7 +47,7 @@ function sessionIdOf(session) {
   return String(session?.header?.id ?? session?.id ?? 'unknown-session')
 }
 
-function isSubagent(session) {
+export function isSubagent(session) {
   return session?.header?.origin === 'subagent'
     || Number(session?.header?.delegationDepth ?? 0) > 0
 }
@@ -60,34 +60,50 @@ function cleanProjectName(value) {
   return candidate.replace(/\s+/gu, ' ').slice(0, 40) || undefined
 }
 
-function conversationTitleOf(session, event) {
-  if (event?.type === 'session/title') {
-    const text = String(event?.data?.title ?? '').trim()
-    if (text) return text.slice(0, 80)
+/** 标题规范化：DSH 写入 `session/title` 时已按 `maxTitleBytes` 规范化，这里只做
+ *  trim 与空值判定，不再额外截断（与 DSH 的 `foldSessionTitle` 口径一致）。 */
+function normalizeTitle(value) {
+  return String(value ?? '').trim()
+}
+
+/**
+ * 从会话日志折出最新标题（取最后一个非空的 `session/title`，与 DSH 的
+ * foldSessionTitle 同源）。宿主 Session 的公开快照 API 是 `snapshotEvents()`；
+ * `session.events` 并不存在（内部 log 不对外），只认实时事件会漏掉插件加载前
+ * 已写入的标题——DSH 重启后恢复运行的老会话就是这样，标题事件不会重放。
+ */
+export function titleFromSessionLog(session) {
+  let events
+  try {
+    events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : undefined
+  } catch {
+    return undefined // 折取失败不阻断事件处理与快照构建
   }
-  const events = session?.events
   if (!Array.isArray(events)) return undefined
   for (let i = events.length - 1; i >= 0; i--) {
     if (events[i]?.type !== 'session/title') continue
-    const text = String(events[i]?.data?.title ?? '').trim()
-    if (text) return text.slice(0, 80)
+    const text = normalizeTitle(events[i]?.data?.title)
+    if (text) return text
   }
   return undefined
 }
 
-function projectNameOf(session, event) {
-  const candidates = [
-    session?.header?.title,
-    session?.header?.name,
-    session?.title,
-    session?.name,
-    session?.header?.cwd,
-    session?.cwd,
-    session?.context?.cwd,
-    event?.data?.projectName,
-    event?.data?.cwd,
-  ]
-  return candidates.map(cleanProjectName).find(Boolean)
+function conversationTitleOf(session, event) {
+  if (event?.type === 'session/title') {
+    const text = normalizeTitle(event?.data?.title)
+    if (text) return text
+  }
+  return titleFromSessionLog(session)
+}
+
+/**
+ * 气泡第二行的项目名：宿主把 cwd 只挂在 `SessionHeader` 上——`Session` 类本身没有
+ * `cwd`/`title`/`name`/`context`，header 也只有 version/id/createdAt/cwd/... 且是
+ * 冻结的创建元数据；会话事件 payload 里没有 cwd（`EpochHeader` / `RequestContext`
+ * 都不含），所以这是唯一来源。
+ */
+function projectNameOf(session) {
+  return cleanProjectName(session?.header?.cwd)
 }
 
 function progressOf(todos) {
@@ -187,8 +203,18 @@ export class PetReducer {
     const record = this.#record(sessionId)
     record.subagent = subagent
     record.lastSeq = Number(event.seq ?? record.lastSeq)
-    record.project = projectNameOf(session, event) ?? record.project
-    record.title = conversationTitleOf(session, event) ?? record.title
+    record.project = projectNameOf(session) ?? record.project
+    // 标题只可能由 session/title 事件产生：事件本身直接取，日志折取每个会话最多做
+    // 一次（titleFolded 置位）——否则"始终没有标题"的会话会每个事件都全量扫一遍日志
+    // （snapshotEvents 每次 append 后缓存失效，代价是 O(n²)）。改名会派发新的
+    // session/title 事件，仍走第一支更新。
+    // 折取抛错（snapshotEvents 的罕见异常）时也照样置位：这里是每个事件都走的热路径，
+    // 不为了重试反复扫日志——宿主侧 readSessionTitle 是每帧重试，两条口径刻意不同；
+    // 真拿到 session/title 事件时仍会更新。
+    if (event.type === 'session/title' || !record.titleFolded) {
+      record.title = conversationTitleOf(session, event) ?? record.title
+      record.titleFolded = true
+    }
 
     switch (event.type) {
       case 'turn/start':
@@ -566,6 +592,7 @@ export class PetReducer {
       progress: undefined,
       project: undefined,
       title: undefined,
+      titleFolded: false,
       subagent: false,
       lastSeq: -1,
       updatedAt: ++this.clock,

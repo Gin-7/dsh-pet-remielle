@@ -20,7 +20,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Schema from '@deepseek-ai/schemastery'
-import { PetReducer } from './pet-reducer.js'
+import { PetReducer, isSubagent, titleFromSessionLog } from './pet-reducer.js'
 import { PetMessageKind, PetState, createMessage } from './protocol.js'
 import { DesktopWindow } from './desktop-window.js'
 import { ensureElectronRuntime } from './electron-fetch.mjs'
@@ -70,6 +70,7 @@ const petEntry = Schema.object({
 export const Config = Schema.object({
   enabled: Schema.boolean().default(true).description('启用桌宠'),
   scale: Schema.number().min(0.5).max(2).step(0.05).default(1).role('slider').description('角色大小'),
+  mirror: Schema.boolean().default(false).description('左右镜像角色图案'),
   bubbleScaleSync: Schema.boolean().default(true).description('消息气泡随桌宠同步缩放（关闭后气泡使用固定大小）'),
   bubbleScaleRatio: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡相对桌宠的大小（同步缩放时生效，1 = 与桌宠等比）'),
   bubbleFixedSize: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡固定大小（不随桌宠同步缩放时生效，1 = 基准大小）'),
@@ -90,9 +91,10 @@ export const Config = Schema.object({
   pets: Schema.array(petEntry).default([{ id: DEFAULT_PET_ID, name: '蕾米埃尔', enabled: true }]).description('宠物注册表'),
 }).description('由 DeepSeek Harness 会话事件驱动的多宠物 Web 桌宠')
 
-const defaults = Object.freeze({
+export const defaults = Object.freeze({
   enabled: true,
   scale: 1,
+  mirror: false,
   bubbleScaleSync: true,
   bubbleScaleRatio: 1,
   bubbleFixedSize: 1,
@@ -113,10 +115,11 @@ const defaults = Object.freeze({
   pets: DEFAULT_PETS,
 })
 
-function publicConfig(config = {}) {
+export function publicConfig(config = {}) {
   return {
     enabled: config.enabled ?? defaults.enabled,
     scale: config.scale ?? defaults.scale,
+    mirror: config.mirror ?? defaults.mirror,
     bubbleScaleSync: config.bubbleScaleSync ?? defaults.bubbleScaleSync,
     bubbleScaleRatio: config.bubbleScaleRatio ?? defaults.bubbleScaleRatio,
     bubbleFixedSize: config.bubbleFixedSize ?? defaults.bubbleFixedSize,
@@ -188,8 +191,19 @@ async function readJsonBody(req) {
   return value
 }
 
+/**
+ * 允许通过 config 端点 PATCH 的字段。其余 schema 字段（`activePetId` / `pets`）走宠物
+ * 注册表端点，不进这里。字段清单散在 schema / defaults / publicConfig / 本白名单四处，
+ * 加字段时最容易漏掉某一处——`test/host-snapshot.test.js` 用集合差把四处钉在一起。
+ */
+export const CONFIG_PATCH_FIELDS = Object.freeze([
+  'enabled', 'scale', 'mirror', 'bubbleScaleSync', 'bubbleScaleRatio', 'bubbleFixedSize',
+  'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus',
+  'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY',
+])
+
 export function createConfigHandler(settings) {
-  const allowed = new Set(['enabled', 'scale', 'bubbleScaleSync', 'bubbleScaleRatio', 'bubbleFixedSize', 'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus', 'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY'])
+  const allowed = new Set(CONFIG_PATCH_FIELDS)
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method === 'GET') {
@@ -302,10 +316,13 @@ export function createSessionOpenHandler({ notify, onUndelivered }) {
 
 /**
  * Web-client current-session uplink: POST { sessionId } (empty string clears).
- * Fire-and-forget — the host only remembers the id; the next snapshot or SSE
- * push carries it to every client, so no broadcast happens here.
+ * Fire-and-forget，但值真的变化时通过 `accept` 的第二个参数把 changed 交给调用方：
+ * 桌面窗的「当前会话已读」完全依赖宿主快照里的 `currentSessionId`，这里不主动广播的话
+ * 它只能等下一次任意广播、或自己 5 秒轮询，完成卡绿点因此比网页端慢半拍。
+ * @param accept - (sessionId, { changed }) => void；changed = 与上一次上报值不同。
  */
 export function createSessionCurrentHandler({ accept }) {
+  let lastReported = null
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method !== 'POST') {
@@ -315,7 +332,9 @@ export function createSessionCurrentHandler({ accept }) {
     try {
       const body = await readJsonBody(req)
       if (typeof body.sessionId !== 'string') throw new Error('sessionId must be a string')
-      accept(body.sessionId)
+      const changed = body.sessionId !== lastReported
+      lastReported = body.sessionId
+      accept(body.sessionId, { changed })
       jsonResponse(res, 200, { ok: true })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -447,14 +466,68 @@ export function createAssetsHandler(petsRoot) {
 }
 
 /**
+ * 一个会话的标题：优先 `sessionTitle` 服务的权威口径；服务未加载或被隔离时，
+ * cordis 的属性访问会直接抛错（可选链拦不住），静默失败就等于没标题——那就回落
+ * 到直接折会话日志。插件加载前已写入标题的老会话（DSH 重启后恢复运行的会话）
+ * 不会重放 `session/title` 事件，标题只在日志里。
+ */
+export function readSessionTitle(ctx, sessionId) {
+  let session
+  try {
+    session = ctx?.sessions?.get?.(sessionId)
+  } catch {
+    return undefined
+  }
+  if (!session) return undefined
+  try {
+    const title = ctx.sessionTitle?.get?.(session)?.title
+    const text = title ? String(title).trim() : ''
+    if (text) return text
+  } catch { /* 服务不可用：继续走日志折取 */ }
+  // 折取本身也可能抛（`snapshotEvents()` 的实现细节），不能让异常冒到快照构建。
+  try {
+    return titleFromSessionLog(session)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 关掉「响应子 Agent」时，把队列里仍留着的子会话完成卡一并撤掉。那些卡是开关还开着时
+ * 入队的，网页端那层合成卡过滤管不到宿主队列，会一直显示到被点掉或该会话重新活动。
+ * 判定走宿主自己记录的 id 集合而不是 live Session：短命子会话往往在关开关前就已 dispose，
+ * 那时取不到 Session，靠它判断会漏清。
+ * @param completionQueue - 宿主完成提醒队列（key 是真实 sessionId）。
+ * @param isSubagentSession - 该 sessionId 是否属于子会话。
+ * @returns 是否真的删掉了条目（调用方据此决定要不要广播）。
+ */
+export function dropSubagentCompletions(completionQueue, isSubagentSession) {
+  let dropped = false
+  for (const sessionId of [...completionQueue.keys()]) {
+    let subagent = false
+    try {
+      subagent = isSubagentSession(sessionId) === true
+    } catch {
+      continue
+    }
+    if (subagent) {
+      completionQueue.delete(sessionId)
+      dropped = true
+    }
+  }
+  return dropped
+}
+
+/**
  * Build the pet snapshot served to the browser: the active PULSE overlay
  * wins while its deadline is live, otherwise the reducer's latest state.
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getActivePet, getStates, getCompletions, getCurrent, getSessionTitle }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getWebClients, getActivePet, getStates, getCompletions, getCurrent, getSessionTitle }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
+  const webClientsOf = typeof getWebClients === 'function' ? getWebClients : () => 0
   const activePetOf = typeof getActivePet === 'function' ? getActivePet : () => undefined
   const statesOf = typeof getStates === 'function' ? getStates : () => []
   const completionsOf = typeof getCompletions === 'function' ? getCompletions : () => []
@@ -551,6 +624,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       ok: true,
       enabled: config.enabled === true,
       scale: config.scale,
+      mirror: config.mirror === true,
       bubbleScaleSync: config.bubbleScaleSync !== false,
       bubbleScaleRatio: config.bubbleScaleRatio,
       bubbleFixedSize: config.bubbleFixedSize,
@@ -566,6 +640,9 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       paused: config.paused === true,
       hidden: config.hidden === true,
       desktopActive: desktopActiveOf(),
+      // 网页端订阅者数（不含桌宠窗）：桌面端据此判断「有没有网页开着」，
+      // 待机气泡不再重复打开系统浏览器。
+      webClients: webClientsOf(),
       desktopMode: config.desktopMode === true,
       petId: petIdOf() ?? DEFAULT_PET_ID,
       // 网页端上报的「用户正在看的会话」；空串=清除，回落为缺失（JSON 序列化时省略该字段）
@@ -603,13 +680,20 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
  * clients as delivered — otherwise a running desktop window would make
  * every session-action look delivered and starve the pending-action replay.
  */
-export function createStreamHub({ serve }) {
+export function createStreamHub({ serve, onClientsChanged }) {
   const clients = new Map() // res -> { client: 'pet' | 'web' }
+  // 订阅者集合变化（接入/断开/失败清理）时通知调用方：快照里的 webClients 就来自这里，
+  // 没有它的话「有没有网页开着」得等下一次广播才知道（待机气泡、自动已读都要用它）。
+  const notifyClientsChanged = typeof onClientsChanged === 'function' ? onClientsChanged : () => {}
+  const drop = (res) => {
+    if (!clients.delete(res)) return
+    notifyClientsChanged()
+  }
   const send = (res, payload) => {
     try {
       res.write(`data: ${JSON.stringify(payload)}\n\n`)
     } catch {
-      clients.delete(res)
+      drop(res)
     }
   }
   const heartbeat = setInterval(() => {
@@ -617,7 +701,7 @@ export function createStreamHub({ serve }) {
       try {
         res.write(': ping\n\n')
       } catch {
-        clients.delete(res)
+        drop(res)
       }
     }
   }, 25000)
@@ -629,10 +713,11 @@ export function createStreamHub({ serve }) {
         res.write('retry: 3000\n\n')
         send(res, serve())
       } catch {
-        clients.delete(res)
+        drop(res)
       }
-      res.on?.('close', () => clients.delete(res))
-      res.on?.('error', () => clients.delete(res))
+      res.on?.('close', () => drop(res))
+      res.on?.('error', () => drop(res))
+      notifyClientsChanged()
     },
     broadcast() {
       const payload = serve()
@@ -651,13 +736,19 @@ export function createStreamHub({ serve }) {
           res.write(`data: ${JSON.stringify(payload)}\n\n`)
           if (meta.client !== 'pet') delivered++
         } catch {
-          clients.delete(res)
+          drop(res)
         }
       }
       return delivered
     },
     get size() {
       return clients.size
+    },
+    /** 网页端订阅者数（不含桌宠窗）：判断「有没有网页开着」的权威信号。 */
+    get webSize() {
+      let total = 0
+      for (const meta of clients.values()) if (meta.client !== 'pet') total++
+      return total
     },
     close() {
       clearInterval(heartbeat)
@@ -669,6 +760,7 @@ export function createStreamHub({ serve }) {
         }
       }
       clients.clear()
+      notifyClientsChanged()
     },
   }
 }
@@ -728,6 +820,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   let reportedCurrentSessionAt = 0
   // Completed turns stay visible until the user opens their conversation.
   const completionQueue = new Map()
+  // 事件流里见过并被判定为子会话的 sessionId。关掉「响应子 Agent」时据此清掉队列里的
+  // 残留完成卡——不能靠 live Session 判断：短命子会话往往在关开关前就已 dispose。
+  const subagentSessionIds = new Set()
 
   const onMessage = (message) => {
     if (message.kind === PetMessageKind.PULSE) {
@@ -808,28 +903,28 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     return refreshing
   }
 
+  // webClients 要在快照里读 hub，而 hub 又要靠这份快照做 serve —— 用延迟绑定打破这个环。
+  let hubRef = null
   const serveState = createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
     getConfig: settingsNow,
     getPetId: () => registry.activePetId,
     getDesktopActive: () => desktopActive,
+    getWebClients: () => (hubRef ? hubRef.webSize : 0),
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
     getStates: () => reducer.states(),
     getCompletions: () => [...completionQueue.values()],
     getCurrent: () => (Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''),
-    getSessionTitle: (sessionId) => {
-      try {
-        const session = ctx.sessions?.get?.(sessionId)
-        const title = ctx.sessionTitle?.get?.(session)?.title
-        return title ? String(title).trim() : undefined
-      } catch {
-        return undefined
-      }
-    },
+    getSessionTitle: (sessionId) => readSessionTitle(ctx, sessionId),
   })
 
-  const hub = createStreamHub({ serve: serveState })
+  const hub = createStreamHub({
+    serve: serveState,
+    // 订阅者接入/断开都要重算一次快照：webClients 变了，而待机气泡与自动已读都读它。
+    onClientsChanged: () => { if (hubRef) hubRef.broadcast() },
+  })
+  hubRef = hub
   // 无网页在线时的点击卡兜底：只保留最新一条，下一个 SSE 订阅者握手时重放
   const pendingActions = createPendingActionStore()
 
@@ -846,7 +941,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   }
   const dropCompletion = (session) => {
     const id = completionSessionIdOf(session)
-    if (id && completionQueue.delete(id)) hub.broadcast()
+    if (!id || !completionQueue.delete(id)) return
+    // 记账集合跟着队列走：卡没了就不必再记着它是子会话，集合大小因此与队列同阶。
+    subagentSessionIds.delete(id)
+    hub.broadcast()
   }
   const currentSessionNow = () => (
     Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''
@@ -862,6 +960,11 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   }
   const offEvent = eventCtx.on('session/event', (session, event) => {
     const eventType = String(event?.type ?? '')
+    // 子会话 id 记账：供「响应子 Agent」关闭时清理残留完成卡（见 subagentSessionIds）。
+    if (isSubagent(session)) {
+      const subagentId = completionSessionIdOf(session)
+      if (subagentId) subagentSessionIds.add(subagentId)
+    }
     // 看门狗活跃度：任何事件都刷新该会话的「最近活动」时间戳；
     // turn/end 已收尾回合，条目随之移除，不再参与悬挂判定。
     watchdog.feed(completionSessionIdOf(session))
@@ -912,9 +1015,17 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   watchdogTimer.unref?.() // 双保险：即使宿主未走下方 dispose 钩子也不阻止进程退出
 
   const unwatch = settings.watch((next) => {
-    for (const message of reducer.setIncludeSubagents(next.includeSubagents === true)) {
+    const includeSubagents = next.includeSubagents === true
+    const wasIncluding = reducer.includeSubagents === true
+    for (const message of reducer.setIncludeSubagents(includeSubagents)) {
       onMessage(message)
       hub.broadcast()
+    }
+    // 开关由开转关：队列里此前入队的子会话完成卡要一起撤掉（网页端过滤只管合成卡）。
+    if (wasIncluding && !includeSubagents) {
+      if (dropSubagentCompletions(completionQueue, (sessionId) => subagentSessionIds.has(sessionId))) {
+        hub.broadcast()
+      }
     }
     // 用量模式切换时使余额缓存失效，下次请求立即按新模式计算
     const mode = normalizeUsageMode(next.usageMode)
@@ -1087,6 +1198,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           handler: createCompletionAckHandler({
             acknowledge: (sessionId, opts) => {
               pulse = applyCompletionAck(completionQueue, pulse, sessionId, opts)
+              subagentSessionIds.delete(sessionId)
             },
             broadcast: () => hub.broadcast(),
           }),
@@ -1113,11 +1225,14 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           kind: 'exact',
           path: SESSION_CURRENT_ENDPOINT,
           handler: createSessionCurrentHandler({
-            accept: (sessionId) => {
+            accept: (sessionId, { changed }) => {
               reportedCurrentSessionId = sessionId
               // 空串（清除上报）同样刷新时间戳：清除态本身也是一种有效状态
               reportedCurrentSessionAt = Date.now()
               dismissErrorIfNeeded(sessionId)
+              // 值变了就广播：桌面窗要靠快照里的 currentSessionId 才知道你在看哪个会话，
+              // 不广播它就得等下一次任意广播或自己的 5 秒轮询（绿点消失比网页端慢半拍）。
+              if (changed) hub.broadcast()
             },
           }),
         }),

@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, streamClientOf } from '../src/index.js'
+import { applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, defaults, dropSubagentCompletions, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -539,6 +539,23 @@ test('session current uplink stores and clears the reported session id', async (
   assert.equal(stored, '')
 })
 
+// 桌面窗要靠宿主快照里的 currentSessionId 才知道「你在看哪个会话」，所以上报值真变化时
+// 宿主必须广播一次（否则它的完成卡绿点消失比网页端慢半拍）；重复上报同一个值不该广播。
+test('session current uplink reports only real changes', async () => {
+  const seen = []
+  const handler = createSessionCurrentHandler({ accept: (id, meta) => seen.push([id, meta.changed]) })
+  for (const sessionId of ['s1', 's1', 's2', '', '']) {
+    await handler(request('POST', { sessionId }), responseRecorder())
+  }
+  assert.deepEqual(seen, [
+    ['s1', true],  // 首次上报：从「不知道」到「s1」也算变化
+    ['s1', false], // 同一个值重复上报
+    ['s2', true],
+    ['', true],    // 清除同样是一次变化
+    ['', false],
+  ])
+})
+
 test('session current uplink rejects non-string ids and non-POST methods', async () => {
   let stored = 'untouched'
   const handler = createSessionCurrentHandler({ accept: (id) => { stored = id } })
@@ -575,4 +592,115 @@ test('snapshot omits currentSessionId when unset or cleared', () => {
   })()
   assert.equal(cleared.currentSessionId, undefined)
   assert.equal('currentSessionId' in JSON.parse(JSON.stringify(cleared)), false)
+})
+
+// 会话标题读取：sessionTitle 服务口径优先，服务不可用时回落会话日志折取
+// （宿主 Session 的公开 API 是 snapshotEvents()，不是 session.events）。
+
+function logSession(...titles) {
+  return { snapshotEvents: () => titles.map((title) => ({ type: 'session/title', data: { title } })) }
+}
+
+test('readSessionTitle prefers the sessionTitle service and trims it', () => {
+  const ctx = {
+    sessions: { get: (id) => (id === 's1' ? logSession('日志里的标题') : undefined) },
+    sessionTitle: { get: () => ({ title: '  服务口径标题  ' }) },
+  }
+  assert.equal(readSessionTitle(ctx, 's1'), '服务口径标题')
+})
+
+test('readSessionTitle folds the session log when the service throws', () => {
+  // cordis 上服务未加载/被隔离时属性访问会抛错，可选链拦不住，必须整体兜住
+  const ctx = {
+    sessions: { get: () => logSession('旧标题', '日志里的标题') },
+    get sessionTitle() { throw new Error('cannot get property "sessionTitle" without inject') },
+  }
+  assert.equal(readSessionTitle(ctx, 's1'), '日志里的标题')
+})
+
+test('readSessionTitle folds the session log when the service has no usable title', () => {
+  const session = logSession('日志里的标题')
+  assert.equal(
+    readSessionTitle({ sessions: { get: () => session }, sessionTitle: { get: () => undefined } }, 's1'),
+    '日志里的标题',
+  )
+  assert.equal(
+    readSessionTitle({ sessions: { get: () => session }, sessionTitle: { get: () => ({ title: '   ' }) } }, 's1'),
+    '日志里的标题',
+  )
+})
+
+test('readSessionTitle is undefined without a live session or without any title', () => {
+  assert.equal(readSessionTitle({ sessions: { get: () => undefined } }, 'nope'), undefined)
+  assert.equal(readSessionTitle({ sessions: { get: () => logSession() } }, 's1'), undefined)
+  assert.equal(readSessionTitle({ get sessions() { throw new Error('inactive context') } }, 's1'), undefined)
+})
+
+test('readSessionTitle survives a throwing snapshotEvents()', () => {
+  const session = { snapshotEvents: () => { throw new Error('boom') } }
+  assert.equal(readSessionTitle({ sessions: { get: () => session } }, 's1'), undefined)
+})
+
+// 配置的字段清单散在 Config schema、defaults、publicConfig 三处，加字段时最容易漏改
+// 其中一处。这里钉住「schema 字段集 == defaults 字段集」且「默认值逐一相等」。
+test('defaults mirrors the Config schema fields and their defaults', () => {
+  const dict = Config.dict
+  assert.deepEqual(Object.keys(defaults).sort(), Object.keys(dict).sort())
+  for (const [key, field] of Object.entries(dict)) {
+    assert.deepEqual(defaults[key], field.meta?.default, `${key} 的默认值与 schema 不一致`)
+  }
+})
+
+// 关掉「响应子 Agent」时要撤掉队列里残留的子会话完成卡：网页端那层过滤只管合成卡，
+// 管不到宿主队列，否则开着开关时完成的子会话卡会一直显示下去。
+test('dropSubagentCompletions drops subagent cards and keeps the rest', () => {
+  const queue = new Map([
+    ['sub', { sessionId: 'sub' }],
+    ['plain', { sessionId: 'plain' }],
+    ['gone', { sessionId: 'gone' }],
+  ])
+  // 判定走宿主记账（已 dispose 的子会话照样认得），不依赖 live Session——
+  // 所以 'gone' 也能被清掉，普通会话保持不动。
+  const subagents = new Set(['sub', 'gone'])
+  assert.equal(dropSubagentCompletions(queue, (id) => subagents.has(id)), true)
+  assert.deepEqual([...queue.keys()], ['plain'])
+})
+
+test('dropSubagentCompletions is a no-op without queued subagent cards', () => {
+  const queue = new Map([['plain', { sessionId: 'plain' }]])
+  assert.equal(dropSubagentCompletions(queue, () => false), false)
+  assert.deepEqual([...queue.keys()], ['plain'])
+  // 判定函数抛错只跳过该条，不影响其他条目
+  const throwing = new Map([['a', {}], ['b', {}]])
+  assert.equal(dropSubagentCompletions(throwing, (id) => {
+    if (id === 'a') throw new Error('boom')
+    return true
+  }), true)
+  assert.deepEqual([...throwing.keys()], ['a'])
+  assert.equal(dropSubagentCompletions(new Map(), () => true), false)
+})
+
+// 配置字段实际散在四处：Config schema、defaults、publicConfig、config 端点白名单。
+// 上面那条只钉住前两处，这里把后两处也钉上——否则下一个人加字段漏改白名单时，
+// 开关会静默失效而测试全绿（mirror 就差点这样：它四处都在，但没有任何测试守着）。
+test('patch allowlist and publicConfig cover every user-facing config field', () => {
+  // activePetId 与 pets 走宠物注册表端点，不进 config PATCH，也不出现在 publicConfig。
+  const registryOnly = new Set(['activePetId', 'pets'])
+  const expected = Object.keys(Config.dict).filter((key) => !registryOnly.has(key)).sort()
+  assert.deepEqual([...CONFIG_PATCH_FIELDS].sort(), expected)
+  assert.deepEqual(Object.keys(publicConfig({})).sort(), expected)
+})
+
+// 桌面端靠这个字段判断「有没有网页开着」（待机气泡不再重复开系统浏览器），
+// 缺省必须是 0 而不是 undefined，否则客户端会把它当成"有网页在线"。
+test('snapshot carries the web subscriber count', () => {
+  const withClients = createStateSnapshot({
+    getLatest: () => idle,
+    getPulse: () => null,
+    getConfig: () => ({}),
+    getPetId: () => DEFAULT_PET_ID,
+    getWebClients: () => 3,
+  })()
+  assert.equal(withClients.webClients, 3)
+  assert.equal(snapshotWith({ latest: idle }).webClients, 0)
 })

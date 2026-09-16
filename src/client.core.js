@@ -739,6 +739,9 @@ function PetsSection() {
   // 子设置项：随父开关缩进，表达从属关系（不用强调边框，纯留白缩进）
   var subFieldStyle = { marginLeft: 18, paddingLeft: 12 }
   var appearanceTab = React.createElement('div', null,
+    React.createElement(Field, { label: '角色左右镜像', hint: v.mirror === true ? '已镜像' : '正常方向' },
+      React.createElement(Switch, { checked: v.mirror === true, disabled: !config, onChange: function (val) { write('mirror', val) } }),
+    ),
     React.createElement(Field, { label: '角色大小', hint: Math.round((v.scale ?? 1) * 100) + '%' },
       React.createElement('input', { type: 'range', min: 0.5, max: 2, step: 0.05, value: v.scale ?? 1, disabled: !config, onChange: function (e) { writeSlider('scale', Number(e.target.value)) } }),
     ),
@@ -1299,10 +1302,16 @@ function mountPet(ctx) {
   var pulseFallbackTimer = 0
   var stream = null
 
+  /** 镜像只作用于宠物图案本身（气泡、圆点不翻转）；applyVisuals 与 applyOffset 共用。 */
+  function applyMirror(target, snapshot) {
+    target.style.transform = snapshot && snapshot.mirror === true ? 'scaleX(-1)' : ''
+  }
+
   function applyVisuals(snapshot) {
     var scale = snapshot.scale ?? 1
     var opacity = snapshot.opacity ?? 1
     img.style.width = Math.round(180 * scale) + 'px'
+    applyMirror(img, snapshot)
     // 气泡缩放口径与桌面端共用 pet-tip.cjs 的 bubbleZoomOf（同步/固定两模式）
     var bubbleZoom = __tip.bubbleZoomOf(snapshot)
     bubble.style.zoom = String(bubbleZoom)
@@ -1320,6 +1329,10 @@ function mountPet(ctx) {
   // 牌叠第二层假背板的固定 sessionId（不对应真实会话，仅承载 +N 与点击跳转）。
   var BUBBLE_BACKBOARD_ID = '__pet_backboard__'
   var BACKBOARD_TIP_DEBOUNCE_MS = 400
+  // 牌叠第二层（假背板）上移量：卡片高 91px（CSS 里写死）− 80px = 露出 11px；
+  // 同步缩放模式下 stack 的 zoom = 角色大小，故 75% 档位露出约 8px（固定模式随
+  // bubbleFixedSize，不再等于 8px）。桌面端 pet-view.html 用同一个值，别只改一端。
+  var STACK_LIFT_PX = 80
   var backboardStabilizer = __tip.createBackboardStabilizer(
     commitBackboardTarget,
     BACKBOARD_TIP_DEBOUNCE_MS,
@@ -1402,6 +1415,32 @@ function mountPet(ctx) {
     }
     confirm()
   }
+  /**
+   * 「当前正在看的会话已完成」即已读。这是**副作用**，不能挂在渲染路径里：桌面模式下
+   * applySnapshot 会因 `desktopActive` / `pendingDesktopHide` 提前 return（隐藏页面宠物），
+   * 渲染连同 ack 一起被跳过，绿点就只剩手动点击才消。所以它在快照入口处独立执行。
+   */
+  function ackCurrentSessionCompletion(snapshot) {
+    var list = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : []
+    var completions = list.filter(function (entry) { return entry && completionOf(entry) })
+    if (!completions.length) return
+    var target = currentSessionId
+    if (!target) {
+      // selected 不可用（刚加载/多标签互相覆盖）时的保守兜底：页面在前台且只有一张完成卡，
+      // 才认定它就是用户正在看的那个；多张时不动手，宁可留给手动点击。
+      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return
+      if (completions.length !== 1) return
+      target = targetSessionOf(completions[0])
+    }
+    if (!target) return
+    for (var i = 0; i < completions.length; i++) {
+      if (targetSessionOf(completions[i]) === target) {
+        acknowledgeCompletion(target)
+        return
+      }
+    }
+  }
+
   function openSession(sessionId, completed) {
     if (!sessionId) return
     // The sessions service owns selection and mounts the conversation scope.
@@ -1588,7 +1627,7 @@ function mountPet(ctx) {
       if (petTipAnchor === el.node) showPetTip(el.node)
       el.node.style.zIndex = String(100 - index)
       el.node.style.order = String(index)
-      el.node.style.marginTop = '-60px'
+      el.node.style.marginTop = '-' + STACK_LIFT_PX + 'px'
       el.node.style.width = '100%'
       el.node.style.opacity = String(Math.max(0.46, 0.82 - index * 0.1))
       el.node.style.display = 'block'
@@ -1642,7 +1681,7 @@ function mountPet(ctx) {
     // when a session moves between the front and the backboard slot.
     el.node.style.zIndex = String(100 - index)
     el.node.style.order = String(index)
-    el.node.style.marginTop = index === 0 ? '0px' : '-60px'
+    el.node.style.marginTop = index === 0 ? '0px' : '-' + STACK_LIFT_PX + 'px'
     // All cards share one width: the widest visible card determines the deck,
     // so a short front card never floats above a much wider lower card.
     el.node.style.width = '100%'
@@ -1679,7 +1718,8 @@ function mountPet(ctx) {
     }
     sessions = sessions.map(function (entry) {
       if (!entry || !completionOf(entry) || targetSessionOf(entry) !== currentSessionId) return entry
-      acknowledgeCompletion(currentSessionId)
+      // 已读不在这里做（见 ackCurrentSessionCompletion：渲染会被桌面模式短路），
+      // 这里只负责把已读的卡从牌叠里摘掉。
       if (entry.state === 'SUCCESS' && entry.pulseUntil > Date.now()) {
         return { ...entry, completionNotification: false }
       }
@@ -1699,6 +1739,13 @@ function mountPet(ctx) {
             if (!Object.prototype.hasOwnProperty.call(byId, sid)) continue
             var item = byId[sid]
             if (!item || item.completed !== true) continue
+            // 子会话（subagent）不进牌叠：开关打开时宿主会自己生成 completion:<sid>
+            // 卡（reducer 只在 includeSubagents=false 时忽略子会话事件），网页端再兜底
+            // 合成一张，会让关掉开关的用户照样看到子 Agent 的完成提醒。
+            // 只认 origin，不能连 parentId 一起跳过：fork 出来的会话也带 parentId 但不是
+            // 子 Agent，而它被中断/停止时宿主不会生成完成卡（只有正常结束才入队），网页
+            // 兜底是那种情况下唯一的提醒来源。
+            if (item.origin === 'subagent') continue
             if (existingIds.has(sid) || existingIds.has('completion:' + sid)) continue
             if (item.running === true || sid === currentSessionId) continue
             sessions.push({
@@ -1991,6 +2038,9 @@ function mountPet(ctx) {
     }
     var wasDesktopMode = lastSnapshot && lastSnapshot.desktopMode === true
     lastSnapshot = snapshot
+    // 已读是副作用，必须在渲染短路（desktopActive / pendingDesktopHide）之前处理：
+    // 桌面模式下页面宠物被隐藏、渲染整段跳过，但"我看着它完成"这件事仍然成立。
+    ackCurrentSessionCompletion(snapshot)
     // 余额控制器：初始化/同步用量模式；用量子开关关闭时停掉 60s 轮询
     if (window.__petBalance) {
       var usageEnabled = snapshot.showBubble !== false && snapshot.showBubbleUsage === true
@@ -2138,7 +2188,7 @@ function mountPet(ctx) {
   function applyOffset(mood) {
     var scale = (lastSnapshot && lastSnapshot.scale) || 1
     img.style.width = Math.round(180 * scale) + 'px'
-    img.style.transform = ''
+    applyMirror(img, lastSnapshot)
   }
 
   // Sticker URLs resolve per active pet; a missing artwork falls back to the

@@ -6,6 +6,12 @@ const CLIENT = new URL('../lib/client.js', import.meta.url)
 const CLIENT_CORE = new URL('../src/client.core.js', import.meta.url)
 const STATUS_COPY = new URL('../src/status-copy.js', import.meta.url)
 
+/** 牌叠卡片的真实高度来自 CSS（测试 stub 的 offsetHeight 只是近似值，不能当卡高用）。 */
+function cardHeightFromCss(css) {
+  const rule = /\.rm2-pet-bubbles \.rm2-pet-bubble\s*\{[^}]*\}/.exec(css)?.[0] ?? ''
+  return Number(/(?<!-)height:\s*(\d+)px/.exec(rule)?.[1])
+}
+
 function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = []) {
   const elements = []
   const fetches = []
@@ -239,6 +245,17 @@ test('bubble containers scale with the configured pet size', () => {
   assert.equal(bubbleStack.style.zoom, '0.75')
 })
 
+test('pet image mirrors without flipping bubble containers', () => {
+  const harness = createHarness()
+  harness.send({ ...base, mirror: true })
+  const image = harness.elements.find((node) => node.tag === 'img')
+  const bubbleStack = harness.elements.find((node) => node.className === 'rm2-pet-bubbles')
+  assert.equal(image.style.transform, 'scaleX(-1)')
+  assert.equal(bubbleStack.style.transform, undefined)
+  harness.send({ ...base, mirror: false })
+  assert.equal(image.style.transform, '')
+})
+
 test('bubble zoom follows sync-ratio or fixed-size mode from the snapshot', () => {
   // 同步模式：zoom = scale × bubbleScaleRatio
   const syncHarness = createHarness()
@@ -269,7 +286,16 @@ test('multi-session deck renders an inert backboard with a dynamic click target'
   assert.ok(backboard, 'backboard card should exist')
   const writes = harness.styleWrites.filter(({ element, key }) => element === backboard && key === 'marginTop')
   assert.ok(writes.length >= 1)
-  assert.equal(backboard.offsetHeight - Math.abs(Number.parseInt(writes.at(-1).value, 10)), 8)
+  const lift = Math.abs(Number.parseInt(writes.at(-1).value, 10))
+  assert.equal(lift, 80)
+  // 卡高真值在 CSS 里（stub 的 offsetHeight=68 只是近似值），所以从源文件解析：
+  // 改 CSS 卡高时这里必须跟着失败，否则又是上一轮那种"假绿"。
+  const cardHeight = cardHeightFromCss(readFileSync(CLIENT_CORE, 'utf8'))
+  assert.equal(cardHeight, 91)
+  assert.ok(
+    Math.abs((cardHeight - lift) * 0.75 - 8) <= 0.5,
+    `75% 档位露出应约 8px，实际 ${(cardHeight - lift) * 0.75}px`,
+  )
   assert.equal(backboard.children.find((node) => node.className === 'rm2-pet-bubble-stack-count').textContent, '+2')
   assert.equal(hasCard('让我想想最优解是什么'), false)
   assert.equal(hasCard('正在检查剩余问题'), false)
@@ -621,6 +647,30 @@ test('expired reminder for the current conversation disappears immediately', asy
   assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务已完成'), false)
 })
 
+test('desktop mode still acks the viewed session completion', async () => {
+  // 桌面模式下 applySnapshot 会因 desktopActive 提前 return（隐藏页面宠物），渲染整段跳过；
+  // 但「我看着它完成」仍然成立，已读不能跟着渲染一起被跳过——否则绿点只能手动点击才消。
+  const harness = createHarness('watched')
+  harness.send({
+    ...base,
+    desktopActive: true,
+    sessions: [{
+      sessionId: 'completion:watched',
+      targetSessionId: 'watched',
+      state: 'SUCCESS',
+      message: '任务已完成',
+      detail: '结果',
+      completed: true,
+      completionNotification: true,
+    }],
+  })
+  await Promise.resolve()
+  assert.ok(
+    harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'watched' })),
+    'desktopActive 不应阻止当前会话的自动已读',
+  )
+})
+
 test('desktop session-action without approve opens the conversation (bubble-card jump)', () => {
   const harness = createHarness()
   harness.send({ ...base, desktopActive: true, sessions: [] })
@@ -674,6 +724,34 @@ test('sidebar green-dot session (completed) is surfaced as a clickable completio
   const bubbleCard = card.parentNode.parentNode
   bubbleCard.listeners.get('click')[0]({ preventDefault() {}, stopPropagation() {} })
   assert.ok(harness.opened.includes('ws2'), 'clicking should open the completed session')
+})
+
+test('subagent sessions never become synthesized completion cards, fork sessions still do', () => {
+  const harness = createHarness('current', true, {
+    // 子会话：DSH 列表行带 origin=subagent。宿主在 includeSubagents=false 时完全忽略它，
+    // 网页端不得再兜底合成——否则关掉开关也会看到子 Agent 的完成提醒。
+    child: { id: 'child', title: '探针任务', completed: true, cwd: 'C:\\xx\\dsh-pet-remielle', origin: 'subagent', parentId: 'parent', updatedAt: 6 },
+    // fork 会话：只带 parentId、没有 origin。它不是子 Agent，且被中断/停止时宿主不会生成
+    // 完成卡（只有正常结束才入队），网页兜底是那种情况下唯一的提醒来源，不能被一起跳过。
+    forked: { id: 'forked', title: 'fork 出来的会话', completed: true, cwd: 'C:\\xx\\dsh-pet-remielle', parentId: 'parent', updatedAt: 5 },
+    // 对照：普通会话的绿点仍必须合成卡（防止过滤写过头）。
+    plain: { id: 'plain', title: '普通会话', completed: true, cwd: 'C:\\xx\\.dsh', updatedAt: 4 },
+  })
+  harness.send({ ...base, sessions: [] })
+  // 牌叠只给顶层卡渲染标题、其余退化成 +N 背板，所以「合成了几张卡」要看背板计数：
+  // child 被过滤 → 只剩 forked + plain 两张 → 背板 +1（漏过滤会变成 +2）。
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  assert.ok(backboard, '两张合成卡应产生一张背板')
+  const stackCount = backboard.children.find((node) => node.className === 'rm2-pet-bubble-stack-count')
+  assert.equal(stackCount.textContent, '+1')
+  // 顶层卡应是 updatedAt 最大的 forked（child 未被合成）；漏过滤时顶层会变成 child。
+  const completionTitles = ['这次任务搞定啦~', '这一轮顺利完成哦', '任务完成咯，干得漂亮']
+  const topTitle = harness.elements.find(
+    (node) => node.className === 'rm2-pet-bubble-title' && completionTitles.includes(node.textContent),
+  )
+  assert.ok(topTitle, 'missing synthesized completion card')
+  topTitle.parentNode.parentNode.listeners.get('click')[0]({ preventDefault() {}, stopPropagation() {} })
+  assert.deepEqual(harness.opened, ['forked'])
 })
 
 test('bubble area swallows pet interactions (click/dblclick/pointerdown/mousedown)', () => {

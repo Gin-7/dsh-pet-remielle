@@ -236,6 +236,7 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   // 气泡缩放口径走共享 bubbleZoomOf（同步/固定两模式），不再直接用桌宠 scale
   assert.match(html, /bubbleEl\.style\.zoom = String\(bubbleZoom\)/)
   assert.match(html, /bubbleStack\.style\.zoom = String\(bubbleZoom\)/)
+  assert.match(html, /imgEl\.style\.transform = snapshot\.mirror === true \? 'scaleX\(-1\)' : ''/)
   assert.match(html, /clearPulse:\s*true/)
   // SSE 订阅带 ?client=pet：宿主据此把桌宠窗口排除在 session-action 重放计数之外
   // （与 index.js streamClientOf 的约定一致），否则"无网页在线"判定永远不成立。
@@ -281,6 +282,39 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   assert.match(html, /addEventListener\('pointerup'/)
   assert.match(html, /addEventListener\('pointercancel'/)
   assert.doesNotMatch(html, /e\.buttons & 1/)
+  // 二层露出量：常量两端同值、四个调用点都必须引用它、算式成立、卡高从 CSS 解析。
+  // 卡高真值在 CSS（stub 的 offsetHeight=68 不可信），所以断言里不能写死 91——否则
+  // 改 CSS 后断言照绿，就是上一轮那种"假绿"。
+  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
+  const liftOf = (src) => Number(/STACK_LIFT_PX = (\d+)/.exec(src)?.[1])
+  const cardHeightOf = (src) => {
+    const rule = /\.rm2-pet-bubbles \.rm2-pet-bubble\s*\{[^}]*\}/.exec(src)?.[0] ?? ''
+    return Number(/(?<!-)height:\s*(\d+)px/.exec(rule)?.[1])
+  }
+  assert.equal(liftOf(html), 80)
+  assert.equal(liftOf(core), liftOf(html))
+  assert.equal(cardHeightOf(html), 91)
+  assert.equal(cardHeightOf(core), 91)
+  assert.ok(
+    Math.abs((cardHeightOf(core) - liftOf(core)) * 0.75 - 8) <= 0.5,
+    `75% 档位露出应约 8px，实际 ${(cardHeightOf(core) - liftOf(core)) * 0.75}px`,
+  )
+  // 每端各有两处调用点（假背板分支 + 三元式分支），都必须引用常量、不得写死上移量。
+  for (const [name, src] of [['client.core.js', core], ['pet-view.html', html]]) {
+    const calls = [...src.matchAll(/style\.marginTop = [^\n]*/g)].map((match) => match[0])
+    assert.equal(calls.length, 2, `${name} 应有两处 marginTop 调用点`)
+    for (const call of calls) {
+      assert.match(call, /STACK_LIFT_PX/, `${name} 的调用点必须引用常量：${call}`)
+      assert.doesNotMatch(call, /'-\d+px'/, `${name} 的调用点不得写死上移量：${call}`)
+    }
+  }
+})
+
+test('desktop idle-bubble click defers to an open web client', () => {
+  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  // 有网页在线时不重复调 openExternal（浏览器不会复用已有标签，只会越堆越多）；
+  // webClients 来自宿主快照的 SSE 订阅计数。
+  assert.match(html, /if \(!\(lastSnapshot && lastSnapshot\.webClients > 0\)\) __tip\.openIdleDshPage\(window\.petBridge\)/)
 })
 
 test('pet-view menu expands to the work-area box and restores on close', () => {

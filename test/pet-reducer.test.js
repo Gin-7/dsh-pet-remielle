@@ -451,10 +451,86 @@ test('session/title is stored on states() without changing mood', () => {
 test('states() folds session/title from the session log', () => {
   const reducer = new PetReducer()
   const sess = session('s1', {
-    events: [{ type: 'session/title', data: { title: '审查提示框颜色与溢出问题' } }],
+    snapshotEvents: () => [{ type: 'session/title', data: { title: '审查提示框颜色与溢出问题' } }],
   })
   collect(reducer, sess, [event('turn/start')])
   assert.equal(reducer.states()[0].title, '审查提示框颜色与溢出问题')
+})
+
+test('states() folds the last session/title from the log (resumed session)', () => {
+  const reducer = new PetReducer()
+  // 恢复的老会话：标题事件在插件加载前就写进日志，实时只见到 turn/start 之后的事件。
+  const sess = session('s1', {
+    snapshotEvents: () => [
+      { type: 'session/title', data: { title: '旧标题' } },
+      { type: 'turn/start' },
+      { type: 'session/title', data: { title: '新标题' } },
+    ],
+  })
+  collect(reducer, sess, [event('turn/start'), event('step/start', {}, 2)])
+  assert.equal(reducer.states()[0].title, '新标题')
+})
+
+test('states() drops title folding when the host exposes no snapshotEvents()', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', { events: [{ type: 'session/title', data: { title: '不存在的内部字段' } }] })
+  collect(reducer, sess, [event('turn/start')])
+  // session.events 不是宿主 API，不得据此产出标题
+  assert.equal(reducer.states()[0].title, undefined)
+})
+
+test('states() keeps the folded title verbatim (DSH already normalized it)', () => {
+  const reducer = new PetReducer()
+  // DSH 写入 session/title 时已按 maxTitleBytes 规范化，插件不再二次截断——
+  // 服务口径（readSessionTitle）与日志口径必须一致，否则同一会话的标题长度随
+  // 服务是否加载而变。
+  const long = '标'.repeat(120)
+  const sess = session('s1', {
+    snapshotEvents: () => [{ type: 'session/title', data: { title: long } }],
+  })
+  collect(reducer, sess, [event('turn/start')])
+  assert.equal(reducer.states()[0].title, long)
+})
+
+test('states() folds the session log at most once per session', () => {
+  const reducer = new PetReducer()
+  let calls = 0
+  // 日志里始终没有 session/title（标题尚未生成）：折取不得每个事件都做一遍。
+  const sess = session('s1', {
+    snapshotEvents: () => { calls++; return [{ type: 'turn/start' }] },
+  })
+  collect(reducer, sess, [
+    event('turn/start'),
+    event('step/start', {}, 2),
+    event('tool/call', { callId: 'c1', name: 'read' }, 3),
+  ])
+  assert.equal(calls, 1)
+})
+
+test('states() survives a throwing snapshotEvents()', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', { snapshotEvents: () => { throw new Error('boom') } })
+  const messages = collect(reducer, sess, [event('turn/start')])
+  assert.ok(messages.length > 0)
+  assert.equal(reducer.states()[0].title, undefined)
+})
+
+test('session/title events keep updating a title that was folded earlier', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', {
+    snapshotEvents: () => [{ type: 'session/title', data: { title: '旧标题' } }],
+  })
+  collect(reducer, sess, [event('turn/start')])
+  assert.equal(reducer.states()[0].title, '旧标题')
+  collect(reducer, sess, [event('session/title', { title: '改过的标题' }, 2)])
+  assert.equal(reducer.states()[0].title, '改过的标题')
+})
+
+test('states() takes the project name from the session header cwd', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', { header: { cwd: 'D:\\workspace\\company\\A07' } })
+  collect(reducer, sess, [event('turn/start')])
+  assert.equal(reducer.states()[0].project, 'A07')
 })
 
 test('states() returns one entry per session with mood/message/detail', () => {

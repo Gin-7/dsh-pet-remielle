@@ -87,3 +87,32 @@ test('subscriber removal on close event', () => {
   assert.equal(hub.size, 0)
   hub.close()
 })
+
+test('webSize counts web subscribers only (pet window excluded)', () => {
+  const hub = createStreamHub({ serve: () => ({ state: 'IDLE' }) })
+  const web = stubRes()
+  const pet = stubRes()
+  assert.equal(hub.webSize, 0)
+  hub.add(web)
+  assert.equal(hub.size, 1)
+  assert.equal(hub.webSize, 1)
+  hub.add(pet, { client: 'pet' })
+  assert.equal(hub.size, 2)
+  assert.equal(hub.webSize, 1, '桌宠窗不是网页端')
+  web.listeners?.close?.()
+  assert.equal(hub.webSize, 0)
+  hub.close()
+})
+
+test('onClientsChanged fires on join, leave and close', () => {
+  let changes = 0
+  const hub = createStreamHub({ serve: () => ({ state: 'IDLE' }), onClientsChanged: () => { changes++ } })
+  const res = stubRes()
+  assert.equal(changes, 0)
+  hub.add(res)
+  assert.equal(changes, 1, '接入要通知一次：webClients 变了')
+  res.listeners?.close?.()
+  assert.equal(changes, 2, '断开也要通知')
+  hub.close()
+  assert.equal(changes, 3)
+})
