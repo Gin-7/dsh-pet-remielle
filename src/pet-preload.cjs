@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('petBridge', {
   dragMove: () => ipcRenderer.send('drag-move'),
   dragEnd: () => ipcRenderer.send('drag-end'),
   getPosition: () => ipcRenderer.invoke('get-position'),
+  // 本窗是否已按宿主持久化坐标定位（null = 无，渲染层可走 localStorage 兜底）
+  getInitialPosition: () => ipcRenderer.invoke('get-initial-position'),
   // 右键菜单：工作区坐标 + 按包围盒扩窗，invoke 返回 {width,height,dx,dy}
   getWorkArea: () => ipcRenderer.invoke('get-work-area'),
   menuExpand: (left, top, right, bottom) => ipcRenderer.invoke(

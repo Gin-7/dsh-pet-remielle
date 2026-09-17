@@ -106,6 +106,39 @@ test('DesktopWindow start passes DSH_WEB_URL when provided', () => {
   window.stop()
 })
 
+// 位置持久化（issue #21）：有效坐标经 DSH_PET_POS_X/Y 传给子进程；缺位或
+// 非 finite 时不得设置 env（子进程据此回退默认 fit / localStorage 兜底）。
+test('DesktopWindow forwards persisted position via env only when both coordinates are valid', () => {
+  const makeChild = () => {
+    const child = new EventEmitter()
+    child.exitCode = null
+    child.killed = false
+    child.kill = () => { child.killed = true }
+    return child
+  }
+  const spawnWith = (extra) => {
+    let spawned = null
+    const window = new DesktopWindow({
+      url: 'http://127.0.0.1:50336/plugins/dsh-pet-remielle/pet-view',
+      backend: { kind: 'electron', command: 'D:/plugins/vendor/electron-win32-x64/electron.exe', args: ['D:/plugins/src/pet-window.cjs'] },
+      spawnImpl: (_command, _args, options) => { spawned = { options } ; return makeChild() },
+      ...extra,
+    })
+    window.start()
+    window.stop()
+    return spawned.options.env
+  }
+  const env = spawnWith({ posX: 120.4, posY: 88.6 })
+  assert.equal(env.DSH_PET_POS_X, '120')
+  assert.equal(env.DSH_PET_POS_Y, '89')
+  const envHalf = spawnWith({ posX: 120, posY: null })
+  assert.equal(envHalf.DSH_PET_POS_X, undefined)
+  assert.equal(envHalf.DSH_PET_POS_Y, undefined)
+  const envNone = spawnWith({})
+  assert.equal(envNone.DSH_PET_POS_X, undefined)
+  assert.equal(envNone.DSH_PET_POS_Y, undefined)
+})
+
 test('DesktopWindow without a backend stays inert', () => {
   const window = new DesktopWindow({
     url: 'http://127.0.0.1:1/x',
@@ -372,4 +405,39 @@ test('pet-view toasts an in-bubble hint when the approval broadcast is not deliv
   // 蕾米埃尔风格文案池（随机取一条，首个逗号前片段加粗）
   assert.match(html, /var TOAST_TEXTS = \[/)
   assert.match(html, /呜…允许一次没有送到呢/)
+})
+
+// 位置持久化链路（issue #21）：三段各自的钥匙必须同时在场——
+// 主进程建窗定位 + 渲染层拖动结束回写 + preload 通道；缺一段记忆就断。
+test('pet window position persistence is wired across main, preload and renderer', () => {
+  const main = readFileSync(new URL('../src/pet-window.cjs', import.meta.url), 'utf8')
+  const preload = readFileSync(new URL('../src/pet-preload.cjs', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  // 主进程：env 坐标解析 + 建窗即定位 + 可达性钳制 + 初始位置查询
+  assert.match(main, /DSH_PET_POS_X/)
+  assert.match(main, /const persistedPos = Number\.isFinite\(envPosX\) && Number\.isFinite\(envPosY\)/)
+  assert.match(main, /\.\.\.\(persistedPos \? \{ x: persistedPos\.x, y: persistedPos\.y \} : \{\}\)/)
+  // 恢复钳制必须是「虚拟桌面并集 + 最小可见边条」而不是单屏 workArea 整窗
+  // 钳制：宠物图贴窗口底部，拖到屏幕顶缘时窗口必然部分伸出屏幕外（实测
+  // y=-381），整窗钳制会把它拽回 y=0，表现为位置没记忆（issue #21 追加）。
+  assert.match(main, /for \(const d of screen\.getAllDisplays\(\)\)/)
+  assert.match(main, /const KEEP = 80/)
+  assert.match(main, /ipcMain\.handle\('get-initial-position', \(\) => persistedPos\)/)
+  // 主进程兜底回写（issue #21 "有时不记忆"）：drag-end IPC 是渲染层唯一必然
+  // 发出的时点，主进程在此直接 PATCH 宿主 config，渲染层 fetch 失手也有兜底。
+  // 但必须以「真实拖动」（drag 非空）为前提：渲染层对任何左键抬起都发
+  // drag-end，菜单贴右扩窗会左移 x，无条件回写会把扩窗坐标存档（表现为
+  // y 记忆而 x 丢失，issue #21 追加反馈）。
+  assert.match(main, /function persistPosition\(\)/)
+  assert.match(main, /desktopX: Math\.round\(x\), desktopY: Math\.round\(y\)/)
+  assert.match(main, /const wasDragging = drag !== null/)
+  assert.match(main, /if \(wasDragging\) persistPosition\(\)/)
+  // preload：两条 IPC 通道都暴露给渲染层
+  assert.match(preload, /getInitialPosition: \(\) => ipcRenderer\.invoke\('get-initial-position'\)/)
+  assert.match(preload, /getPosition: \(\) => ipcRenderer\.invoke\('get-position'\)/)
+  // 渲染层：宿主坐标优先、localStorage 降级；拖动结束主动回写（moved 才写）
+  assert.match(html, /initialPosKnown\.then/)
+  assert.match(html, /function persistWindowPos\(\)/)
+  assert.match(html, /desktopX: pos\.x, desktopY: pos\.y/)
+  assert.match(html, /dragState && dragState\.moved && !lockedNow/)
 })

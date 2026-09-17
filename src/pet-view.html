@@ -681,6 +681,22 @@
   })
 
   // --- drag: only from the pet image, JS-driven window move ---
+  // 拖动结束把最终坐标回写宿主持久化（config.desktopX/desktopY）。必须在拖动
+  // 结束处主动 getPosition 读回：Windows 上程序化 setBounds 移动不触发
+  // 'moved' 事件，靠事件做持久化会静默失效（issue #21 实测）。
+  // 主进程在 drag-end IPC 处也有一次同坐标幂等兜底回写，这里任何一环失手
+  // （moved 未置位、fetch 被吞）都不至于丢档。
+  function persistWindowPos() {
+    if (!window.petBridge || !window.petBridge.getPosition) return
+    window.petBridge.getPosition().then(function (pos) {
+      if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return
+      fetch('/plugins/dsh-pet-remielle/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ desktopX: pos.x, desktopY: pos.y }),
+      }).catch(function () {})
+    }).catch(function () {})
+  }
   function syncCursor() {
     // 按住期间保持握拳：快照 apply() 每次都会走到这里，不能无条件打回 grab。
     imgEl.style.cursor = lockedNow ? 'default' : dragState ? 'grabbing' : 'grab'
@@ -694,6 +710,8 @@
       var pick = moods.filter(function (m) { return m !== current })
       moodOverride = { mood: pick[Math.floor(Math.random() * pick.length)], until: Date.now() + 1800 }
       apply(lastSnapshot)
+    } else if (dragState && dragState.moved && !lockedNow) {
+      persistWindowPos()
     }
     dragState = null
     if (!menuOpen) setForceInteractive(false)
@@ -1477,12 +1495,21 @@
   }, { passive: false })
 
   // Remember the window position across restarts.
-  try {
-    var saved = JSON.parse(localStorage.getItem('dsh-pet-window-pos') || 'null')
-    if (saved && typeof saved.x === 'number' && typeof saved.y === 'number') {
-      window.moveTo(saved.x, saved.y)
-    }
-  } catch (e) { /* storage unavailable */ }
+  // 恢复优先级：宿主持久化（config.desktopX/desktopY，主进程建窗即定位）>
+  // localStorage 兜底（宿主持久化缺位时才有用，其存档落在 userData 且可能过期）。
+  // 主进程已按持久化坐标定位时绝不能再 moveTo，否则旧存档与宿主坐标打架。
+  var initialPosKnown = window.petBridge && window.petBridge.getInitialPosition
+    ? window.petBridge.getInitialPosition().catch(function () { return null })
+    : Promise.resolve(null)
+  initialPosKnown.then(function (pos) {
+    if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') return
+    try {
+      var saved = JSON.parse(localStorage.getItem('dsh-pet-window-pos') || 'null')
+      if (saved && typeof saved.x === 'number' && typeof saved.y === 'number') {
+        window.moveTo(saved.x, saved.y)
+      }
+    } catch (e) { /* storage unavailable */ }
+  })
   setInterval(function () {
     try {
       localStorage.setItem('dsh-pet-window-pos', JSON.stringify({ x: window.screenX, y: window.screenY }))

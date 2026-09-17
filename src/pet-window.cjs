@@ -31,6 +31,16 @@ app.setPath('userData', path.join(app.getPath('temp'), 'dsh-pet-remielle'))
 const url = process.env.DSH_PET_URL
 const parentPid = Number(process.env.DSH_PET_PARENT_PID || 0)
 
+// 上次关闭时的窗口位置（宿主 config.desktopX/desktopY 经 DSH_PET_POS_X/Y 传入）。
+// 与 bounds API 同空间（见下方 force-device-scale-factor 注释）：非 macOS 为物理
+// 像素，macOS 为逻辑点——保存（getPosition）与恢复（构造 x/y）走同一套 API，空间
+// 自洽。换显示器/改分辨率后可能落到屏幕外，建窗后按最近 workArea clamp。
+const envPosX = Number(process.env.DSH_PET_POS_X)
+const envPosY = Number(process.env.DSH_PET_POS_Y)
+const persistedPos = Number.isFinite(envPosX) && Number.isFinite(envPosY)
+  ? { x: Math.round(envPosX), y: Math.round(envPosY) }
+  : null
+
 // 该 vendor 运行时在部分 100% 缩放的机器上会把 scaleFactor 误报为 1.1，
 // 导致 DIP↔物理换算有损：窗口随每次定位按 ~1.1 倍膨胀、拖动坐标漂移。
 // 真实屏幕缩放由系统决定；这里强制按 1 处理，使所有边界换算无损。
@@ -101,6 +111,9 @@ app.whenReady().then(() => {
   const win = new BrowserWindow({
     width: petW,
     height: petH,
+    // 有持久化坐标就建窗即定位（Electron 对显式 x/y 不做 fit 钳制）；无坐标
+    // 保持原行为：自动 fit 进 workArea，高窗口被钳到底部（历史默认位置）。
+    ...(persistedPos ? { x: persistedPos.x, y: persistedPos.y } : {}),
     transparent: true,
     frame: false,
     alwaysOnTop: true,
@@ -120,9 +133,32 @@ app.whenReady().then(() => {
   })
   // 实测：构造不带 x/y 时 Electron 会把窗口自动 fit 进 workArea；窗口高超过
   // 工作区时会被钳制裁底。setBounds 显式坐标不受此钳制，故创建后立即按当前
-  // 位置补回完整尺寸。
+  // 位置补回完整尺寸。持久化坐标只做「可达性」钳制：对所有显示器 bounds 求
+  // 并集（虚拟桌面），保证窗口至少留 KEEP 边条在并集内。不能按单屏 workArea
+  // 整窗钳制——宠物图贴窗口底部（.pet 为 flex-end），把图拖到屏幕顶缘时窗口
+  // 上部必然伸出屏幕外（实测保存值 y=-381），整窗钳制会把窗口拽回 y=0，
+  // 表现为「位置没记忆」（issue #21 追加反馈：切换模式后位置丢失）。
   {
-    const [px, py] = win.getPosition()
+    let [px, py] = win.getPosition()
+    if (persistedPos) {
+      try {
+        let u0x = Infinity, u0y = Infinity, u1x = -Infinity, u1y = -Infinity
+        for (const d of screen.getAllDisplays()) {
+          u0x = Math.min(u0x, d.bounds.x)
+          u0y = Math.min(u0y, d.bounds.y)
+          u1x = Math.max(u1x, d.bounds.x + d.bounds.width)
+          u1y = Math.max(u1y, d.bounds.y + d.bounds.height)
+        }
+        const KEEP = 80 // 窗口至少留在虚拟桌面内的边条（物理像素），保证还能抓回来
+        const loX = u0x - petW + KEEP, hiX = u1x - KEEP
+        const loY = u0y - petH + KEEP, hiY = u1y - KEEP
+        // 虚拟桌面极小（< 2*KEEP）时上下界可能倒挂，取中点退化成单点钳制
+        const cx = loX > hiX ? (loX + hiX) / 2 : null
+        const cy = loY > hiY ? (loY + hiY) / 2 : null
+        px = cx !== null ? cx : Math.min(Math.max(px, loX), hiX)
+        py = cy !== null ? cy : Math.min(Math.max(py, loY), hiY)
+      } catch { /* 屏幕枚举失败时保留原坐标 */ }
+    }
     win.setBounds({ x: px, y: py, width: petW, height: petH })
   }
 
@@ -242,8 +278,42 @@ app.whenReady().then(() => {
     drag.ty = ny
     win.setBounds({ x: nx, y: ny, width: petW, height: petH })
   })
+  // 位置持久化兜底（issue #21 "有时不记忆"）：回写原本只有渲染层 pointerup
+  // 一条路径，链路任何一环失手（moved 未置位、fetch 被静默吞掉、拖完立刻退出）
+  // 都会丢档。渲染层唯一必然发出的是 dragEnd IPC（endPetDrag 无条件调用），
+  // 所以主进程在 drag-end 处直接 PATCH 宿主 config 兜底。/plugins 端点只校验
+  // loopback 来源无需令牌（渲染层相对 fetch 不带 query 也能过即为证明）。
+  // 与渲染层写同一坐标，幂等；坐标没变时跳过。
+  const hostOrigin = new URL(url).origin
+  let lastSavedPos = null
+  function persistPosition() {
+    if (!win || win.isDestroyed()) return
+    const [x, y] = win.getPosition()
+    const body = { desktopX: Math.round(x), desktopY: Math.round(y) }
+    if (lastSavedPos && lastSavedPos.desktopX === body.desktopX && lastSavedPos.desktopY === body.desktopY) return
+    lastSavedPos = body
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 2000)
+    fetch(`${hostOrigin}/plugins/dsh-pet-remielle/config`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    }).then((res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    }).catch((err) => {
+      console.error(`dsh-pet-window: persist position failed: ${err.message}`)
+    }).finally(() => clearTimeout(timer))
+  }
+
   ipcMain.on('drag-end', () => {
+    // 渲染层 endPetDrag 对「任何左键抬起」都发 drag-end：点菜单项、点气泡也算。
+    // 而菜单贴右扩窗会左移窗口 x（宠物视觉不动），此时 getPosition 读到的是
+    // 扩窗坐标——无条件回写就会把扩窗 x 存进档，表现为「y 记忆（菜单不改
+    // y）而 x 丢失」。只有真实拖动（drag 非空）才允许存档。
+    const wasDragging = drag !== null
     drag = null
+    if (wasDragging) persistPosition()
   })
 
   // Return current window position for persistence.
@@ -251,6 +321,10 @@ app.whenReady().then(() => {
     const [x, y] = win.getPosition()
     return { x: Math.round(x), y: Math.round(y) }
   })
+
+  // 渲染层询问「本窗是否已按宿主持久化坐标定位」：有则渲染层跳过 localStorage
+  // 的 moveTo 兜底（旧存档会与宿主坐标打架），无则沿用旧行为。
+  ipcMain.handle('get-initial-position', () => persistedPos)
 
   // 右键菜单：渲染层按工作区用与网页相同的右→左→上公式选出落点，再把窗口
   // 扩到菜单+光晕的包围盒。优先只增加宽/高（原点不动）：.pet 顶左锚 400×520，

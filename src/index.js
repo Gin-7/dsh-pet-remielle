@@ -87,6 +87,8 @@ export const Config = Schema.object({
   desktopMode: Schema.boolean().default(false).description('桌面悬浮模式：用独立置顶窗口显示宠物（打开时如无 Electron 会自动下载运行时，下载失败则回落页面内）'),
   posX: Schema.number().default(null).description('宠物 X 位置（null = 使用默认位置）'),
   posY: Schema.number().default(null).description('宠物 Y 位置（null = 使用默认位置）'),
+  desktopX: Schema.number().default(null).description('桌面悬浮窗 X（自动记忆，坐标与窗口 bounds API 同空间；null = 使用默认位置）'),
+  desktopY: Schema.number().default(null).description('桌面悬浮窗 Y（自动记忆，坐标与窗口 bounds API 同空间；null = 使用默认位置）'),
   activePetId: Schema.string().default(DEFAULT_PET_ID).description('当前展示的宠物'),
   pets: Schema.array(petEntry).default([{ id: DEFAULT_PET_ID, name: '蕾米埃尔', enabled: true }]).description('宠物注册表'),
 }).description('由 DeepSeek Harness 会话事件驱动的多宠物 Web 桌宠')
@@ -111,6 +113,8 @@ export const defaults = Object.freeze({
   desktopMode: false,
   posX: null,
   posY: null,
+  desktopX: null,
+  desktopY: null,
   activePetId: DEFAULT_PET_ID,
   pets: DEFAULT_PETS,
 })
@@ -136,6 +140,8 @@ export function publicConfig(config = {}) {
     desktopMode: config.desktopMode ?? defaults.desktopMode,
     posX: config.posX ?? defaults.posX,
     posY: config.posY ?? defaults.posY,
+    desktopX: config.desktopX ?? defaults.desktopX,
+    desktopY: config.desktopY ?? defaults.desktopY,
   }
 }
 
@@ -200,6 +206,7 @@ export const CONFIG_PATCH_FIELDS = Object.freeze([
   'enabled', 'scale', 'mirror', 'bubbleScaleSync', 'bubbleScaleRatio', 'bubbleFixedSize',
   'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus',
   'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY',
+  'desktopX', 'desktopY',
 ])
 
 export function createConfigHandler(settings) {
@@ -1073,7 +1080,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         const spawnWindow = () => {
           let w
           try {
-            w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit })
+            w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, posX: settings.get().desktopX, posY: settings.get().desktopY })
           } catch (error) {
             logger.error?.(`dsh-pet-remielle: 创建桌面窗失败：${String(error)}`)
             return false
@@ -1141,7 +1148,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             // find the freshly installed runtime in time.
             const petWindowCjs = new URL('../src/pet-window.cjs', import.meta.url)
             const backend = { kind: 'electron', command: exe, args: [petWindowCjs.href.startsWith('file://') ? fileURLToPath(petWindowCjs) : String(petWindowCjs)] }
-            const w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, backend })
+            const w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, backend, posX: settings.get().desktopX, posY: settings.get().desktopY })
             desktop = w
             w.start()
             if (!desktopActive) { desktopActive = true; hub.broadcast() }

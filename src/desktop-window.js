@@ -155,6 +155,8 @@ export class DesktopWindow {
     logger = console,
     spawnImpl = spawn,
     onExit,
+    posX = null,
+    posY = null,
   } = {}) {
     if (!url) throw new Error('DesktopWindow requires a --url')
     this.url = url
@@ -164,6 +166,11 @@ export class DesktopWindow {
     this.logger = logger
     this.spawnImpl = spawnImpl
     this.onExit = onExit
+    // 上次关闭时的窗口位置（config.desktopX/desktopY）：有效坐标经 env 传给
+    // pet-window.cjs 建窗即定位。坐标与 bounds API 同空间（见 pet-window.cjs
+    // 顶部 force-device-scale-factor 注释：非 macOS 下为物理像素，macOS 为逻辑点）。
+    this.posX = Number.isFinite(Number(posX)) && posX !== null ? Number(posX) : null
+    this.posY = Number.isFinite(Number(posY)) && posY !== null ? Number(posY) : null
     this.child = undefined
     this.startNonce = Date.now()
   }
@@ -190,6 +197,10 @@ export class DesktopWindow {
         DSH_PET_URL: this.url + (this.url.includes('?') ? '&' : '?') + 'v=' + this.startNonce,
         DSH_WEB_URL: this.webUrl || new URL('/', this.url).origin,
         DSH_PET_PARENT_PID: String(this.parentPid),
+        // 上次位置持久化：仅在坐标齐全时传入，子进程据此建窗即定位。
+        ...(this.posX !== null && this.posY !== null
+          ? { DSH_PET_POS_X: String(Math.round(this.posX)), DSH_PET_POS_Y: String(Math.round(this.posY)) }
+          : {}),
       },
     })
     this.child = child
