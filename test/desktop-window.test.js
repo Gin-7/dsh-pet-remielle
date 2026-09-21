@@ -80,9 +80,34 @@ test('DesktopWindow start spawns electron with env config', () => {
   assert.ok(spawned.options.env.DSH_PET_URL.includes('v='))
   assert.equal(spawned.options.env.DSH_WEB_URL, 'http://127.0.0.1:50336')
   assert.equal(spawned.options.env.DSH_PET_PARENT_PID, '1234')
+  assert.equal(spawned.options.env.DSH_PET_RENDERER_HEADER_NAME, undefined)
+  assert.equal(spawned.options.env.DSH_PET_RENDERER_HEADER_VALUE, undefined)
   assert.equal(window.running, true)
   window.stop()
   assert.equal(window.running, false)
+})
+
+test('DesktopWindow start passes renderer access header env when provided', () => {
+  let spawned = null
+  const window = new DesktopWindow({
+    url: 'http://127.0.0.1:50336/plugins/dsh-pet-remielle/pet-view',
+    backend: { kind: 'electron', command: 'D:/plugins/vendor/electron-win32-x64/electron.exe', args: ['D:/plugins/src/pet-window.cjs'] },
+    // DSH Desktop 宿主的 desktopBrowserAccess 渲染进程准入头（issue：桌面窗
+    // 在 DSH Desktop 下被 403 "forbidden"）：必须原样经 env 传给窗口进程。
+    rendererHeader: { name: 'x-dsh-desktop-renderer', value: 'a'.repeat(43) },
+    spawnImpl: (command, args, options) => {
+      spawned = { command, args, options }
+      const child = new EventEmitter()
+      child.exitCode = null
+      child.killed = false
+      child.kill = () => { child.killed = true }
+      return child
+    },
+  })
+  window.start()
+  assert.equal(spawned.options.env.DSH_PET_RENDERER_HEADER_NAME, 'x-dsh-desktop-renderer')
+  assert.equal(spawned.options.env.DSH_PET_RENDERER_HEADER_VALUE, 'a'.repeat(43))
+  window.stop()
 })
 
 test('DesktopWindow start passes DSH_WEB_URL when provided', () => {
@@ -432,6 +457,10 @@ test('pet window position persistence is wired across main, preload and renderer
   assert.match(main, /desktopX: Math\.round\(x\), desktopY: Math\.round\(y\)/)
   assert.match(main, /const wasDragging = drag !== null/)
   assert.match(main, /if \(wasDragging\) persistPosition\(\)/)
+  // DSH Desktop 渲染进程准入头：宿主 env 提供头名/值时，主进程必须在建窗前
+  // 给同源请求自注入（否则 DSH Desktop 未开「浏览器访问」时全部 403 forbidden）。
+  assert.match(main, /DSH_PET_RENDERER_HEADER_NAME/)
+  assert.match(main, /session\.defaultSession\.webRequest\.onBeforeSendHeaders/)
   // preload：两条 IPC 通道都暴露给渲染层
   assert.match(preload, /getInitialPosition: \(\) => ipcRenderer\.invoke\('get-initial-position'\)/)
   assert.match(preload, /getPosition: \(\) => ipcRenderer\.invoke\('get-position'\)/)

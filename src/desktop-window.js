@@ -25,7 +25,7 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runtimeTarget, electronBinaryIn } from './electron-fetch.mjs'
+import { runtimeTarget, electronBinaryIn, isUsableElectronRoot } from './electron-fetch.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -90,16 +90,20 @@ export function backendCandidates({ platform = process.platform, cwd = process.c
   }
 
   // --- 2. Bundled vendor runtime (ships with the plugin, resolved per platform/arch) ---
-  const bundled = electronBinaryIn(resolve(here, '..', 'vendor', runtimeTarget(platform, arch).folder), platform, arch)
-  if (existsSync(bundled)) {
+  // 发现候选一律做完整性校验（issue #24）：exe-only 残缺目录必须跳过，让调用方
+  // 走 ensureElectronRuntime 的自动重装，而不是永远启动残缺运行时。
+  const bundledRoot = resolve(here, '..', 'vendor', runtimeTarget(platform, arch).folder)
+  const bundled = electronBinaryIn(bundledRoot, platform, arch)
+  if (isUsableElectronRoot(bundledRoot, platform)) {
     candidates.push({ kind: 'electron', command: bundled, args })
   }
 
   // --- 3. npm global install — user ran `npm install -g electron` somewhere ---
   const npmPrefix = getNpmGlobalPrefix()
   if (npmPrefix) {
-    const globalElectron = electronBinaryIn(resolve(npmPrefix, 'node_modules', 'electron', 'dist'), platform, arch)
-    if (existsSync(globalElectron)) {
+    const globalRoot = resolve(npmPrefix, 'node_modules', 'electron', 'dist')
+    const globalElectron = electronBinaryIn(globalRoot, platform, arch)
+    if (isUsableElectronRoot(globalRoot, platform)) {
       candidates.push({ kind: 'electron', command: globalElectron, args })
     }
   }
@@ -112,9 +116,8 @@ export function backendCandidates({ platform = process.platform, cwd = process.c
       resolve(dshRoot, 'node_modules', 'electron', 'dist'),
       resolve(dshRoot, 'desktop', 'node_modules', 'electron', 'dist'),
     ]) {
-      const command = electronBinaryIn(base, platform, arch)
-      if (existsSync(command)) {
-        candidates.push({ kind: 'electron', command, args })
+      if (isUsableElectronRoot(base, platform)) {
+        candidates.push({ kind: 'electron', command: electronBinaryIn(base, platform, arch), args })
         break
       }
     }
@@ -125,9 +128,8 @@ export function backendCandidates({ platform = process.platform, cwd = process.c
     resolve(cwd, 'desktop/node_modules/electron/dist'),
     resolve(cwd, 'node_modules/electron/dist'),
   ]) {
-    const command = electronBinaryIn(base, platform, arch)
-    if (existsSync(command)) {
-      candidates.push({ kind: 'electron', command, args })
+    if (isUsableElectronRoot(base, platform)) {
+      candidates.push({ kind: 'electron', command: electronBinaryIn(base, platform, arch), args })
       break
     }
   }
@@ -157,6 +159,7 @@ export class DesktopWindow {
     onExit,
     posX = null,
     posY = null,
+    rendererHeader = null,
   } = {}) {
     if (!url) throw new Error('DesktopWindow requires a --url')
     this.url = url
@@ -166,6 +169,13 @@ export class DesktopWindow {
     this.logger = logger
     this.spawnImpl = spawnImpl
     this.onExit = onExit
+    // DSH Desktop 宿主的 desktopBrowserAccess 渲染进程准入头：存在时经 env
+    // 交给 pet-window.cjs 自注入到同源请求（否则宿主未开「浏览器访问」时
+    // 所有请求 403 "forbidden"，桌面窗只见 forbidden 字样）。见该文件注释。
+    this.rendererHeader = rendererHeader && typeof rendererHeader.name === 'string' && rendererHeader.name
+      && typeof rendererHeader.value === 'string' && rendererHeader.value
+      ? { name: rendererHeader.name, value: rendererHeader.value }
+      : null
     // 上次关闭时的窗口位置（config.desktopX/desktopY）：有效坐标经 env 传给
     // pet-window.cjs 建窗即定位。坐标与 bounds API 同空间（见 pet-window.cjs
     // 顶部 force-device-scale-factor 注释：非 macOS 下为物理像素，macOS 为逻辑点）。
@@ -201,6 +211,10 @@ export class DesktopWindow {
         ...(this.posX !== null && this.posY !== null
           ? { DSH_PET_POS_X: String(Math.round(this.posX)), DSH_PET_POS_Y: String(Math.round(this.posY)) }
           : {}),
+        // DSH Desktop 渲染进程准入头（可选，见构造函数注释）。
+        ...(this.rendererHeader
+          ? { DSH_PET_RENDERER_HEADER_NAME: this.rendererHeader.name, DSH_PET_RENDERER_HEADER_VALUE: this.rendererHeader.value }
+          : {}),
       },
     })
     this.child = child
@@ -209,6 +223,11 @@ export class DesktopWindow {
       if (exitNotified) return
       exitNotified = true
       if (this.child === child) this.child = undefined
+      // 退出原因必须可见：桌面窗进程死得无声会让「位置/启动类」问题完全没法
+      // 排查（DSH Desktop 宿主不转发子进程 stdio 到日志，只有这条能落盘）。
+      const code = child.exitCode
+      const signal = child.signalCode
+      this.logger.info?.(`dsh-pet-remielle: pet window exited (code=${code === null ? 'signal:' + String(signal) : code})`)
       this.onExit?.()
     }
     const forward = (stream, dest) => {

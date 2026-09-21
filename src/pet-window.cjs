@@ -14,7 +14,7 @@
  * closing DSH tears the pet down without leaving a stray process.
  */
 
-const { app, BrowserWindow, ipcMain, screen, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, screen, session, shell } = require('electron')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 
@@ -86,6 +86,28 @@ if (!url) {
 }
 
 app.whenReady().then(() => {
+  // DSH Desktop 宿主给 WebServer 的所有路由（含本插件的 pet-view 与宿主 API）
+  // 套了 desktopBrowserAccess 准入：仅带渲染进程专属头的请求被认定为自身渲染
+  // 进程放行，其余视为普通浏览器——宿主未开启「浏览器访问」时一律 403
+  // "forbidden"（现象：桌面窗弹出后宠物消失、只剩 forbidden 字样）。本窗口是
+  // 独立 Electron 进程，宿主只给自家渲染进程注入，因此自行在 session 上给
+  // 同源请求补头；头名/值由宿主上下文经 env 传入，未提供时不装（普通 web 宿主）。
+  const rendererHeaderName = process.env.DSH_PET_RENDERER_HEADER_NAME
+  const rendererHeaderValue = process.env.DSH_PET_RENDERER_HEADER_VALUE
+  let carrierOrigin = ''
+  try { carrierOrigin = new URL(url).origin } catch { /* url 已在前置校验通过 */ }
+  if (rendererHeaderName && rendererHeaderValue && carrierOrigin) {
+    session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['<all_urls>'] }, (details, callback) => {
+      const requestHeaders = { ...details.requestHeaders }
+      for (const key of Object.keys(requestHeaders)) {
+        if (key.toLowerCase() === rendererHeaderName.toLowerCase()) delete requestHeaders[key]
+      }
+      try {
+        if (new URL(details.url).origin === carrierOrigin) requestHeaders[rendererHeaderName] = rendererHeaderValue
+      } catch { /* 非法 URL 不注入 */ }
+      callback({ requestHeaders })
+    })
+  }
   // UI 缩放补偿：上方 force-device-scale-factor=1 把渲染钉在 100%，高缩放屏
   // （真实缩放 R，如 200%）上网页端元素物理大小 = CSS×R，桌宠若不补偿就只有
   // 一半。坐标系事实（Per-Monitor-V2 感知进程实测，200% 屏）：force-dsf=1 下
@@ -560,12 +582,17 @@ app.whenReady().then(() => {
   })
 
   // Watchdog: when the DSH host process goes away, take the pet with it.
+  // kill(pid, 0) 的语义：ESRCH=进程不存在；EPERM=存在但无权发信号——后者
+  // 恰恰说明父进程还活着，绝不能当成「宿主已退」误杀窗口（DSH Desktop 的
+  // NodeService 宿主下曾表现为桌面窗弹出数秒内自动消失）。
   if (parentPid) {
     const timer = setInterval(() => {
       try {
         process.kill(parentPid, 0)
-      } catch {
+      } catch (error) {
+        if (error && error.code !== 'ESRCH') return // 父进程仍在，继续观察
         clearInterval(timer)
+        console.error('dsh-pet-window: host process gone, exiting')
         app.quit()
       }
     }, 3000)

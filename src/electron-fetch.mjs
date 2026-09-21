@@ -33,8 +33,10 @@
  */
 
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import fsNode from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -88,6 +90,86 @@ export function electronBinaryIn(dir, platform = process.platform, arch = proces
 }
 
 /**
+ * ASAR 安全的 fs（issue #24）：Electron 宿主会把 node:fs 打上 ASAR 补丁——
+ * 读取「已存在的 .asar 文件本身」会被当成虚拟归档解析，复制/校验
+ * resources/default_app.asar 时报 ENOENT "not found in <实际存在的文件>"。
+ * （写不存在的 .asar 路径会落成真实文件，所以解压正常、copyFile 出事。）
+ * Electron 官方做法是用 original-fs 把归档当普通文件操作；非 Electron 宿主
+ * 里没有 original-fs，退回 node:fs。测试注入的假 fs 走不到这里的问题。
+ */
+let asarSafeFsCache
+function asarSafeFs() {
+  if (asarSafeFsCache) return asarSafeFsCache
+  if (process.versions.electron) {
+    try {
+      asarSafeFsCache = createRequire(import.meta.url)('original-fs')
+      return asarSafeFsCache
+    } catch { /* 无 original-fs 时退回 node:fs */ }
+  }
+  asarSafeFsCache = fsNode
+  return asarSafeFsCache
+}
+
+/**
+ * 运行时关键文件清单（相对运行时根目录，issue #24）。只检查可执行文件会把
+ * exe-only 残留误判为已安装——逐文件复制中断后 electron.exe 已就位而
+ * resources/default_app.asar 等缺失，插件会永远尝试启动残缺运行时。
+ */
+export function requiredRuntimeFiles(platform = process.platform) {
+  if (platform === 'darwin') {
+    return [
+      'Electron.app/Contents/MacOS/Electron',
+      'Electron.app/Contents/Resources/default_app.asar',
+      'Electron.app/Contents/Info.plist',
+    ]
+  }
+  return [
+    platform === 'win32' ? 'electron.exe' : 'electron',
+    'resources/default_app.asar',
+    'resources.pak',
+    'snapshot_blob.bin',
+    'v8_context_snapshot.bin',
+  ]
+}
+
+/**
+ * A runtime root is usable only when every required file exists as a non-empty
+ * regular file. Must use the ASAR-safe fs: under an Electron host the patched
+ * node:fs mis-reads default_app.asar itself (issue #24).
+ *
+ * ASAR 补丁下的第二层兜底：补丁 fs 会把「真实存在的 .asar 文件」stat 成目录
+ * （isFile()=false、size 不可信），即便 original-fs 不可用也要能判活——此时退
+ * 回真实父目录的 readdir 存在性检查（父目录不是 .asar，列表不被虚拟化）。
+ */
+export function isUsableElectronRoot(root, platform = process.platform) {
+  const fs = asarSafeFs()
+  for (const rel of requiredRuntimeFiles(platform)) {
+    if (requiredFilePresent(fs, resolve(root, rel), rel)) continue
+    return false
+  }
+  return true
+}
+
+function requiredFilePresent(fs, abs, rel) {
+  try {
+    const st = fs.statSync(abs)
+    if (st.isFile() && st.size > 0) return true
+  } catch { /* 走目录列表兜底 */ }
+  try {
+    return readdirSync(dirname(abs)).includes(basename(rel))
+  } catch {
+    return false
+  }
+}
+
+/** Diagnostic: which required files are missing from a runtime root (issue
+ *  #24 排障用——「no backend」时把缺失清单打进宿主日志，一眼定位残缺点). */
+export function missingRuntimeFiles(root, platform = process.platform) {
+  const fs = asarSafeFs()
+  return requiredRuntimeFiles(platform).filter((rel) => !requiredFilePresent(fs, resolve(root, rel), rel))
+}
+
+/**
  * VENDOR_DIR / ELECTRON_EXE use the macOS-capable resolver so the path is
  * correct on every platform (identical to electronArtifact() on win32/linux).
  */
@@ -132,7 +214,13 @@ export async function ensureElectronRuntime({
   arch = process.arch,
 } = {}) {
   const electronExe = electronBinaryIn(vendorDir, platform, arch)
-  if (existsSync(electronExe)) return electronExe
+  // 快速路径必须是完整性校验而非仅 exe 存在（issue #24）：exe-only 残留
+  // （复制中断、杀软锁定）会被旧判断当成已安装，从此既不下载也无法自愈。
+  if (isUsableElectronRoot(vendorDir, platform)) return electronExe
+  if (existsSync(electronExe)) {
+    onProgress?.('检测到不完整的 Electron 运行时残留，正在重新安装…')
+    try { rmSync(vendorDir, { recursive: true, force: true }) } catch { /* ignore */ }
+  }
   // Serialise concurrent requests across the whole host process.
   if (inflight) return inflight
   const run = (async () => {
@@ -166,14 +254,39 @@ export async function ensureElectronRuntime({
         mkdirSync(vendorDir, { recursive: true })
         await unzip(zip, vendorDir, spawnImpl)
       } else {
-        // pr-16: 先解到临时目录，再 moveContents 上移（win32/linux 真机验证通过）。
+        // pr-16 + issue #24：先解到临时 staging，完整性校验通过后「目录改名」
+        // 原子发布。不再逐文件 copyFile——Electron 宿主的 ASAR fs 补丁会把读取
+        // default_app.asar 本身误判成归档内路径而 ENOENT（报告者实测：解压正常、
+        // 复制报错、留下 exe-only 残留永不自愈）。改名不读文件内容，天然绕开；
+        // 同盘目录改名近似原子，失败只清理 staging，不污染正式目录。
         await unzip(zip, work, spawnImpl)
         const binary = platform === 'win32' ? 'electron.exe' : 'electron'
         const distDir = findDistDir(work, binary)
-        mkdirSync(vendorDir, { recursive: true })
-        await moveContents(distDir, vendorDir)
+        if (!isUsableElectronRoot(distDir, platform)) {
+          throw new Error('解压出的 Electron 运行时不完整（缺关键文件），已放弃安装')
+        }
+        let retired = null
+        if (existsSync(vendorDir)) {
+          // 走到这里 vendorDir 只可能是残缺残留（完整运行时在快速路径已返回）。
+          // Windows 不允许改名到已存在目录，先把旧目录挪开。
+          retired = `${vendorDir}.old-${process.pid}-${Date.now()}`
+          renameSync(vendorDir, retired)
+        }
+        try {
+          renameSync(distDir, vendorDir)
+        } catch (error) {
+          // 改名失败（跨卷/被锁等）退回逐文件复制；复制必须走 ASAR 安全 fs。
+          if (retired) {
+            try { renameSync(retired, vendorDir); retired = null } catch { /* 旧目录已丢也不影响：其内容本就残缺 */ }
+          }
+          mkdirSync(vendorDir, { recursive: true })
+          await moveContents(distDir, vendorDir)
+        }
+        if (retired) {
+          try { rmSync(retired, { recursive: true, force: true }) } catch { /* ignore */ }
+        }
       }
-      if (!existsSync(electronExe)) {
+      if (!isUsableElectronRoot(vendorDir, platform)) {
         if (platform === 'darwin') {
           const target = runtimeTarget(platform, arch)
           throw new Error(`解压后未找到 Electron 可执行文件（${electronExe}）——期望安装包内含 ${target.tag} 的 ${target.sub.join('/')}`)
@@ -279,12 +392,14 @@ async function unzip(zip, dest, spawnImpl) {
   throw lastError
 }
 
-/** Recursively move directory contents up into `target` (works across drives). */
+/** Recursively move directory contents up into `target` (works across drives).
+ *  Copy must go through the ASAR-safe fs: under an Electron host the patched
+ *  node:fs mis-reads default_app.asar itself (issue #24). */
 async function moveContents(src, target) {
-  const { readdir, copyFile, mkdir } = await import('node:fs/promises')
+  const fsp = asarSafeFs().promises
   const { join } = await import('node:path')
-  await mkdir(target, { recursive: true })
-  const entries = await readdir(src, { withFileTypes: true })
+  await fsp.mkdir(target, { recursive: true })
+  const entries = await fsp.readdir(src, { withFileTypes: true })
   for (const entry of entries) {
     const from = join(src, entry.name)
     const to = join(target, entry.name)
@@ -293,7 +408,7 @@ async function moveContents(src, target) {
       await moveContents(from, to)
       try { rmSync(from, { recursive: true, force: true }) } catch { /* ignore */ }
     } else {
-      await copyFile(from, to)
+      await fsp.copyFile(from, to)
     }
   }
 }

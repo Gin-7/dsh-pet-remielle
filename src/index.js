@@ -23,7 +23,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { PetReducer, isSubagent, titleFromSessionLog } from './pet-reducer.js'
 import { PetMessageKind, PetState, createMessage } from './protocol.js'
 import { DesktopWindow } from './desktop-window.js'
-import { ensureElectronRuntime } from './electron-fetch.mjs'
+import { electronArtifact, ensureElectronRuntime, missingRuntimeFiles } from './electron-fetch.mjs'
 import {
   CHECK_ENDPOINT, UPDATE_ENDPOINT, INFO_ENDPOINT,
   checkHandler, updateHandler, infoHandler, setSelfUpdateHooks, killActiveUpdate,
@@ -1064,6 +1064,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       const desktopUrl = `${origin}${PET_VIEW_ENDPOINT}`
       // DSH 0.1.2-alpha.1 起 Web 壳根路径必须通过 connection 带进程 token。
       const dshWebUrl = () => httpCtx.connection.authenticatedUrl(origin)
+      // DSH Desktop 宿主给 WebServer 所有路由套了 desktopBrowserAccess 准入
+      // （仅带渲染进程专属头的请求放行，未开「浏览器访问」时其余一律 403
+      // "forbidden"）。独立桌宠 Electron 窗口必须从宿主上下文取 rendererHeader
+      // 交给窗口进程自注入（pet-window.cjs，与 DSH Desktop 自家渲染进程同
+      // 机制）；普通 web 宿主无此服务，get 返回 undefined 即跳过。
+      let desktopRendererHeader = null
+      try {
+        const access = httpCtx.get('desktopBrowserAccess')
+        if (access?.rendererHeader?.name && access?.rendererHeader?.value) {
+          desktopRendererHeader = { name: access.rendererHeader.name, value: access.rendererHeader.value }
+        }
+      } catch { /* 无此服务（普通 web 宿主） */ }
       const onDesktopExit = () => {
         desktop = undefined
         if (desktopActive) { desktopActive = false; hub.broadcast() }
@@ -1080,7 +1092,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         const spawnWindow = () => {
           let w
           try {
-            w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, posX: settings.get().desktopX, posY: settings.get().desktopY })
+            w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, posX: settings.get().desktopX, posY: settings.get().desktopY, rendererHeader: desktopRendererHeader })
           } catch (error) {
             logger.error?.(`dsh-pet-remielle: 创建桌面窗失败：${String(error)}`)
             return false
@@ -1107,7 +1119,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         }
         if (confirmSent) return // already waiting for user confirmation
         confirmSent = true
-        logger.info?.('dsh-pet-remielle: no Electron backend — requesting user confirmation to fetch')
+        // 缺什么文件一并打出：vendor 残缺时「no backend」只有一句会看不出残缺点。
+        const missing = missingRuntimeFiles(electronArtifact().vendorDir, process.platform)
+        logger.info?.(`dsh-pet-remielle: no Electron backend — requesting user confirmation to fetch (bundled root missing: ${missing.length ? missing.join(', ') : 'nothing, other candidates empty'})`)
         hub.notify({ protocolVersion: 1, kind: 'download', phase: 'confirm' })
       }
       // Only react when desktopMode itself flips: the watch fires on every
@@ -1148,7 +1162,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             // find the freshly installed runtime in time.
             const petWindowCjs = new URL('../src/pet-window.cjs', import.meta.url)
             const backend = { kind: 'electron', command: exe, args: [petWindowCjs.href.startsWith('file://') ? fileURLToPath(petWindowCjs) : String(petWindowCjs)] }
-            const w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, backend, posX: settings.get().desktopX, posY: settings.get().desktopY })
+            const w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, backend, posX: settings.get().desktopX, posY: settings.get().desktopY, rendererHeader: desktopRendererHeader })
             desktop = w
             w.start()
             if (!desktopActive) { desktopActive = true; hub.broadcast() }
@@ -1350,7 +1364,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             if (action === 'start') startDesktop(true)
             else if (action === 'stop') stopDesktop('in-page menu')
             else if (action === 'confirm-download') runDownload()
-            else if (action === 'cancel-download') { confirmSent = false; jsonResponse(res, 200, { ok: true }) }
+            // cancel-download 分支自行响应后必须 return：落到末尾会二次
+            // jsonResponse → ERR_HTTP_HEADERS_SENT（实测宿主日志反复告警）。
+            else if (action === 'cancel-download') { confirmSent = false; jsonResponse(res, 200, { ok: true }); return }
             else {
               jsonResponse(res, 400, { ok: false, error: 'expected /desktop/start, /desktop/stop, /desktop/confirm-download, or /desktop/cancel-download' })
               return

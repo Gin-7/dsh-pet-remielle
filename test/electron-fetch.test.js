@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname } from 'node:path'
 import { EventEmitter } from 'node:events'
-import { downloadMirrors, ensureElectronRuntime, electronArtifact, runtimeTarget, electronBinaryIn } from '../src/electron-fetch.mjs'
+import { downloadMirrors, ensureElectronRuntime, electronArtifact, runtimeTarget, electronBinaryIn, requiredRuntimeFiles, missingRuntimeFiles } from '../src/electron-fetch.mjs'
 
 /** The platform-specific executable name (electron.exe on Windows, electron elsewhere). */
 const BIN = electronArtifact().binary
@@ -44,6 +44,8 @@ function fakeFetch(ok) {
 /**
  * Fake zip extractor (platform-aware): on darwin writes the Electron.app bundle
  * binary, otherwise writes the platform binary (BIN) into dest.
+ * issue #24: must emit the full required-file set (resources/default_app.asar
+ * etc.), otherwise isUsableElectronRoot rejects the freshly extracted runtime.
  */
 function fakeSpawn(platform = 'win32') {
   return (command, args) => {
@@ -57,12 +59,21 @@ function fakeSpawn(platform = 'win32') {
       const dest = idx >= 0 ? args[idx + 1] : args[args.indexOf('-d') + 1]
       mkdirSync(dest, { recursive: true })
       if (platform === 'darwin') {
-        const bin = join(dest, 'Electron.app', 'Contents', 'MacOS', 'Electron')
+        const app = join(dest, 'Electron.app', 'Contents')
+        const bin = join(app, 'MacOS', 'Electron')
         mkdirSync(dirname(bin), { recursive: true })
+        mkdirSync(join(app, 'Resources'), { recursive: true })
         writeFileSync(bin, 'FAKE_ELECTRON')
+        writeFileSync(join(app, 'Resources', 'default_app.asar'), 'FAKE_ASAR')
+        writeFileSync(join(app, 'Info.plist'), 'fake')
         writeFileSync(join(dest, 'LICENSE'), 'fake')
       } else {
         writeFileSync(join(dest, BIN), 'FAKE_ELECTRON')
+        mkdirSync(join(dest, 'resources'), { recursive: true })
+        writeFileSync(join(dest, 'resources', 'default_app.asar'), 'FAKE_ASAR')
+        writeFileSync(join(dest, 'resources.pak'), 'fake')
+        writeFileSync(join(dest, 'snapshot_blob.bin'), 'fake')
+        writeFileSync(join(dest, 'v8_context_snapshot.bin'), 'fake')
         writeFileSync(join(dest, 'LISEZ-moi.txt'), 'fake')
       }
       child.exitCode = 0
@@ -77,6 +88,29 @@ function tempVendor() {
   const vendor = join(dir, 'vendor', 'electron-test')
   return { dir, vendor }
 }
+
+test('missingRuntimeFiles lists exactly the absent required files (residue diagnosis)', () => {
+  const { dir, vendor } = tempVendor()
+  try {
+    mkdirSync(vendor, { recursive: true })
+    writeFileSync(join(vendor, 'electron.exe'), 'EXE')
+    writeFileSync(join(vendor, 'resources.pak'), 'PAK')
+    const missing = missingRuntimeFiles(vendor, 'win32')
+    assert.ok(missing.includes('resources/default_app.asar'))
+    assert.ok(missing.includes('snapshot_blob.bin'))
+    assert.ok(missing.includes('v8_context_snapshot.bin'))
+    assert.ok(!missing.includes('electron.exe'))
+    assert.ok(!missing.includes('resources.pak'))
+    // 完整根目录 → 空清单
+    mkdirSync(join(vendor, 'resources'), { recursive: true })
+    writeFileSync(join(vendor, 'resources', 'default_app.asar'), 'ASAR')
+    writeFileSync(join(vendor, 'snapshot_blob.bin'), 'SNAP')
+    writeFileSync(join(vendor, 'v8_context_snapshot.bin'), 'SNAP2')
+    assert.deepEqual(missingRuntimeFiles(vendor, 'win32'), [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('downloadMirrors: npmmirror first, then github, same artifact name', () => {
   const mirrors = downloadMirrors('33.0.0', 'win32', 'x64')
@@ -128,6 +162,12 @@ test('ensureElectronRuntime is idempotent when the runtime already exists', asyn
   try {
     mkdirSync(vendor, { recursive: true })
     writeFileSync(join(vendor, BIN), 'EXISTS')
+    // issue #24: 快速路径要求完整关键文件集，只有 exe 会被判残缺并触发重装。
+    for (const rel of requiredRuntimeFiles('win32')) {
+      const p = join(vendor, rel)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, 'fake')
+    }
     let fetchCalls = 0
     const exe = await ensureElectronRuntime({
       vendorDir: vendor,
@@ -138,6 +178,60 @@ test('ensureElectronRuntime is idempotent when the runtime already exists', asyn
     })
     assert.equal(exe, resolve(vendor, BIN))
     assert.equal(fetchCalls, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('exe-only residue is treated as broken and repaired by reinstalling (issue #24)', async () => {
+  const { dir, vendor } = tempVendor()
+  try {
+    // 复制中断的典型残留：electron.exe 已就位、resources/default_app.asar 缺失。
+    mkdirSync(vendor, { recursive: true })
+    writeFileSync(join(vendor, BIN), 'EXE_ONLY')
+    const exe = await ensureElectronRuntime({
+      mirrors: ['https://mirror.test/electron.zip'],
+      vendorDir: vendor,
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: fakeFetch(true),
+      spawnImpl: fakeSpawn('win32'),
+    })
+    assert.equal(exe, resolve(vendor, BIN))
+    // 重装后运行时完整。
+    assert.ok(existsSync(join(vendor, 'resources', 'default_app.asar')), 'missing default_app.asar should be restored')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('incomplete extraction aborts the install without polluting vendorDir (issue #24)', async () => {
+  const { dir, vendor } = tempVendor()
+  try {
+    // 假解压器只落 exe（模拟解压中断/缺文件）：staging 校验必须拒绝发布。
+    await assert.rejects(
+      ensureElectronRuntime({
+        mirrors: ['https://mirror.test/electron.zip'],
+        vendorDir: vendor,
+        platform: 'win32',
+        arch: 'x64',
+        fetchImpl: fakeFetch(true),
+        spawnImpl: (command, args) => {
+          const child = new EventEmitter()
+          setImmediate(() => {
+            const idx = args.indexOf('-C')
+            const dest = idx >= 0 ? args[idx + 1] : args[args.indexOf('-d') + 1]
+            mkdirSync(dest, { recursive: true })
+            writeFileSync(join(dest, BIN), 'EXE_ONLY')
+            child.exitCode = 0
+            child.emit('exit', 0)
+          })
+          return child
+        },
+      }),
+      /运行时不完整/,
+    )
+    assert.ok(!existsSync(vendor), 'vendorDir must stay clean when staging validation fails')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

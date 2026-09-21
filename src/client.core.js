@@ -2006,6 +2006,16 @@ function mountPet(ctx) {
     }
     if (snapshot.kind === 'download') {
       if (snapshot.phase === 'confirm') {
+        // 弹窗必须整体复位：上一轮 done/error 会隐藏 OK 键、把取消键改成
+        // 「关闭」。不复位的话再次弹出的确认框里「开始下载」根本不存在，
+        // 用户只能关闭 → 循环弹窗、永远无法下载（DSH Desktop 实测）。
+        confirmOk.disabled = false
+        confirmOk.style.display = ''
+        confirmOk.textContent = '开始下载'
+        confirmCancel.disabled = false
+        confirmCancel.textContent = '取消'
+        confirmCancel.style.display = ''
+        confirmProgress.style.display = 'none'
         confirmOverlay.style.display = 'flex'
       } else if (snapshot.phase === 'start') {
         confirmOk.textContent = '下载中…'
