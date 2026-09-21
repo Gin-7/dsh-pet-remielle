@@ -166,7 +166,7 @@ dsh plugin --profile web add dsh-pet-remielle
 - **余额**：来自官方接口 `api.deepseek.com/user/balance`（凭据 `DEEPSEEK_API_KEY`）。60 秒自动刷新；切到余额页时会拉一次；余额变化时有数字滚动动画；网络瞬时抖动自动沿用最近余额不报错。
 - **今日已用 · 小鲸鱼记账（默认，免令牌）**：每次观测余额后用余额差值自动累计，持久化到 `$DSH_HOME/.dshp-usage.json`，跨天自动归零归档。无需额外令牌，但属于估算——DSH 关闭期间的消耗会漏记。
 - **今日已用 · 实时·令牌（精确）**：配置平台会话令牌 `DEEPSEEK_PLATFORM_TOKEN` 后，直连平台费用接口（`platform.deepseek.com/api/v0/usage/by_api_key/cost`），直接取平台按小时统计的**真实金额**——无需本地定价表，DeepSeek 调价自动跟随：
-  - 气泡里同时显示当前所处时段（空闲 / 高峰，高峰：每日 9:00–12:00 与 14:00–18:00 北京时间）
+  - 气泡里同时显示当前所处时段（空闲 / 高峰）：工作日高峰为 9:00–12:00 与 14:00–18:00（北京时间），**周六周日与中国法定节假日全天空闲**（调休上班的周末同样按空闲计费，与官方口径一致）。节假日日历以内置表兜底、后台静默刷新公共日历数据（缓存到 `$DSH_HOME/.dshp-holidays-<年份>.json`），仅在首次/过期时发一次只含年份的请求
   - 令牌缺失或失效时自动回落记账模式
 
 **切换用量模式**：设置 → 宠物管理 → 行为 →「用量模式」（小鲸鱼记账 / 实时·令牌），或右键桌宠菜单里的「用量模式」。
@@ -209,6 +209,7 @@ npm run check                     # 语法检查
 src/
 ├── index.js          # 宿主：配置、事件接线、config/state/balance/pets/assets/desktop 端点、自更新路由
 ├── balance.js        # 余额服务：余额拉取（重试/缓存/抖动容错）、今日已用双模式（记账/平台费用接口）
+├── holidays.js       # 节假日日历：峰谷时段判定（周末/法定节假日全天空闲），内置表 + 远程刷新 + 磁盘缓存
 ├── self-update.js    # 版本检查 + 一键更新（GitHub 直连 + HTTP 代理回退；git pull / pnpm update）
 ├── pet-reducer.js    # 纯状态机：会话事件 → state/pulse/task（可单测）
 ├── protocol.js       # 类型化协议：PetState / PetMood / PetMessageKind

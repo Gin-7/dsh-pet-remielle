@@ -17,26 +17,11 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHolidayStore } from './holidays.js'
 
 const BALANCE_URL = 'https://api.deepseek.com/user/balance'
 const USAGE_URL = 'https://platform.deepseek.com/api/v0/usage/by_api_key/cost'
 const BALANCE_TTL_MS = 25000
-
-// 高峰时段：每日 9:00–12:00 和 14:00–18:00（北京时间），仅用于「空闲/高峰」提示。
-const PEAK_HOURS = [
-  [9, 12],
-  [14, 18],
-]
-
-/** bucket time is an epoch second; derive the Beijing local hour. */
-export function isPeakTime(timeSec) {
-  if (!isFinite(Number(timeSec))) return false
-  const hour = new Date(Number(timeSec) * 1000 + 8 * 3600 * 1000).getUTCHours()
-  for (const [start, end] of PEAK_HOURS) {
-    if (hour >= start && hour < end) return true
-  }
-  return false
-}
 
 export function normalizeUsageMode(m) {
   return m === 'token' ? 'token' : 'ledger'
@@ -51,6 +36,9 @@ export function normalizeUsageMode(m) {
 export function createBalanceService({ resolveCredential, getPlatformToken, dshHome, log }) {
   const DSH_HOME = dshHome || process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
   const logger = log || (() => {})
+  // 峰谷时段判定（issue #25）：周末/法定节假日全天空闲，其余按 9–12、14–18
+  // 判高峰。节假日日历以内置表兜底、后台静默刷新远程数据。
+  const holidays = createHolidayStore({ dshHome: DSH_HOME, log: logger })
 
   const USAGE_FILE_CANDIDATES = [
     path.join(DSH_HOME, '.dshp-usage.json'),
@@ -237,7 +225,9 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
     const led = recordLedgerUsage(Number(payload.totalBalance))
     const mode = normalizeUsageMode(usageMode)
     const full = { ...payload }
-    full.isPeak = isPeakTime(Math.floor(Date.now() / 1000))
+    full.isPeak = holidays.isPeak(Math.floor(Date.now() / 1000))
+    // 日历刷新属后台行为，不阻塞余额展示；失败静默（内置表兜底仍在）。
+    void holidays.refresh()
     if (mode === 'ledger') {
       full.todayUsage = led.todayUsage
       full.usageMode = 'ledger'

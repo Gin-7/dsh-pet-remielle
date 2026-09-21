@@ -165,7 +165,7 @@ With both status and usage on, the left dot or a wheel on the bubble shows your 
 - **Balance**: from the official API `api.deepseek.com/user/balance` (credential `DEEPSEEK_API_KEY`). Auto-refreshes every 60s; switching to the balance page fetches once; rolling-number animation on changes; transient network blips keep the last known balance instead of flashing errors.
 - **Today usage · ledger (default, token-free)**: accumulates balance deltas into `$DSH_HOME/.dshp-usage.json` (cross-day reset & archive). No extra token needed, but it is an estimate — usage while DSH is off is not recorded.
 - **Today usage · real-time token (exact)**: after configuring the platform session token `DEEPSEEK_PLATFORM_TOKEN`, it queries the platform cost API (`platform.deepseek.com/api/v0/usage/by_api_key/cost`) and reads the platform's own per-hour CNY amount — no local pricing table, so DeepSeek price changes are followed automatically:
-  - The bubble also shows the current period (off-peak / peak; peak: 09:00–12:00 and 14:00–18:00 Beijing time)
+  - The bubble also shows the current period (off-peak / peak): on workdays peak is 09:00–12:00 and 14:00–18:00 Beijing time, while **Saturdays, Sundays and Chinese public holidays are off-peak all day** (weekends that are adjusted workdays still count as off-peak, matching the official rule). The holiday calendar falls back to a built-in table and silently refreshes a public calendar in the background (cached at `$DSH_HOME/.dshp-holidays-<year>.json`), issuing a year-only request on first use or after expiry
   - Falls back to ledger mode when the token is missing or invalid
 
 **Switching usage mode**: Settings → Pet Management → Behavior → "Usage Mode" (ledger / real-time token), or the pet's right-click menu → "Usage Mode".
@@ -208,6 +208,7 @@ npm run check                     # Syntax check
 src/
 ├── index.js          # Host: config, event wiring, config/state/balance/pets/assets/desktop endpoints, self-update routes
 ├── balance.js        # Balance service: fetch (retry/cache/stale fallback), today usage (ledger/token), peak pricing
+├── holidays.js       # Holiday calendar: peak/off-peak decision (weekends & public holidays are off-peak all day), builtin table + remote refresh + disk cache
 ├── self-update.js    # Version check + one-click update (GitHub direct + HTTP proxy fallback; git pull / pnpm update)
 ├── pet-reducer.js    # Pure state machine: session events → state/pulse/task (unit-tested)
 ├── protocol.js       # Typed protocol: PetState / PetMood / PetMessageKind

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixes
+- 时段提示（空闲/高峰）落后于 DeepSeek 官方规则（issue #25）：判定此前只看小时，周末与中国法定节假日也会被判成高峰。官方现行口径为「工作日高峰 9:00–12:00、14:00–18:00（北京时间），周六周日全天空闲（2026-08-23 起），法定节假日全天空闲，调休上班的周末同样全天空闲」——后两条使调休补班信息变得多余，判定只需「周末 ∪ 法定节假日」。现新增 `src/holidays.js`：内置 2025/2026 放假日历兜底，后台静默刷新公共节假日数据并缓存到 `$DSH_HOME/.dshp-holidays-<年份>.json`（30 天 TTL，年份未发布的空结果 3 天 TTL），失败静默回落；表里没有的年份退回固定日期近似（元旦/劳动节/国庆），保证不会在已知固定假期上误报高峰。`balance.js` 的 `isPeakTime` 由此改为「周末/节假日 + 小时」判定，并补上此前完全缺失的测试覆盖。
 - Electron 运行时在 Electron 宿主（DSH Desktop）内安装失败且无法自愈（issue #24）：宿主会把 `node:fs` 打上 ASAR 补丁，逐文件复制时读取 `resources/default_app.asar` 本身被误判为归档内路径而 ENOENT，且 `electron.exe` 已先行复制成功、完整性检查只看 exe，半成品被当成已安装。现 win32/linux 改为「staging 解压 → 关键文件完整性校验 → 目录改名原子发布」（改名不读文件内容，天然绕开 ASAR 补丁；改名失败退回 ASAR 安全的 `original-fs` 复制），新增统一完整性校验 `isUsableElectronRoot`（exe + default_app.asar + pak/snapshot，非空普通文件），快速路径与候选发现均按此校验，exe-only 残留自动清理重装。
 - DSH Desktop 下开启桌面模式后宠物消失、窗口显示 `forbidden`：DSH Desktop 给 WebServer 所有路由（含本插件端点）套了 `desktopBrowserAccess` 渲染进程准入，未开启「浏览器访问」时仅带专属头的请求放行，独立桌宠 Electron 窗口的请求一律 403。现插件从宿主上下文读取渲染进程准入头，经 env 交给桌宠窗口进程在建窗前对同源请求自注入（与 DSH Desktop 自家渲染进程同机制）；普通 web 宿主无此服务，行为不变。
 - Electron 运行时残缺（exe 在、关键文件缺失）时反复弹出下载确认框却永远无法下载：①网页端下载弹窗在上一轮 done/error 后不复位——再次弹出时「开始下载」按钮已被隐藏，只剩「关闭」，用户无法发起下载；②`/desktop/cancel-download` 端点响应后落穿到末尾二次 `jsonResponse`，宿主日志反复告警 `ERR_HTTP_HEADERS_SENT`。已修复弹窗复位与双重响应。附带加固：运行时完整性校验对 ASAR 补丁 fs 免疫（stat 不可信时退回真实父目录列表判断存在性）；桌宠窗口看门狗把 `kill(pid,0)` 的 EPERM（进程仍在）正确视为宿主存活，不再误杀；窗口退出与「no backend」时缺失文件清单均写入宿主日志，便于排障。
