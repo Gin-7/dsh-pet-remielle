@@ -186,9 +186,9 @@ All other appearance/behavior options (size, opacity, mirror, lock, bubble, usag
 
 ## Settings → Pet Management
 
-Pet registry section with tabbed sub-pages: **Appearance / Behavior / Desktop Float / Update / Feedback**.
+Pet registry as its own tab, alongside **Appearance / Pets / Behavior / Desktop Float / About** (five tabs).
 
-- Enable/disable pets, set as current, rename, add new pets.
+- Enable/disable pets, set as current, rename, add new pets; pets with a missing directory or incomplete stickers show the reason on the card (the enable switch is disabled alongside).
 - Behavior page: enable / lock / pause / hide / respond to sub-agents / show bubble / **usage mode**.
 - "Update": shows current version, check for updates, one-click update, upgrade guide.
 - "Feedback": shows pet version, submit bug reports / feature requests.
