@@ -150,8 +150,9 @@ dsh plugin --profile web add dsh-pet-remielle
 
 - **Single-click pet**: cycle through random sticker moods.
 - **Double-click pet**: enter drawing animation; after completion a artwork pops up (screen top-right) and fades out.
-- **Right-click pet (in-page)**: character size / lock position / show bubble / usage mode / desktop float mode / reset position / pause animation.
-- **Right-click pet (desktop window)**: character size / lock position / show bubble / usage mode / drawing / switch to web mode.
+- **Right-click pet**: the **same menu** in-page and in the desktop window (same width and order, sliders aligned) — character size / opacity / mirror / lock position / pause animation / show bubble / drawing / reset position / desktop float mode. "Reset position" clears both the in-page and the desktop-window position at once; "Pause animation" freezes on the **currently displayed frame** (not the first frame) — exact on secure contexts (`127.0.0.1` / `localhost` / https), falls back to the first frame over plain-HTTP LAN addresses; resuming replays the GIF from frame 0 (an inherent consequence of re-assigning `src` — `<img>` cannot seek to a given frame).
+- **Settings-only**: enable / hide pet, pet management, respond to sub-agents, usage mode and platform token, bubble sub-toggles and bubble-scaling details — these are either low-frequency or would remove their own entry point (hide pet), so they stay out of the right-click menu.
+- **Both ends share one theme source**: the in-page menu/bubbles and the desktop window use the **same colours** and follow the **same** theme — the page reports the host theme (`body[data-ds-dark-theme]`) and the desktop window colours itself from that report; with no web client online (or the report expired) it falls back to the **system** light/dark setting, which stays a sensible default for a standalone window. Rows, order and geometry match item by item as well (a toggle's check mark never changes its row height), and a cross-file assertion pins the colours.
 - **Bubble paging**: with both status and usage on, the left dot or a wheel on the bubble switches between the status card and the balance page; stays on the current page, no auto-return.
 - **Scroll wheel (pet)**: resize character.
 - In-page pet menu can also launch the desktop window.
@@ -168,7 +169,7 @@ With both status and usage on, the left dot or a wheel on the bubble shows your 
   - The bubble also shows the current period (off-peak / peak): on workdays peak is 09:00–12:00 and 14:00–18:00 Beijing time, while **Saturdays, Sundays and Chinese public holidays are off-peak all day** (weekends that are adjusted workdays still count as off-peak, matching the official rule). The holiday calendar falls back to a built-in table and silently refreshes a public calendar in the background (cached at `$DSH_HOME/.dshp-holidays-<year>.json`), issuing a year-only request on first use or after expiry
   - Falls back to ledger mode when the token is missing or invalid
 
-**Switching usage mode**: Settings → Pet Management → Behavior → "Usage Mode" (ledger / real-time token), or the pet's right-click menu → "Usage Mode".
+**Switching usage mode**: Settings → Pet Management → Behavior → "Usage Mode" (ledger / real-time token). It is a configuration choice rather than a live tweak, so it lives in Settings only.
 
 > To obtain `DEEPSEEK_PLATFORM_TOKEN`: sign in to platform.deepseek.com → F12 DevTools → Network → open the "Usage" page → copy the `Authorization` header value of the `api/v0/usage/...` request → add it to the DSH credentials service.
 
@@ -180,7 +181,7 @@ With both status and usage on, the left dot or a wheel on the bubble shows your 
 |---|---|---|
 | enabled | true | Enable the pet (disables immediately, re-enabling restores) |
 
-All other appearance/behavior options (size, opacity, lock, bubble, usage mode, desktop float, pause, hide, etc.) are managed in Settings → Pet Management and the right-click menu, not duplicated in the plugin config card.
+All other appearance/behavior options (size, opacity, mirror, lock, bubble, usage mode, desktop float, pause, hide, etc.) live in Settings → Pet Management, not duplicated in the plugin config card. The few that are instantly visible and high-frequency also appear in the right-click menu (list under "Usage") — both ends share one skeleton and one set of labels, so changing one means changing the other.
 
 ## Settings → Pet Management
 

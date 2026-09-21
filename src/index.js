@@ -54,6 +54,7 @@ export const STREAM_ENDPOINT = '/plugins/dsh-pet-remielle/stream'
 export const COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
 export const SESSION_OPEN_ENDPOINT = '/plugins/dsh-pet-remielle/session/open'
 export const SESSION_CURRENT_ENDPOINT = '/plugins/dsh-pet-remielle/session/current'
+export const THEME_ENDPOINT = '/plugins/dsh-pet-remielle/theme'
 export const PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 export const ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 export const PET_VIEW_ENDPOINT = '/plugins/dsh-pet-remielle/pet-view'
@@ -350,6 +351,46 @@ export function createSessionCurrentHandler({ accept }) {
 }
 
 /**
+ * 宿主主题取值归一：只认 'dark' / 'light'，空值表示「清除上报」（桌面窗回落系统主题）。
+ * 其他值直接报错而不是静默当空——客户端笔误（如 'Dark'）会安静地把配色带歪，
+ * 而这类错误在两端截图对比前几乎看不出来。
+ */
+export function normalizeHostTheme(value) {
+  if (value === '' || value === undefined || value === null) return ''
+  if (value === 'dark' || value === 'light') return value
+  throw new Error("theme must be 'dark', 'light' or ''")
+}
+
+/**
+ * Web-client host-theme uplink: POST { theme: 'dark' | 'light' | '' }（空串=清除）。
+ * 桌面悬浮窗是独立 Electron 窗口，读不到宿主页面的 body[data-ds-dark-theme]，
+ * 主题只能由网页端上报：有网页在线时桌面窗跟随宿主主题，两端菜单/气泡同色；
+ * 没有网页在线（或上报过期）时快照里不带 hostTheme，桌面窗回落系统主题。
+ * fire-and-forget，值真变化时通过 `accept` 的第二个参数把 changed 交给调用方广播。
+ * @param accept - (theme, { changed }) => void；changed = 与上一次上报值不同。
+ */
+export function createThemeHandler({ accept }) {
+  let lastReported = null
+  return async (req, res) => {
+    if (!localOnly(req, res)) return
+    if (req.method !== 'POST') {
+      jsonResponse(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    try {
+      const body = await readJsonBody(req)
+      const theme = normalizeHostTheme(body.theme)
+      const changed = theme !== lastReported
+      lastReported = theme
+      accept(theme, { changed })
+      jsonResponse(res, 200, { ok: true })
+    } catch (error) {
+      jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+}
+
+/**
  * Scan assets/pets/ for pet directories and their GIF files.
  * @param root - the absolute assets/pets directory.
  * @returns discovery entries `[{ id, gifs }]`.
@@ -531,7 +572,7 @@ export function dropSubagentCompletions(completionQueue, isSubagentSession) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getWebClients, getActivePet, getStates, getCompletions, getCurrent, getSessionTitle }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getWebClients, getActivePet, getStates, getCompletions, getCurrent, getTheme, getSessionTitle }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
   const webClientsOf = typeof getWebClients === 'function' ? getWebClients : () => 0
@@ -539,6 +580,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
   const statesOf = typeof getStates === 'function' ? getStates : () => []
   const completionsOf = typeof getCompletions === 'function' ? getCompletions : () => []
   const currentOf = typeof getCurrent === 'function' ? getCurrent : () => undefined
+  const themeOf = typeof getTheme === 'function' ? getTheme : () => ''
   const titleOf = typeof getSessionTitle === 'function' ? getSessionTitle : () => undefined
   const withTitle = (entry) => {
     if (!entry || entry.title) return entry
@@ -654,6 +696,9 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       petId: petIdOf() ?? DEFAULT_PET_ID,
       // 网页端上报的「用户正在看的会话」；空串=清除，回落为缺失（JSON 序列化时省略该字段）
       currentSessionId: currentOf() || undefined,
+      // 网页端上报的宿主主题（'dark' / 'light'）；字段缺失=没有网页在线或上报过期，
+      // 桌面悬浮窗据此回落系统主题。桌面窗是独立窗口，本身读不到宿主页面主题。
+      hostTheme: themeOf() || undefined,
       posX: config.posX ?? null,
       posY: config.posY ?? null,
       pics: activePetOf()?.pics ?? 0,
@@ -825,6 +870,14 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   const CURRENT_SESSION_TTL_MS = 10 * 60 * 1000
   let reportedCurrentSessionId = ''
   let reportedCurrentSessionAt = 0
+  // 网页端上报的宿主主题（'dark' / 'light'，空串=清除/未上报）：桌面悬浮窗是独立
+  // 窗口，拿不到宿主页面的 body[data-ds-dark-theme]，只能靠这条上报与网页端同色。
+  // 与 currentSessionId 同理带 TTL：页面被杀时 pagehide 的清除上报不会执行，没有
+  // TTL 桌面窗会一直挂着过期的宿主配色。主题变化比会话切换稀疏得多（网页端另有
+  // 5 分钟心跳续期），TTL 留 10 分钟足够宽裕。
+  const HOST_THEME_TTL_MS = 10 * 60 * 1000
+  let reportedHostTheme = ''
+  let reportedHostThemeAt = 0
   // Completed turns stay visible until the user opens their conversation.
   const completionQueue = new Map()
   // 事件流里见过并被判定为子会话的 sessionId。关掉「响应子 Agent」时据此清掉队列里的
@@ -923,6 +976,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getStates: () => reducer.states(),
     getCompletions: () => [...completionQueue.values()],
     getCurrent: () => (Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''),
+    getTheme: () => (Date.now() - reportedHostThemeAt < HOST_THEME_TTL_MS ? reportedHostTheme : ''),
     getSessionTitle: (sessionId) => readSessionTitle(ctx, sessionId),
   })
 
@@ -1200,6 +1254,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         petTipJs = await readFile(new URL('../src/pet-tip.cjs', import.meta.url), 'utf8')
         return petTipJs
       }
+      let gifFrameJs = null
+      const readGifFrame = async () => {
+        if (gifFrameJs) return gifFrameJs
+        gifFrameJs = await readFile(new URL('../src/gif-frame.cjs', import.meta.url), 'utf8')
+        return gifFrameJs
+      }
 
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: CONFIG_ENDPOINT, handler: createConfigHandler(settings) }),
@@ -1258,6 +1318,23 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           }),
         }),
         'dsh-pet-remielle: web client current-session uplink',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: THEME_ENDPOINT,
+          handler: createThemeHandler({
+            accept: (theme, { changed }) => {
+              reportedHostTheme = theme
+              // 清除上报（空串）同样刷新时间戳：清除态本身也是有效状态
+              reportedHostThemeAt = Date.now()
+              // 值变了就广播：桌面悬浮窗靠快照里的 hostTheme 决定菜单/气泡配色，
+              // 宿主主题一换它得立刻跟上，否则两端会出现一段时间的水土不服。
+              if (changed) hub.broadcast()
+            },
+          }),
+        }),
+        'dsh-pet-remielle: web client host-theme uplink',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: BALANCE_ENDPOINT, handler: async (req, res) => {
@@ -1344,6 +1421,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           res.end(js)
         } }),
         'dsh-pet-remielle: shared pet tip script',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/gif-frame.js', handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const js = await readGifFrame()
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'cache-control': 'no-store',
+          })
+          res.end(js)
+        } }),
+        'dsh-pet-remielle: shared gif frame script',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({

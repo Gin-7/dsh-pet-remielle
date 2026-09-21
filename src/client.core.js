@@ -24,6 +24,10 @@ var CONFIG_ENDPOINT = '/plugins/dsh-pet-remielle/config'
 var STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
 var COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
 var SESSION_CURRENT_ENDPOINT = '/plugins/dsh-pet-remielle/session/current'
+var THEME_ENDPOINT = '/plugins/dsh-pet-remielle/theme'
+// 主题上报心跳：宿主侧对上报值有 10 分钟 TTL（index.js 的 HOST_THEME_TTL_MS），
+// 5 分钟续一次，留一半余量。
+var HOST_THEME_HEARTBEAT_MS = 5 * 60 * 1000
 var PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 var ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 var DESKTOP_ENDPOINT = '/plugins/dsh-pet-remielle/desktop'
@@ -76,11 +80,25 @@ function withPrefix(p) { return RM_GATEWAY_PREFIX + p }
 var CSS = [
   // Right-click menu — pink palette, matching the status bubble on both the
   // in-page pet and the desktop window (hardcoded, not DSW vars).
-  '.rm2-pet-menu{position:fixed;z-index:2147483000;min-width:200px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);border-radius:10px;corner-shape:round!important;box-shadow:0 8px 24px rgba(190,70,110,.22);padding:6px;font-family:system-ui,sans-serif;font-size:13px;color:#8a2f52;display:none;user-select:none;}',
-  '.rm2-pet-menu-item{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:7px 10px;border-radius:7px;corner-shape:round!important;cursor:pointer;white-space:nowrap;}',
+  // 宽度定死 240px（原先靠内容撑开，状态行一长菜单就跟着变宽）。行内间距收窄，
+  // 滑块行改成「名称列 flex:1 + 定宽滑块 + 定宽百分比」：名称列吃掉余量后，
+  // 滑块与百分比被推到行尾，「角色大小」「透明度」两行的滑块左右边缘严格对齐
+  // （旧写法两行名称字数不同，space-between 把滑块放在了不同位置）。
+  '.rm2-pet-menu{position:fixed;z-index:2147483000;box-sizing:border-box;width:240px;background:#fff0f5;border:1px solid rgba(240,120,160,.45);border-radius:10px;corner-shape:round!important;box-shadow:0 8px 24px rgba(190,70,110,.22);padding:6px;font-family:system-ui,sans-serif;font-size:13px;color:#8a2f52;display:none;user-select:none;}',
+  '.rm2-pet-menu-item{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:7px 9px;border-radius:7px;corner-shape:round!important;cursor:pointer;white-space:nowrap;}',
+  '.rm2-pet-menu-item>span:first-child{flex:1 1 auto;}',
   '.rm2-pet-menu-item:hover{background:rgba(240,120,160,.14);}',
   '.rm2-pet-menu-item .mute{color:#c2607f;font-size:12px;}',
-  '.rm2-pet-menu-item .tick{color:#b03a60;font-weight:600;}',
+  // line-height:1 不是装饰：勾选符「✓」(U+2713) 在本机走字体回退，字形盒高 19px
+  // 而标签只有 16px，line-height:normal 下行框被撑到 33px（未勾选行 30px），
+  // 于是「勾上 / 取消」会让整行抖 3px。压掉 tick 自己的行高贡献即可，
+  // 实测 tick 盒 19→13px、行高恒为 30px，勾的视觉位置不变（中心偏移 0）。
+  // 桌面端 .menu-item .tick 同款（两端必须同步）。
+  '.rm2-pet-menu-item .tick{color:#b03a60;font-weight:600;line-height:1;}',
+  '.rm2-pet-menu-status{opacity:.85;cursor:default;}',
+  '.rm2-pet-menu-status>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;}',
+  '.rm2-pet-menu-slider{flex:none;width:92px;margin:0 2px;accent-color:#e8508a;}',
+  '.rm2-pet-menu-pct{flex:none;min-width:36px;text-align:right;font-size:12px;}',
   '.rm2-pet-menu-sep{height:1px;background:rgba(240,120,160,.25);margin:5px 6px;}',
   '.rm2-pet-bubble{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:13px;min-width:200px;max-width:453px;padding:16px 27px 16px 40px;border-radius:29px;corner-shape:round!important;background:#fff0f5;border:1px solid rgba(240,120,160,.45);box-shadow:0 11px 32px rgba(190,70,110,.22);font-size:16px;line-height:1.45;text-align:left;pointer-events:none;white-space:nowrap;text-overflow:ellipsis;cursor:default;}',
   '.rm2-pet-bubble-title{font-weight:600;color:#b03a60;}',
@@ -361,12 +379,17 @@ function fetchJson(url) {
   })
 }
 
-function patchConfig(field, next) {
+/** PATCH several config fields in one request（端点收对象、拒未知键）。 */
+function patchConfigFields(patch) {
   return fetch(CONFIG_ENDPOINT, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ [field]: next }),
+    body: JSON.stringify(patch),
   }).catch(function () {})
+}
+
+function patchConfig(field, next) {
+  return patchConfigFields({ [field]: next })
 }
 
 function patchPet(id, patch) {
@@ -818,7 +841,10 @@ function PetsSection() {
         React.createElement('button', {
           type: 'button', disabled: !config,
           style: { padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border-color, #d8d8d8)', background: 'transparent', cursor: config ? 'pointer' : 'default', fontSize: 12, fontFamily: 'inherit', whiteSpace: 'nowrap' },
-          onClick: function () { fetch(DESKTOP_ENDPOINT + '/start', { method: 'POST' }).catch(function () {}) },
+          // 旧实现误打 /desktop/start——按「重置位置」反而拉起桌面悬浮窗。
+          // 现在与右键菜单同一语义：四个坐标一次清空（页面内 posX/posY +
+          // 桌面窗 desktopX/desktopY），下次进入桌面模式即回默认落点。
+          onClick: function () { void patchConfigFields({ posX: null, posY: null, desktopX: null, desktopY: null }) },
         }, '重置位置'),
         React.createElement(Switch, { checked: v.locked === true, disabled: !config, onChange: function (val) { write('locked', val) } }),
       ),
@@ -826,7 +852,7 @@ function PetsSection() {
     React.createElement(Field, { label: '暂停动画', hint: '暂停 GIF 动画，宠物保持当前帧静止。' },
       React.createElement(Switch, { checked: v.paused === true, disabled: !config, onChange: function (val) { write('paused', val) } }),
     ),
-    React.createElement(Field, { label: '隐藏桌宠', hint: '隐藏宠物，通过右键菜单或状态栏唤醒。' },
+    React.createElement(Field, { label: '隐藏桌宠', hint: '隐藏宠物。右键菜单里没有这一项（关掉就没入口了），要恢复请回这里关闭开关。' },
       React.createElement(Switch, { checked: v.hidden === true, disabled: !config, onChange: function (val) { write('hidden', val) } }),
     ),
     React.createElement(Field, { label: '响应子 Agent', hint: '默认只跟随顶层任务，避免状态过度跳动。' },
@@ -1115,6 +1141,10 @@ function mountPet(ctx) {
   var petTipAnchor = null
   var __tip = window.__rm2PetTip
   if (!__tip) throw new Error('__rm2PetTip is missing: build-client.mjs pet-tip prepend was broken')
+  // 取动态 GIF 当前帧（暂停冻结用）：桌面端同一份实现，见 src/gif-frame.cjs
+  var __gifFrame = window.__rm2GifFrame
+  if (!__gifFrame) throw new Error('__rm2GifFrame is missing: build-client.mjs gif-frame prepend was broken')
+  __gifFrame.watch(img)
   function hidePetTip() {
     petTipAnchor = null
     if (petTip) petTip.style.display = 'none'
@@ -1383,6 +1413,65 @@ function mountPet(ctx) {
   }
   window.addEventListener('pagehide', clearReportedCurrentSession)
   window.addEventListener('beforeunload', clearReportedCurrentSession)
+  // 宿主主题上报：桌面悬浮窗是独立 Electron 窗口，读不到这里的
+  // body[data-ds-dark-theme]——它的菜单/气泡配色只能靠这条上报同步。不报的话它
+  // 只能跟系统主题，宿主主题与系统不一致时两端菜单就是两种颜色（实测最常见的
+  // 组合：系统深色 + DSH 浅色主题）。宿主只存内存并随快照带出，本地上报本身
+  // fire-and-forget，不触发广播。
+  var reportedHostTheme = ''
+  function currentHostTheme() {
+    var body = document.body
+    if (!body || typeof body.hasAttribute !== 'function') return ''
+    return body.hasAttribute('data-ds-dark-theme') ? 'dark' : 'light'
+  }
+  function sendHostTheme(theme) {
+    fetch(THEME_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ theme: theme }),
+      keepalive: true,
+    }).catch(function () {})
+  }
+  function trackHostTheme() {
+    var theme = currentHostTheme()
+    if (!theme || theme === reportedHostTheme) return
+    reportedHostTheme = theme
+    sendHostTheme(theme)
+  }
+  // 卸载清空：网页关掉后桌面悬浮窗不该继续挂着宿主配色，应回落系统主题。
+  // 同 currentSession：页面被杀时不会执行，宿主侧另有 TTL 兜底。
+  var HOST_THEME_CLEAR_BODY = JSON.stringify({ theme: '' })
+  function clearReportedHostTheme() {
+    if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+      navigator.sendBeacon(THEME_ENDPOINT, new Blob([HOST_THEME_CLEAR_BODY], { type: 'application/json' }))
+      return
+    }
+    fetch(THEME_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: HOST_THEME_CLEAR_BODY,
+      keepalive: true,
+    }).catch(function () {})
+  }
+  function watchHostTheme() {
+    if (typeof MutationObserver !== 'function' || !document.body) return
+    trackHostTheme()
+    // 宿主切换主题 = body 上 data-ds-dark-theme 的增删，属性一抖就上报一次
+    new MutationObserver(trackHostTheme).observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-ds-dark-theme'],
+    })
+    // 心跳续期：宿主侧上报值带 TTL（页面被强杀时 pagehide 不执行，靠 TTL 兜底），
+    // 只在变化时上报会让 TTL 到期后桌面窗静默回落系统主题，与网页端又不同色。
+    setInterval(function () {
+      var theme = currentHostTheme()
+      if (theme) sendHostTheme(theme)
+    }, HOST_THEME_HEARTBEAT_MS)
+    window.addEventListener('pagehide', clearReportedHostTheme)
+    window.addEventListener('beforeunload', clearReportedHostTheme)
+  }
+  if (document.body) watchHostTheme()
+  else document.addEventListener('DOMContentLoaded', watchHostTheme)
   var completionAckPending = new Set()
   function acknowledgeCompletion(sessionId, attempt) {
     if (!sessionId) return
@@ -2154,8 +2243,9 @@ function mountPet(ctx) {
     root.style.top = ''
     root.style.right = '20px'
     root.style.bottom = '20px'
-    patchConfig('posX', null)
-    patchConfig('posY', null)
+    // 两个位置存储一起清：页面内坐标在 posX/posY，桌面窗坐标在 desktopX/desktopY。
+    // 只清前者会让「重置位置」在切到桌面模式后失效（桌面窗仍停在上次拖到的位置）。
+    void patchConfigFields({ posX: null, posY: null, desktopX: null, desktopY: null })
     positionRestored = true
   }
 
@@ -2172,17 +2262,7 @@ function mountPet(ctx) {
   function setPaused(v) {
     paused = v
     if (paused) {
-      try {
-        var canvas = document.createElement('canvas')
-        canvas.width = img.naturalWidth || 180
-        canvas.height = img.naturalHeight || 180
-        var g = canvas.getContext('2d')
-        if (g && img.src) {
-          g.drawImage(img, 0, 0, canvas.width, canvas.height)
-          img.dataset.animated = img.src
-          img.src = canvas.toDataURL('image/png')
-        }
-      } catch (e) { /* keep animating */ }
+      freezeCurrentFrame()
       dock.title = '已暂停（右键菜单恢复）'
     } else {
       var animated = img.dataset.animated
@@ -2191,6 +2271,39 @@ function mountPet(ctx) {
       else showMood(currentMood)
       dock.title = '拖动我 · 点击互动 · 右键菜单'
     }
+  }
+
+  // 暂停 = 冻在「点下去那一刻正在显示的那一帧」。
+  // 不能直接 canvas.drawImage(img)：Chromium 对动态 GIF 永远只画首帧（实测 20 次
+  // 采样签名完全一致，见 src/gif-frame.cjs），旧实现因此会弹回起始造型。
+  // 这里先按已播放时长定位当前帧号，解出那一帧再换上去；解不出（非安全上下文
+  // 没有 ImageDecoder / 不是 GIF）就退回首帧快照，暂停开关本身不会失效。
+  function freezeCurrentFrame() {
+    var url = img.src
+    if (!__gifFrame.isGif(url)) { snapshotFirstFrame(); return }
+    var elapsed = __gifFrame.livedMs(img) // 先取时刻：解码耗时不能算进动画进度
+    void __gifFrame.freeze(url, elapsed).then(function (dataUrl) {
+      // 期间已恢复播放或换了贴纸：丢掉这次结果，别把宠物按在旧帧上
+      if (!paused || img.src !== url) return
+      if (!dataUrl) { snapshotFirstFrame(); return }
+      img.dataset.animated = url
+      img.src = dataUrl
+    })
+  }
+
+  // 首帧兜底（= 旧行为）：drawImage 拿到的就是首帧。
+  function snapshotFirstFrame() {
+    try {
+      var canvas = document.createElement('canvas')
+      canvas.width = img.naturalWidth || 180
+      canvas.height = img.naturalHeight || 180
+      var g = canvas.getContext('2d')
+      if (g && img.src) {
+        g.drawImage(img, 0, 0, canvas.width, canvas.height)
+        img.dataset.animated = img.src
+        img.src = canvas.toDataURL('image/png')
+      }
+    } catch (e) { /* keep animating */ }
   }
 
   // Per-mood alignment offset (legacy, kept for API compat). Since all GIFs
@@ -2450,13 +2563,15 @@ function mountPet(ctx) {
 
   // Double-click: play a drawing sticker loop and pop a random artwork.
   // 无画画锁：连续双击时 showPic 内部先 picStop 清掉上一轮（动画帧 + 全部定时器），
-  // 立即开始新一轮，不再等待上一轮播完的冷却期。
-  dock.addEventListener('dblclick', function () {
+  // 立即开始新一轮，不再等待上一轮播完的冷却期。右键菜单「画画」复用同一入口，
+  // 两端菜单因此同构（桌面端 pet-view.html 也是菜单与双击共用 playDraw）。
+  function playDraw() {
     if (!lastSnapshot || lastSnapshot.pics === 0) return
     manualOverride = { mood: '01', until: Date.now() + PIC_DRAW_MS }
     sync()
     showPic()
-  })
+  }
+  dock.addEventListener('dblclick', playDraw)
 
   // Mouse wheel: resize the pet (persisted through config).
   dock.addEventListener('wheel', function (e) {
@@ -2493,47 +2608,84 @@ function mountPet(ctx) {
     row.addEventListener('click', act)
     return row
   }
+  function makeSep() {
+    var sep = mk('div', '')
+    sep.className = 'rm2-pet-menu-sep'
+    return sep
+  }
+  // 滑块行：与桌面端 pet-view.html menuSliderRow 同构（两端同一骨架，只差 DOM 写法）。
+  // 宽度/间距/百分比位全走 CSS 类（.rm2-pet-menu-slider / -pct），与桌面端逐项对齐；
+  // 名称列由 .rm2-pet-menu-item>span:first-child 的 flex:1 吃掉余量，滑块因此对齐。
+  // 名称列**故意不设 min-width:0**：可交互行永不收缩，菜单变窄会变成可见溢出，
+  // 而不是把「角色大小」静默截成「角色大…」（截断只留给状态行）。
+  function makeSliderRow(label, min, max, value, onInput) {
+    var row = mk('div', '')
+    row.className = 'rm2-pet-menu-item'
+    var slider = mk('input', '')
+    slider.className = 'rm2-pet-menu-slider'
+    slider.type = 'range'
+    slider.min = String(min)
+    slider.max = String(max)
+    slider.step = '0.05'
+    slider.value = String(value)
+    var pct = mk('span', '', Math.round(value * 100) + '%')
+    pct.className = 'tick rm2-pet-menu-pct'
+    slider.addEventListener('input', function () {
+      var next = Number(slider.value)
+      pct.textContent = Math.round(next * 100) + '%'
+      onInput(next)
+    })
+    row.appendChild(mk('span', '', label))
+    row.appendChild(slider)
+    row.appendChild(pct)
+    return row
+  }
 
+  // 统一右键菜单 —— 网页端（这里）与桌面端（pet-view.html buildMenu）同一骨架、
+  // 同一顺序、同名条目：
+  //   状态信息 │ 角色大小 · 透明度 · 左右镜像 │ 锁定位置 · 暂停动画 · 显示气泡
+  //   │ 画画 · 重置位置 │ 桌面悬浮模式
+  // 收录标准三条：点完立刻在宠物身上看得见、不想为此跳设置页、关掉后还有出口。
+  // 因此启用/隐藏桌宠、宠物管理、响应子 Agent、平台令牌、用量模式、气泡细项与
+  // 缩放细项一律只留设置页——它们要么低频，要么会把入口一起关掉。
   function buildMenuContent() {
     menu.textContent = ''
     var snap = lastSnapshot
     var running = snap && (snap.state === 'THINKING' || snap.state === 'WORKING' || snap.state === 'WAITING' || snap.state === 'ERROR')
-    var status = makeRow(MOODS[currentMood] || MOODS['06'], (snap ? snap.message : '连接中') + (running ? ' · 运行中' : ''))
-    status.style.opacity = '0.85'
-    status.style.cursor = 'default'
+    // 状态行是**单** span（整串「心情 · 消息 · 运行中」），与桌面端 menuRow 同构：
+    // 定宽菜单里只有让整串落在 :first-child 上，才会走那条 min-width:0 + ellipsis
+    // 的截断规则；拆成两个 span 时第二段不可收缩，长消息会直接溢出菜单圆角。
+    var statusText = (MOODS[currentMood] || MOODS['06']) + ' · ' + (snap ? snap.message : '连接中') + (running ? ' · 运行中' : '')
+    var status = makeRow(statusText)
+    status.classList.add('rm2-pet-menu-status')
     menu.appendChild(status)
-    var sep = mk('div', '')
-    sep.className = 'rm2-pet-menu-sep'
-    menu.appendChild(sep)
-    // Size slider: live preview via applyOffset, persisted via /config.
-    // 与桌面端 pet-view.html menuSliderRow 同构：滑块行复用 rm2-pet-menu-item，
-    // 75% 走 .tick 跟随亮暗主题；滑块 accent 用品牌粉，压过宿主全局控件染色。
-    var sizeRow = mk('div', 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 10px;')
-    sizeRow.className = 'rm2-pet-menu-item'
-    var sizeLabel = mk('span', '', '角色大小')
-    var sizeSlider = mk('input', 'width:110px;margin:0 4px;accent-color:#e8508a;')
-    sizeSlider.type = 'range'
-    sizeSlider.min = 0.5
-    sizeSlider.max = 2
-    sizeSlider.step = 0.05
-    var sizePct = mk('span', 'min-width:42px;text-align:right;font-size:12px;', '')
-    sizePct.className = 'tick'
-    var sizeCur = (lastSnapshot && lastSnapshot.scale) || 1
-    sizeSlider.value = String(sizeCur)
-    sizePct.textContent = Math.round(sizeCur * 100) + '%'
-    sizeSlider.addEventListener('input', function () {
-      var next = Number(sizeSlider.value)
-      sizePct.textContent = Math.round(next * 100) + '%'
+    menu.appendChild(makeSep())
+    // ---- 外观：即时可见，全部就地调 ----
+    menu.appendChild(makeSliderRow('角色大小', 0.5, 2, (snap && snap.scale) || 1, function (next) {
       void patchConfig('scale', next)
       if (lastSnapshot) {
         lastSnapshot.scale = next
         applyOffset(currentMood)
       }
-    })
-    sizeRow.appendChild(sizeLabel)
-    sizeRow.appendChild(sizeSlider)
-    sizeRow.appendChild(sizePct)
-    menu.appendChild(sizeRow)
+    }))
+    menu.appendChild(makeSliderRow('透明度', 0.3, 1, (snap && snap.opacity) || 1, function (next) {
+      void patchConfig('opacity', next)
+      if (lastSnapshot) {
+        lastSnapshot.opacity = next
+        applyVisuals(lastSnapshot)
+      }
+    }))
+    menu.appendChild(makeToggleRow('左右镜像', snap ? snap.mirror === true : false, function () {
+      var next = !(lastSnapshot ? lastSnapshot.mirror === true : false)
+      void patchConfig('mirror', next)
+      if (lastSnapshot) {
+        lastSnapshot = { ...lastSnapshot, mirror: next }
+        applyVisuals(lastSnapshot)
+      }
+      buildMenuContent()
+    }))
+    menu.appendChild(makeSep())
+    // ---- 行为：开关即时生效，且一律写配置（否则快照会按配置把本地状态翻回去）----
     menu.appendChild(makeToggleRow('锁定位置', lockedNow, function () {
       var next = !lockedNow
       lockedNow = next
@@ -2541,18 +2693,38 @@ function mountPet(ctx) {
       void patchConfig('locked', next)
       buildMenuContent()
     }))
+    var pauseRow = makeToggleRow('暂停动画', paused, function () {
+      var next = !paused
+      setPaused(next)
+      // 必须写配置：applySnapshot 每次都按 config.paused 校正本地 paused，
+      // 只改本地会在下一次快照被翻回去（旧实现点了像没生效）。
+      void patchConfig('paused', next)
+      buildMenuContent()
+    })
+    // 悬停就先把帧表解出来（120–160 帧，约 0.1–0.4s），点下去即可立刻冻结
+    pauseRow.addEventListener('mouseenter', function () { void __gifFrame.warm(img.src) })
+    menu.appendChild(pauseRow)
     menu.appendChild(makeToggleRow('显示气泡', lastSnapshot ? lastSnapshot.bubble !== false : true, function () {
       var next = !(lastSnapshot ? lastSnapshot.bubble !== false : true)
-      // 与设置中的总开关逻辑一致：关闭→全部子开关关闭；开启→全部子开关打开
-      void patchConfig('showBubble', next)
-      if (!next) { void patchConfig('showBubbleStatus', false); void patchConfig('showBubbleUsage', false) }
-      else { void patchConfig('showBubbleStatus', true); void patchConfig('showBubbleUsage', true) }
+      // 与设置中的总开关逻辑一致：关闭→全部子开关关闭；开启→全部子开关打开。
+      // 三项一次 PATCH，避免三次往返的中间态被 SSE 快照读到。
+      void patchConfigFields({
+        showBubble: next,
+        showBubbleStatus: next,
+        showBubbleUsage: next,
+      })
       if (lastSnapshot) lastSnapshot = { ...lastSnapshot, bubble: next }
       buildMenuContent()
     }))
+    menu.appendChild(makeSep())
+    // ---- 动作与模式 ----
+    menu.appendChild(makeActionRow('画画', function () { playDraw(); closeMenu() }))
+    menu.appendChild(makeActionRow('重置位置', function () { resetPos(); closeMenu() }))
     menu.appendChild(makeToggleRow('桌面悬浮模式', lastSnapshot ? lastSnapshot.desktopMode === true : false, function () {
       // 一律以 desktopMode 配置为源：显示即配置值，点击即翻转配置。
       // 不读桌面窗口运行时状态（desktopActive），避免异步失步造成“没同步”。
+      // 桌面端菜单同名同义（勾选态就是「当前在桌面模式」），不再一端叫
+      // 「桌面悬浮模式」另一端叫「切换到网页模式」。
       var target = lastSnapshot ? !(lastSnapshot.desktopMode === true) : false
       void patchConfig('desktopMode', target)
       if (lastSnapshot) lastSnapshot = { ...lastSnapshot, desktopMode: target }
@@ -2569,8 +2741,6 @@ function mountPet(ctx) {
       }
       buildMenuContent()
     }))
-    menu.appendChild(makeActionRow('重置位置', function () { resetPos(); closeMenu() }))
-    menu.appendChild(makeToggleRow('暂停动画', paused, function () { setPaused(!paused); buildMenuContent() }))
   }
 
   // 平时锚角色顶右（紧凑，气泡在 absolute 里不撑 dock）；菜单矩形与气泡相交
@@ -2592,6 +2762,9 @@ function mountPet(ctx) {
     }
   }
   function sideMenuPos(r, mw, mh, W, H) {
+    // 角色盒子拿不到时（贴纸还没解码完 → img 高 0，menuBoxOf 判空）按视口右下角锚定：
+    // 网页宠物本来就停在右下角。不加这一层会拿 null 去读 r.right 抛错，菜单停在旧坐标上。
+    if (!r) r = { top: H - 48, left: W - 48, right: W - 48, bottom: H - 48 }
     var left, top
     if (r.right + 8 + mw <= W - 4) {
       left = r.right + 8

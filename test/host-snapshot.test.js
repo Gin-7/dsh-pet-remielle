@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, defaults, dropSubagentCompletions, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
+import { applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -566,6 +566,63 @@ test('session current uplink rejects non-string ids and non-POST methods', async
   const wrongMethod = responseRecorder()
   await handler(request('GET'), wrongMethod)
   assert.equal(wrongMethod.status, 405)
+})
+
+// 桌面悬浮窗是独立窗口，读不到宿主页面的 body[data-ds-dark-theme]——它的深色开关
+// 完全依赖网页端上报的 hostTheme。归一函数是这条链路唯一的入口：'Dark' 这类大小写
+// 笔误必须在这里报错，否则会安静地让两端配色不一致（不逐屏对比几乎看不出来）。
+test('host theme normalization accepts only dark/light and clears on empty', () => {
+  assert.equal(normalizeHostTheme('dark'), 'dark')
+  assert.equal(normalizeHostTheme('light'), 'light')
+  assert.equal(normalizeHostTheme(''), '')
+  assert.equal(normalizeHostTheme(undefined), '')
+  assert.equal(normalizeHostTheme(null), '')
+  assert.throws(() => normalizeHostTheme('Dark'), /theme/)
+  assert.throws(() => normalizeHostTheme(true), /theme/)
+})
+
+test('theme uplink stores, clears and reports only real changes', async () => {
+  const seen = []
+  const handler = createThemeHandler({ accept: (theme, meta) => seen.push([theme, meta.changed]) })
+  for (const theme of ['dark', 'dark', 'light', '', '']) {
+    const res = responseRecorder()
+    await handler(request('POST', { theme }), res)
+    assert.equal(res.status, 200)
+  }
+  assert.deepEqual(seen, [
+    ['dark', true],  // 首次上报：从「不知道」到 dark 也算一次变化
+    ['dark', false], // 心跳续期重复上报同一个值：不广播
+    ['light', true],
+    ['', true],      // 清除（网页关闭）：桌面窗要立刻回落系统主题，属于真变化
+    ['', false],
+  ])
+})
+
+test('theme uplink rejects invalid values and non-POST methods', async () => {
+  let stored = 'untouched'
+  const handler = createThemeHandler({ accept: (theme) => { stored = theme } })
+  const bad = responseRecorder()
+  await handler(request('POST', { theme: 'Dark' }), bad)
+  assert.equal(bad.status, 400)
+  assert.equal(stored, 'untouched')
+  const wrongMethod = responseRecorder()
+  await handler(request('GET'), wrongMethod)
+  assert.equal(wrongMethod.status, 405)
+})
+
+test('snapshot carries the reported host theme, omitting it when unset', () => {
+  const dark = createStateSnapshot({
+    getLatest: () => idle,
+    getPulse: () => null,
+    getConfig: () => ({}),
+    getPetId: () => DEFAULT_PET_ID,
+    getTheme: () => 'dark',
+  })()
+  assert.equal(dark.hostTheme, 'dark')
+  // 没有网页在线 / 上报过期：字段缺失（而非空串），桌面窗据此回落系统主题
+  const unset = snapshotWith({ latest: idle })
+  assert.equal(unset.hostTheme, undefined)
+  assert.equal('hostTheme' in JSON.parse(JSON.stringify(unset)), false)
 })
 
 test('snapshot carries the reported current session id', () => {

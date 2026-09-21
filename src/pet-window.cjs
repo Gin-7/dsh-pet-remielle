@@ -308,15 +308,12 @@ app.whenReady().then(() => {
   // 与渲染层写同一坐标，幂等；坐标没变时跳过。
   const hostOrigin = new URL(url).origin
   let lastSavedPos = null
-  function persistPosition() {
-    if (!win || win.isDestroyed()) return
-    const [x, y] = win.getPosition()
-    const body = { desktopX: Math.round(x), desktopY: Math.round(y) }
-    if (lastSavedPos && lastSavedPos.desktopX === body.desktopX && lastSavedPos.desktopY === body.desktopY) return
-    lastSavedPos = body
+  // PATCH 宿主 config（/plugins 端点只校验 loopback 来源，无需令牌）。2s 超时
+  // 避免网络异常时把调用方挂住。
+  function patchHostConfig(body, label) {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 2000)
-    fetch(`${hostOrigin}/plugins/dsh-pet-remielle/config`, {
+    return fetch(`${hostOrigin}/plugins/dsh-pet-remielle/config`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -324,8 +321,16 @@ app.whenReady().then(() => {
     }).then((res) => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
     }).catch((err) => {
-      console.error(`dsh-pet-window: persist position failed: ${err.message}`)
+      console.error(`dsh-pet-window: ${label} failed: ${err.message}`)
     }).finally(() => clearTimeout(timer))
+  }
+  function persistPosition() {
+    if (!win || win.isDestroyed()) return
+    const [x, y] = win.getPosition()
+    const body = { desktopX: Math.round(x), desktopY: Math.round(y) }
+    if (lastSavedPos && lastSavedPos.desktopX === body.desktopX && lastSavedPos.desktopY === body.desktopY) return
+    lastSavedPos = body
+    void patchHostConfig(body, 'persist position')
   }
 
   ipcMain.on('drag-end', () => {
@@ -459,6 +464,38 @@ app.whenReady().then(() => {
       if (originMoved) await applyShiftInPage(0, 0)
       applyBounds(base)
     })
+  })
+
+  // 右键菜单「重置位置」：把窗口搬回默认落点，并清空宿主持久化坐标。
+  // 默认落点复刻「建窗不带 x/y」时 Electron 的行为（按主屏工作区居中，窗口比
+  // 工作区还高时贴底），与构造后那次补尺寸的结果一致。
+  // 必须先清 menuBase 与页面 shift：点这一项时菜单还开着，随后的 closeMenu →
+  // menu-restore 会按 menuBase 把窗口搬回重置前的位置，重置就白做了。
+  // posX/posY 一并清空——页面内宠物与桌面窗是两个独立的位置存储，只清一个会让
+  // 「重置位置」在切换模式后失效。
+  ipcMain.handle('reset-position', async () => {
+    if (!win || win.isDestroyed()) return null
+    menuBase = null
+    let x = 0
+    let y = 0
+    try {
+      const wa = screen.getPrimaryDisplay().workArea
+      x = Math.round(wa.x + (wa.width - petW) / 2)
+      y = petH > wa.height
+        ? Math.round(wa.y + wa.height - petH)
+        : Math.round(wa.y + (wa.height - petH) / 2)
+    } catch { /* 屏幕枚举失败就退 (0,0)：至少动一下，别让用户以为没生效 */ }
+    const next = { x, y, width: petW, height: petH }
+    const b = win.getContentBounds()
+    const originMoves = b.x !== x || b.y !== y
+    await withHiddenMove(originMoves, async () => {
+      applyBounds(next)
+      if (originMoves) await applyShiftInPage(0, 0)
+      applyBounds(next)
+    })
+    lastSavedPos = null // 允许下一次真实拖动重新存档
+    void patchHostConfig({ posX: null, posY: null, desktopX: null, desktopY: null }, 'reset position')
+    return next
   })
 
   // 无网页客户端在线时点击气泡卡：渲染层只发信号，URL 由宿主经 DSH_WEB_URL

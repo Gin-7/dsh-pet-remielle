@@ -94,9 +94,11 @@
     white-space: pre-wrap; word-break: break-all;
     display: none; pointer-events: none;
   }
-  @media (prefers-color-scheme: dark) {
-    .rm2-pet-tip { background: #48142a; border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
-  }
+  /* 深色适配的唯一开关 = html[data-host-theme]（由 syncHostTheme() 折算宿主上报
+     与系统偏好后写入）。故意不用 prefers-color-scheme 媒体查询：属性和系统媒体
+     查询同时命中时，谁赢取决于源顺序，而"宿主浅色 + 系统深色"正是最常见的不一致
+     组合（用户开了系统深色但 DSH 用浅色主题），两套规则打架会让两端配色随机漂移。 */
+  html[data-host-theme="dark"] .rm2-pet-tip { background: #48142a; border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
   .rm2-pet-bubble-header { display: flex; align-items: center; min-width: 0; min-height: 29px; }
   .rm2-pet-bubble.title-clipped .rm2-pet-bubble-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
   .rm2-pet-bubble-action { display: inline-flex; flex: none; order: 2; align-items: center; justify-content: center; width: 29px; height: 29px; margin-left: 11px; margin-right: 0; border-radius: 50%; background: #e8508a; color: #fff; font-size: 20px; font-weight: 700; line-height: 1; }
@@ -144,9 +146,14 @@
   .rm2-pet-toast-icon { flex: none; width: 20px; height: 20px; border-radius: 50%; background: #e8508a; color: #fff; font-size: 13px; font-weight: 700; line-height: 20px; text-align: center; }
   .rm2-pet-toast b { color: #b03a60; font-weight: 600; }
   /* Right-click menu — fill/border 与网页同色；阴影见上方气泡注释。 */
+  /* 几何参数与网页端 src/client.core.js 的 .rm2-pet-menu 逐项一致：
+     定宽 240px、行间距 6px、行内边距 7px 9px、滑块 92px、百分比 36px。
+     滑块列被压到 92px 是给名称列让位：「角色大小」4 字 ≈52px，名称列算出 64px，
+     再压就会溢出触发 ellipsis，显示成「角色大…」。test/desktop-window.test.js
+     有「两端参数相等」与「名称列宽度够放最长滑块标签」两条断言钉着，改一端必须同步。 */
   .menu {
     display: none; position: fixed; z-index: 999;
-    min-width: 200px;
+    box-sizing: border-box; width: 240px;
     background: #fff0f5;
     border: 1px solid rgba(240, 120, 160, .45);
     border-radius: 10px;
@@ -156,41 +163,50 @@
     font-size: 13px; color: #8a2f52;
     user-select: none; -webkit-user-select: none;
   }
-  .menu-item { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 7px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+  .menu-item { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 7px 9px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+  /* 名称列吃掉余量：滑块与百分比被推到行尾，「角色大小」「透明度」两行的滑块
+     左右边缘因此严格对齐（旧写法名称字数不同，space-between 会错位）。
+     注意这里**故意不写 min-width:0** —— 可交互行的名称永不收缩，菜单一旦变窄
+     会变成看得见的溢出，而不是静默显示成「角色大…」；只有状态行允许截断。 */
+  .menu-item > span:first-child { flex: 1 1 auto; }
   .menu-item:hover { background: rgba(240, 120, 160, .14); }
-  .menu-item .tick { color: #b03a60; font-weight: 600; }
+  /* line-height:1 是必需的：勾选符「✓」(U+2713) 走字体回退，字形盒高 19px 而标签
+     只有 16px，line-height:normal 会把行框从 30px 撑到 33px —— 勾上/取消时整行抖 3px。
+     压掉 tick 自己的行高贡献即可（与网页端 .rm2-pet-menu-item .tick 同步，改一端必须改另一端）。 */
+  .menu-item .tick { color: #b03a60; font-weight: 600; line-height: 1; }
   .menu-item .mute { color: #c2607f; font-size: 12px; }
+  .menu-status > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .menu-slider { flex: none; width: 92px; margin: 0 2px; accent-color: #e8508a; }
+  .menu-pct { flex: none; min-width: 36px; text-align: right; font-size: 12px; }
   .menu-sep { height: 1px; background: rgba(240, 120, 160, .25); margin: 5px 6px; }
   .menu-status { opacity: .85; cursor: default; }
   /* 深色适配放在浅色基础规则之后：同特异性靠源顺序取胜，
-     否则下方的 .menu 浅色底会盖回深色壳，仅 select 的 !important
-     字色残留，出现浅粉字配浅粉底的不可读组合 */
-  @media (prefers-color-scheme: dark) {
-    /* 实色底：半透明壳会透出粉影，边缘看起来更亮。 */
-    .rm2-pet-bubble { background: #48142a; border-color: rgba(255, 150, 185, .42); }
-    .rm2-pet-bubble-title { color: #ffd6e4; }
-    .rm2-pet-bubble-detail { color: #f0a8c0; }
-    .rm2-pet-bubble.top { border-color: #ffb3c9; }
-    .rm2-pet-bubble.attention { border-color: #ff6fa8; }
-    .rm2-pet-toast { background: #48142a; border-color: rgba(255, 150, 185, .5); color: #e8a8bf; }
-    .rm2-pet-toast b { color: #ffb3c9; }
-    .menu { background: #48142a; border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
-    .menu-item:hover { background: rgba(255, 150, 185, .16); }
-    .menu-item .tick { color: #ffb3c9; }
-    .menu-item .mute { color: #f0a8c0; }
-    .menu-sep { background: rgba(255, 150, 185, .25); }
-    /* 深色菜单上的下拉框：压过内联浅色样式，保证可读 */
-    .menu select { color: #ffd6e4 !important; background: rgba(255, 150, 185, .12) !important; }
-    /* 展开的选项列表：深酒红底 + 浅粉字，贴合菜单壳；
-       用实色而非半透明，原生下拉不会透出白底层 */
-    .menu select option { color: #ffd6e4; background: #48142a; }
-  }
+     否则浅色底会盖回深色壳，出现浅底浅字的不可读组合。
+     开关是 html[data-host-theme]（见文件上方 syncHostTheme 的说明）：网页端用
+     body[data-ds-dark-theme]，桌面窗没有宿主页面，只能吃网页端上报的 hostTheme
+     （快照字段），拿不到时才回落系统主题——两端配色因此一致。 */
+  /* 实色底：半透明壳会透出粉影，边缘看起来更亮。色值/声明与网页端
+     （body[data-ds-dark-theme] .rm2-pet-bubble）逐项对应，唯一刻意保留的差异
+     是这里的背景用实色（桌面窗底下是真桌面，.96 的半透明会透出壁纸）。 */
+  html[data-host-theme="dark"] .rm2-pet-bubble { background: #48142a; border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
+  html[data-host-theme="dark"] .rm2-pet-bubble-title { color: #ffd6e4; }
+  html[data-host-theme="dark"] .rm2-pet-bubble-detail { color: #f0a8c0; }
+  html[data-host-theme="dark"] .rm2-pet-bubble.top { border-color: #ffb3c9; }
+  html[data-host-theme="dark"] .rm2-pet-bubble.attention { border-color: #ff6fa8; }
+  html[data-host-theme="dark"] .rm2-pet-toast { background: #48142a; border-color: rgba(255, 150, 185, .5); color: #e8a8bf; }
+  html[data-host-theme="dark"] .rm2-pet-toast b { color: #ffb3c9; }
+  html[data-host-theme="dark"] .menu { background: #48142a; border-color: rgba(255, 150, 185, .42); color: #ffd6e4; }
+  html[data-host-theme="dark"] .menu-item:hover { background: rgba(255, 150, 185, .16); }
+  html[data-host-theme="dark"] .menu-item .tick { color: #ffb3c9; }
+  html[data-host-theme="dark"] .menu-item .mute { color: #f0a8c0; }
+  html[data-host-theme="dark"] .menu-sep { background: rgba(255, 150, 185, .25); }
 </style>
 </head>
 <body>
   <script src="/plugins/dsh-pet-remielle/balance-widget.js"></script>
   <script src="/plugins/dsh-pet-remielle/session-order.js"></script>
   <script src="/plugins/dsh-pet-remielle/pet-tip.js"></script>
+  <script src="/plugins/dsh-pet-remielle/gif-frame.js"></script>
   <div class="menu" id="menu"></div>
   <div class="pet">
     <div class="rm2-pet-bubbles" id="bubbleStack" title=""></div>
@@ -236,6 +252,11 @@
   var petTipAnchor = null
   var __tip = window.__rm2PetTip
   if (!__tip) throw new Error('__rm2PetTip is missing: pet-tip.js script failed to load')
+  // 取动态 GIF 当前帧（暂停冻结用）：与网页端同一份实现 src/gif-frame.cjs。
+  // 这里不 throw：它只服务「暂停动画」一项，缺了也不该让整个桌宠窗起不来，
+  // freeze() 不可用时自动退回首帧快照。__gifFrame.watch 起动画计时表。
+  var __gifFrame = window.__rm2GifFrame
+  if (__gifFrame && __gifFrame.watch) __gifFrame.watch(imgEl)
   function hidePetTip() {
     petTipAnchor = null
     if (petTip) petTip.style.display = 'none'
@@ -373,20 +394,40 @@
     if (v === petPaused) return
     petPaused = v
     if (v) {
-      // 暂停 GIF：把当前帧冻结成静态图
-      try {
-        var cv = document.createElement('canvas')
-        cv.width = imgEl.naturalWidth || 180
-        cv.height = imgEl.naturalHeight || 180
-        var g = cv.getContext('2d')
-        g.drawImage(imgEl, 0, 0, cv.width, cv.height)
-        petAnimatedSrc = imgEl.src
-        imgEl.src = cv.toDataURL('image/png')
-      } catch (e) { /* 冻结失败则忽略 */ }
+      freezeCurrentPetFrame()
     } else {
-      if (petAnimatedSrc) { imgEl.src = petAnimatedSrc; petAnimatedSrc = null }
+      // 只在真的换过图时写回：冻结失败时 src 没变，重复赋同一个值会让 GIF 重启
+      if (petAnimatedSrc && imgEl.src !== petAnimatedSrc) imgEl.src = petAnimatedSrc
+      petAnimatedSrc = null
       imgEl.dataset.mood = '' // 强制下次 apply 重新设置正确贴纸
     }
+  }
+  // 暂停 = 冻在「点下去那一刻正在显示的那一帧」。
+  // 不能直接 canvas.drawImage(imgEl)：Chromium 对动态 GIF 永远只画首帧
+  // （实测见 src/gif-frame.cjs），旧实现因此会弹回起始造型。
+  // 解不出（非安全上下文没有 ImageDecoder / 不是 GIF）就退回首帧快照。
+  function freezeCurrentPetFrame() {
+    var url = imgEl.src
+    petAnimatedSrc = url
+    if (!__gifFrame || !__gifFrame.isGif(url)) { snapshotPetFirstFrame(); return }
+    var elapsed = __gifFrame.livedMs(imgEl) // 先取时刻：解码耗时不能算进动画进度
+    void __gifFrame.freeze(url, elapsed).then(function (dataUrl) {
+      // 期间已恢复播放或换了贴纸：丢掉这次结果，别把宠物按在旧帧上
+      if (!petPaused || imgEl.src !== url) return
+      if (!dataUrl) { snapshotPetFirstFrame(); return }
+      imgEl.src = dataUrl
+    })
+  }
+  // 首帧兜底（= 旧行为）：drawImage 拿到的就是首帧。
+  function snapshotPetFirstFrame() {
+    try {
+      var cv = document.createElement('canvas')
+      cv.width = imgEl.naturalWidth || 180
+      cv.height = imgEl.naturalHeight || 180
+      var g = cv.getContext('2d')
+      g.drawImage(imgEl, 0, 0, cv.width, cv.height)
+      imgEl.src = cv.toDataURL('image/png')
+    } catch (e) { /* 冻结失败则忽略 */ }
   }
   var BUBBLE_TITLE_MS = 2000
   var dragState = null
@@ -430,17 +471,25 @@
   window.addEventListener('resize', reportHitRects)
   window.addEventListener('mousemove', syncClickThrough, { passive: true })
 
-  // --- right-click menu (same shape as the in-page pet) ---
+  // --- right-click menu ---
+  // 与网页端 src/client.core.js buildMenuContent 同骨架、同顺序、同名条目：
+  //   状态信息 │ 角色大小 · 透明度 · 左右镜像 │ 锁定位置 · 暂停动画 · 显示气泡
+  //   │ 画画 · 重置位置 │ 桌面悬浮模式
+  // 收录标准三条：点完立刻看得见、不想为此跳设置页、关掉后还有出口。
+  // 改一端必须同步另一端（曾有「用量模式」「切换到网页模式」只在此端出现）。
+  // 勾选 span 只在「开」时插入，与网页端 makeRow(label, on ? '✓' : '') 对齐。
+  // 旧写法 value 为 false 时也插一个**空** span：flex 布局里空 span 仍占一个 gap 位，
+  // 于是桌面端 toggle 行的名称列比网页端窄 6px —— 同骨架菜单两端几何却不同。
   function menuRow(label, value, onClick, interactive) {
     var row = document.createElement('div')
     row.className = 'menu-item' + (interactive ? '' : ' menu-status')
     var text = document.createElement('span')
     text.textContent = label
     row.appendChild(text)
-    if (value !== null && value !== undefined) {
+    if (value) {
       var mark = document.createElement('span')
       mark.className = 'tick'
-      mark.textContent = value ? '✓' : ''
+      mark.textContent = '✓'
       row.appendChild(mark)
     }
     if (onClick) row.addEventListener('click', onClick)
@@ -451,38 +500,39 @@
     sep.className = 'menu-sep'
     return sep
   }
-  // Size slider row: live-preview via apply() and persist via /config.
-  function menuSliderRow() {
+  // 写回宿主 config 的统一入口：菜单里所有可调项都走这里，不各写一份 fetch。
+  function patchConfig(body) {
+    return fetch('/plugins/dsh-pet-remielle/config', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).catch(function () {})
+  }
+  // 滑块行：与网页端 client.core.js makeSliderRow 同构（同标签、同范围、同百分比位）。
+  // 宽度/间距/百分比位全走 CSS 类（.menu-slider / .menu-pct），与网页端逐项对齐；
+  // 名称列由 .menu-item > span:first-child 的 flex:1 吃掉余量，两行滑块因此对齐。
+  // Live preview goes through apply(); persistence through /config.
+  function menuSliderRow(label, min, max, cur, onInput) {
     var row = document.createElement('div')
     row.className = 'menu-item'
-    var label = document.createElement('span')
-    label.textContent = '角色大小'
+    var labelEl = document.createElement('span')
+    labelEl.textContent = label
     var slider = document.createElement('input')
+    slider.className = 'menu-slider'
     slider.type = 'range'
-    slider.min = 0.5
-    slider.max = 2
+    slider.min = min
+    slider.max = max
     slider.step = 0.05
-    slider.style.cssText = 'width:110px;margin:0 4px;accent-color:#e8508a;'
     var pct = document.createElement('span')
-    pct.className = 'tick'
-    pct.style.cssText = 'min-width:42px;text-align:right;font-size:12px;'
-    var cur = (lastSnapshot && lastSnapshot.scale) || 1
+    pct.className = 'tick menu-pct'
     slider.value = String(cur)
     pct.textContent = Math.round(cur * 100) + '%'
     slider.addEventListener('input', function () {
       var next = Number(slider.value)
       pct.textContent = Math.round(next * 100) + '%'
-      fetch('/plugins/dsh-pet-remielle/config', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ scale: next }),
-      }).catch(function () {})
-      if (lastSnapshot) {
-        lastSnapshot.scale = next
-        apply(lastSnapshot) // live preview: width + offset transform
-      }
+      onInput(next)
     })
-    row.appendChild(label)
+    row.appendChild(labelEl)
     row.appendChild(slider)
     row.appendChild(pct)
     return row
@@ -497,61 +547,79 @@
     var menuMood = moodOverride && moodOverride.until > Date.now() ? moodOverride.mood : ((snap && snap.mood) || '06')
     menuEl.appendChild(menuRow((MOOD_TEXTS[menuMood] || '待机中') + ' · ' + (snap ? snap.message : '连接中') + (running ? ' · 运行中' : ''), null, null))
     menuEl.appendChild(menuSep())
-    menuEl.appendChild(menuSliderRow())
-    menuEl.appendChild(menuRow('锁定位置', lockedNow, function () {
-      lockedNow = !lockedNow
-      fetch('/plugins/dsh-pet-remielle/config', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ locked: lockedNow }),
-      }).catch(function () {})
+    // ---- 外观：即时可见，全部就地调 ----
+    menuEl.appendChild(menuSliderRow('角色大小', 0.5, 2, (snap && snap.scale) || 1, function (next) {
+      patchConfig({ scale: next })
+      if (lastSnapshot) {
+        lastSnapshot.scale = next
+        apply(lastSnapshot) // live preview: width + offset transform
+      }
+    }))
+    menuEl.appendChild(menuSliderRow('透明度', 0.3, 1, (snap && snap.opacity) || 1, function (next) {
+      patchConfig({ opacity: next })
+      if (lastSnapshot) {
+        lastSnapshot.opacity = next
+        apply(lastSnapshot)
+      }
+    }))
+    menuEl.appendChild(menuRow('左右镜像', snap ? snap.mirror === true : false, function () {
+      var next = !(lastSnapshot ? lastSnapshot.mirror === true : false)
+      patchConfig({ mirror: next })
+      if (lastSnapshot) {
+        lastSnapshot.mirror = next
+        apply(lastSnapshot)
+      }
       buildMenu()
     }, true))
+    menuEl.appendChild(menuSep())
+    // ---- 行为：开关即时生效，且一律写配置（否则快照会按配置把本地状态翻回去）----
+    menuEl.appendChild(menuRow('锁定位置', lockedNow, function () {
+      lockedNow = !lockedNow
+      patchConfig({ locked: lockedNow })
+      buildMenu()
+    }, true))
+    var pauseRow = menuRow('暂停动画', snap ? snap.paused === true : false, function () {
+      var next = !(lastSnapshot ? lastSnapshot.paused === true : false)
+      // 必须写配置：apply() 每次都按 config.paused 校正播放状态，只改本地会被
+      // 下一次快照翻回去（网页端旧实现就是这个毛病）。
+      patchConfig({ paused: next })
+      if (lastSnapshot) {
+        lastSnapshot.paused = next
+        apply(lastSnapshot)
+      }
+      buildMenu()
+    }, true)
+    // 悬停就先把帧表解出来（120–160 帧，约 0.1–0.4s），点下去即可立刻冻结
+    if (__gifFrame && __gifFrame.warm) {
+      pauseRow.addEventListener('mouseenter', function () { __gifFrame.warm(imgEl.src) })
+    }
+    menuEl.appendChild(pauseRow)
     menuEl.appendChild(menuRow('显示气泡', snap ? snap.bubble !== false : true, function () {
       var next = !(snap ? snap.bubble !== false : true)
       // 与设置中的总开关逻辑一致：关闭→全部子开关关闭；开启→全部子开关打开
       var body = { showBubble: next }
       if (!next) { body.showBubbleStatus = false; body.showBubbleUsage = false }
       else { body.showBubbleStatus = true; body.showBubbleUsage = true }
-      fetch('/plugins/dsh-pet-remielle/config', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      }).catch(function () {})
+      patchConfig(body)
       if (snap) { snap.bubble = next; snap.showBubbleStatus = next; snap.showBubbleUsage = next; apply(snap) }
       buildMenu()
     }, true))
-    menuEl.appendChild(menuRow('画画', null, function () { playDraw(); closeMenu() }, true))
-    // 用量模式：小鲸鱼记账（免令牌） / 实时·令牌（精确）
-    var umRow = document.createElement('div')
-    umRow.className = 'menu-item'
-    var umLabel = document.createElement('span')
-    umLabel.textContent = '用量模式'
-    var umSelect = document.createElement('select')
-    umSelect.style.cssText = 'flex:1;border:1px solid rgba(240,120,160,.4);border-radius:6px;background:rgba(240,120,160,.08);color:#8a2f52;font-size:12px;padding:3px 0;cursor:pointer;'
-    function umOpt(value, text) { var o = document.createElement('option'); o.value = value; o.textContent = text; return o }
-    umSelect.appendChild(umOpt('ledger', '小鲸鱼记账'))
-    umSelect.appendChild(umOpt('token', '实时·令牌'))
-    umSelect.value = snap && snap.usageMode === 'token' ? 'token' : 'ledger'
-    umSelect.addEventListener('change', function () {
-      fetch('/plugins/dsh-pet-remielle/config', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ usageMode: umSelect.value }),
-      }).catch(function () {})
-    })
-    umRow.appendChild(umLabel)
-    umRow.appendChild(umSelect)
-    menuEl.appendChild(umRow)
     menuEl.appendChild(menuSep())
-    menuEl.appendChild(menuRow('切换到网页模式', null, function () {
-      // 与设置同步：先确保 desktopMode=false 写入成功，宿主 watch 会关停
-      // 桌面窗并恢复页面内宠物；窗口本身随后关闭。
-      fetch('/plugins/dsh-pet-remielle/config', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ desktopMode: false }),
-      }).catch(function () {}).then(function () { window.close() })
+    // ---- 动作与模式 ----
+    menuEl.appendChild(menuRow('画画', null, function () { playDraw(); closeMenu() }, true))
+    menuEl.appendChild(menuRow('重置位置', null, function () {
+      // 渲染层先清掉自己的 localStorage 兜底存档：宿主坐标被清成 null 后
+      // getInitialPosition() 返回 null，下次启动渲染层会拿旧存档 moveTo，
+      // 重置就被悄悄撤销了（见文件末尾的 localStorage 兜底）。
+      try { localStorage.removeItem('dsh-pet-window-pos') } catch (e) { /* storage unavailable */ }
+      if (window.petBridge && window.petBridge.resetPosition) window.petBridge.resetPosition().catch(function () {})
+      closeMenu()
+    }, true))
+    menuEl.appendChild(menuRow('桌面悬浮模式', true, function () {
+      // 与网页端同名同义：勾选态表示「当前正在桌面悬浮模式」，取消即回网页模式。
+      // 先确保 desktopMode=false 写入成功，宿主 watch 会关停桌面窗并恢复页面内
+      // 宠物；窗口本身随后关闭。
+      patchConfig({ desktopMode: false }).then(function () { window.close() })
     }, true))
   }
   // 与网页端 openMenuAt 同一套：平时锚角色（紧凑），菜单矩形与气泡相交才改走
@@ -588,6 +656,11 @@
   }
   window.__rm2ApplyPetShift = applyPetShift
   function sideMenuPos(r, mw, mh, L, T, R, B) {
+    // 角色盒子拿不到时（窗口刚开、贴纸仍在解码 → img 高 0，menuBoxOf 判空）按工作区
+    // 右下角锚定：桌宠默认就停在那儿。不加这一层会拿 null 去读 r.right 抛错，
+    // 菜单停在离屏测量位 -9999px（表现为右键没反应），实测见
+    // .global_ignored/electron-menu-geometry-probe.cjs。
+    if (!r) r = { top: B - 48, left: R - 48, right: R - 48, bottom: B - 48 }
     var left, top
     if (r.right + 8 + mw <= R - 4) {
       left = r.right + 8
@@ -1203,11 +1276,37 @@
     imgEl.style.transform = snapshot.mirror === true ? 'scaleX(-1)' : ''
   }
 
+  /* 主题来源优先级：宿主上报（快照 hostTheme，由网页端 POST /theme 得到）> 系统偏好。
+     桌面悬浮窗是独立 Electron 窗口，读不到宿主页面的 body[data-ds-dark-theme]，
+     不跟着上报走就只能在「系统深色 + DSH 浅色主题」这类组合下与网页端配色不一致
+     （菜单/气泡是同一套色值，差别只在谁触发深色）。两个来源在这里折算成同一个
+     html[data-host-theme] 属性，CSS 只认属性——不用媒体查询是为了避免两套规则
+     同时命中时靠源顺序决胜。 */
+  var systemDarkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
+  var hostTheme = ''
+  function syncHostTheme(theme) {
+    hostTheme = theme === 'dark' || theme === 'light' ? theme : ''
+    var dark = hostTheme ? hostTheme === 'dark' : !!(systemDarkQuery && systemDarkQuery.matches)
+    document.documentElement.setAttribute('data-host-theme', dark ? 'dark' : 'light')
+  }
+  if (systemDarkQuery) {
+    var onSystemThemeChange = function () {
+      // 只在没有宿主上报时才有话语权（有上报说明网页在线，以宿主为准）
+      if (!hostTheme) syncHostTheme('')
+    }
+    if (typeof systemDarkQuery.addEventListener === 'function') systemDarkQuery.addEventListener('change', onSystemThemeChange)
+    else if (typeof systemDarkQuery.addListener === 'function') systemDarkQuery.addListener(onSystemThemeChange)
+  }
+  // 快照到达前先按系统渲染一次：菜单/气泡此刻都是 display:none，不会闪色
+  syncHostTheme('')
+
   function apply(snapshot) {
     if (!snapshot || snapshot.kind) return
     lastSnapshot = snapshot
     // 网页端经宿主快照上报的当前会话；空串/缺失视为无（判空后回落 undefined）
     currentSessionId = snapshot.currentSessionId || undefined
+    // 网页端上报的宿主主题（'dark' / 'light'）；缺失=没有网页在线或上报过期
+    syncHostTheme(snapshot.hostTheme)
     if (window.__petBalance) {
       // 用量子开关关闭时停掉 60s 轮询（与网页端一致）
       window.__petBalance.setEnabled(snapshot.showBubble !== false && snapshot.showBubbleUsage === true)

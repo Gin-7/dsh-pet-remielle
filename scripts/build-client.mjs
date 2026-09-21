@@ -23,6 +23,9 @@ const orderFile = resolve(root, 'src', 'session-order.cjs')
 const order = readFileSync(orderFile, 'utf8')
 const tipFile = resolve(root, 'src', 'pet-tip.cjs')
 const tip = readFileSync(tipFile, 'utf8')
+// 取 GIF 当前帧（暂停冻结用）：与桌面窗同一份实现，拼在核心代码前
+const gifFrameFile = resolve(root, 'src', 'gif-frame.cjs')
+const gifFrame = readFileSync(gifFrameFile, 'utf8')
 const { version } = JSON.parse(readFileSync(pkgFile, 'utf8'))
 const banner = `window.__ModuleLoader__.load({ id: ${JSON.stringify(pluginId)}, factory: (require) => {
 const module = { exports: {} }
@@ -31,6 +34,6 @@ const RM_PLUGIN_VERSION = ${JSON.stringify(String(version || '0.0.0'))}
 `
 const footer = 'return module.exports\n} })'
 
-const output = `${banner}${order}\n${tip}\n${core}\n${footer}\n`
+const output = `${banner}${order}\n${tip}\n${gifFrame}\n${core}\n${footer}\n`
 writeFileSync(outFile, output)
 console.log(`lib/client.js written (${Math.round(Buffer.byteLength(output) / 1024)} KiB)`)

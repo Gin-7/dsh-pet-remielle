@@ -997,17 +997,21 @@ test('内联 SUCCESS_COPY_POOL 与 status-copy.js 的 success 池逐字一致（
 })
 
 test('lib bundle inlines session-order ahead of mountPet（拼接顺序护栏）', () => {
-  // __rm2SessionOrder / __rm2PetTip 必须在 mountPet 定义前就位，否则消费端早失败守卫会抛错、
-  // 宠物模块整体失效。此断言防止 build-client.mjs 的前置拼接被意外破坏。
+  // __rm2SessionOrder / __rm2PetTip / __rm2GifFrame 必须在 mountPet 定义前就位，
+  // 否则消费端早失败守卫会抛错、宠物模块整体失效。此断言防止 build-client.mjs
+  // 的前置拼接被意外破坏。
   const code = readFileSync(CLIENT, 'utf8')
   const orderAt = code.indexOf('__rm2SessionOrder')
   const tipAt = code.indexOf('__rm2PetTip')
+  const gifFrameAt = code.indexOf('__rm2GifFrame')
   assert.notEqual(orderAt, -1, 'lib/client.js 应包含 session-order 拼接产物')
   assert.notEqual(tipAt, -1, 'lib/client.js 应包含 pet-tip 拼接产物')
+  assert.notEqual(gifFrameAt, -1, 'lib/client.js 应包含 gif-frame 拼接产物')
   const mountAt = code.indexOf('function mountPet')
   assert.notEqual(mountAt, -1, 'lib/client.js 应包含 mountPet 定义')
   assert.ok(orderAt < mountAt, 'session-order 必须拼接在 mountPet 之前')
   assert.ok(tipAt < mountAt, 'pet-tip 必须拼接在 mountPet 之前')
+  assert.ok(gifFrameAt < mountAt, 'gif-frame 必须拼接在 mountPet 之前')
 })
 
 test('unloading clears the reported current session via beacon or keepalive fetch（行为验证）', async () => {

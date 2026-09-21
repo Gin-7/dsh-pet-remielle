@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('petBridge', {
   getPosition: () => ipcRenderer.invoke('get-position'),
   // 本窗是否已按宿主持久化坐标定位（null = 无，渲染层可走 localStorage 兜底）
   getInitialPosition: () => ipcRenderer.invoke('get-initial-position'),
+  // 右键菜单「重置位置」：清宿主持久化坐标并把窗口搬回默认落点，resolve {x,y}
+  resetPosition: () => ipcRenderer.invoke('reset-position'),
   // 右键菜单：工作区坐标 + 按包围盒扩窗，invoke 返回 {width,height,dx,dy}
   getWorkArea: () => ipcRenderer.invoke('get-work-area'),
   menuExpand: (left, top, right, bottom) => ipcRenderer.invoke(
