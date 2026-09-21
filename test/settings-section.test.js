@@ -127,6 +127,13 @@ test('settings tabs: five tabs in fixed order (外观/宠物/行为/桌面悬浮
   assert.deepEqual(labels, ['外观', '宠物', '行为', '桌面悬浮', '关于'])
 })
 
+test('appearance tab field order (mirror stays below opacity)', () => {
+  const tree = renderTab('appearance', { config: { scale: 1, opacity: 1, mirror: false } })
+  const labels = collectComponents(tree, 'Field').map((p) => p.label).filter(Boolean)
+  // bubbleScaleSync 未配置默认同步 → 子项「气泡相对桌宠的大小」也渲染
+  assert.deepEqual(labels, ['角色大小', '气泡随桌宠同步缩放', '气泡相对桌宠的大小', '透明度', '角色左右镜像'])
+})
+
 test('settings title matches the nav label (宠物管理)', () => {
   const tree = renderTab('appearance')
   assert.ok(collectStrings(tree).includes('宠物管理'), 'section 标题应与左侧导航 label 一致')
@@ -194,4 +201,57 @@ test('rendered pet-card buttons use the shared classes', () => {
   const setActive = buttons.find((b) => b.label === '设为当前')
   assert.ok(setActive, '备选宠物应渲染「设为当前」按钮')
   assert.ok(setActive.className.includes('rm2-pet-btn'), '设为当前按钮必须带 rm2-pet-btn 类')
+})
+
+test('release notes render as markdown, not plain <pre>', () => {
+  // CSS：.rm2-md 排版类必须存在
+  assert.ok(src.includes("'.rm2-md p{"), '.rm2-md 排版样式必须注入（release 说明不再是裸 pre）')
+  // 更新卡：说明区用 renderMarkdown + rm2-md；更新输出/失败原因保持等宽纯文本（进程日志不是 markdown）
+  assert.ok(/renderUpdateCard[\s\S]{0,2200}?className = 'rm2-md'/.test(src), '更新卡说明区必须挂 rm2-md 类并走 renderMarkdown')
+  assert.ok(/renderUpdateCard[\s\S]{0,2600}?renderMarkdown\(baseUpdateNotes\(\)\)/.test(src), '更新卡说明必须经 renderMarkdown 渲染')
+  assert.ok(/renderUpdateCard[\s\S]{0,3000}?更新输出/.test(src), '更新输出必须保持为独立的纯文本 pre（不得混进 markdown）')
+  assert.ok(!/updInfo\.notes\)/.test(src.replace(/renderMarkdown\(updInfo\.notes\)/g, '')), '设置页不得再把 updInfo.notes 当纯文本渲染')
+  // 设置页关于 tab：dangerouslySetInnerHTML + renderMarkdown
+  assert.ok(/dangerouslySetInnerHTML:\s*\{\s*__html:\s*renderMarkdown\(updInfo\.notes\)/.test(src), '设置页 release 说明必须经 renderMarkdown 渲染')
+  // XSS 面收敛：markdown 变换前必须先整体转义（先 escape 后变换的顺序靠 marker 切片单测兜底）
+  assert.ok(src.includes('// ---- md render begin ----') && src.includes('// ---- md render end ----'), 'md 渲染函数必须带切片标记（护栏按标记切片做行为单测）')
+})
+
+test('renderMarkdown behavior (slice-evaluated from source)', () => {
+  const begin = src.indexOf('// ---- md render begin ----')
+  const end = src.indexOf('// ---- md render end ----')
+  assert.ok(begin !== -1 && end > begin, 'md 渲染切片标记必须成对出现')
+  const code = src.slice(begin, end)
+  const sandbox = {}
+  runInNewContext(code + '; this.__md = { mdEscapeHtml, mdSafeUrl, mdInline, renderMarkdown }', sandbox)
+  const { renderMarkdown, mdInline, mdSafeUrl } = sandbox.__md
+
+  // 标题 / 列表 / 粗体 / 行内代码 / 链接
+  const html = renderMarkdown('# v0.5.0\n\n## Fixes\n\n- 修复 **撞色** 问题\n- 见 `hover` 规则\n\n1. 第一步\n2. 第二步\n\n[说明](https://github.com/x) 和 ~~废弃~~。')
+  assert.ok(html.includes('<h1>v0.5.0</h1>'), '应渲染 h1')
+  assert.ok(html.includes('<h2>Fixes</h2>'), '应渲染 h2')
+  assert.ok(html.includes('<ul><li>'), '无序列表应渲染成 ul/li')
+  assert.ok(html.includes('<ol><li>第一步</li><li>第二步</li></ol>'), '有序列表应渲染成 ol/li')
+  assert.ok(html.includes('<strong>撞色</strong>'), '粗体应渲染')
+  assert.ok(html.includes('<code>hover</code>'), '行内代码应渲染')
+  assert.ok(html.includes('href="https://github.com/x"'), '链接应渲染')
+  assert.ok(html.includes('<del>废弃</del>'), '删除线应渲染')
+
+  // XSS：先转义再变换 —— 标签变成字面文本，不产生可执行的元素
+  const xss = renderMarkdown('<script>alert(1)</script>\n\n[x](javascript:alert(1)) ![y](javascript:x)')
+  assert.ok(!xss.includes('<script>'), 'HTML 标签必须被转义为字面文本')
+  assert.ok(xss.includes('&lt;script&gt;'), '转义后的标签应可见为纯文本')
+  assert.ok(!xss.includes('href="javascript:'), 'javascript: 链接必须被拒绝')
+
+  // mdSafeUrl 只放行 http(s)/mailto
+  assert.equal(mdSafeUrl('javascript:alert(1)'), '#')
+  assert.equal(mdSafeUrl('https://ok.example.com/a'), 'https://ok.example.com/a')
+  assert.equal(mdSafeUrl('mailto:a@b.c'), 'mailto:a@b.c')
+  assert.ok(mdInline('<b>&</b>').includes('&lt;b&gt;&amp;&lt;/b&gt;'), '行内变换前必须先整体 HTML 转义')
+
+  // 代码块：内容按纯文本转义，不被 markdown 解析
+  const code2 = renderMarkdown('```\n**不是粗体** <img>\n```')
+  assert.ok(code2.includes('<pre><code>'), '围栏代码块应渲染为 pre>code')
+  assert.ok(code2.includes('**不是粗体**') && !code2.includes('<strong>'), '代码块内容不得被 markdown 解析')
+  assert.ok(code2.includes('&lt;img&gt;'), '代码块内容必须转义')
 })
