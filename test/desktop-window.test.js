@@ -472,6 +472,33 @@ test('pet window position persistence is wired across main, preload and renderer
   assert.match(html, /dragState && dragState\.moved && !lockedNow/)
 })
 
+// pet-window 的 userData 目录（issue #21 追加建议）：原实现落在 %TEMP%，会被
+// 系统磁盘清理整目录删掉（Electron 缓存 + 渲染层 localStorage 位置兜底一起丢）；
+// 直接与宿主共用默认的 %APPDATA%/Electron 又会锁住磁盘缓存、服务到陈旧响应。
+// 现改用稳定目录 + 占用标记，稳定目录被活跃实例占用时退避到带 pid 的兄弟目录。
+// 决策细节由单测覆盖（test/pet-window-paths.test.js），这里钉住主进程真的把这条
+// 链路接上了 —— 也钉住「宿主看门狗」的判据与间隔，它是重叠窗口的另一半。
+test('pet window userData is stable, host-isolated and held by one instance at a time', () => {
+  const main = readFileSync(new URL('../src/pet-window.cjs', import.meta.url), 'utf8')
+  assert.doesNotMatch(main, /getPath\('temp'\)/, 'userData 不得再落在 %TEMP%')
+  assert.match(main, /require\('\.\/pet-window-paths\.cjs'\)/)
+  assert.match(main, /const appDataDir = app\.getPath\('appData'\)/)
+  // 选目录前先读占用标记；选中后退避者不碰标记（ownsLock 为假），只由稳定
+  // 目录的主人写、退、放。
+  assert.match(main, /resolveUserDataDir\(\{/)
+  assert.match(main, /readOccupantPid\(petWindowPaths\.lockPathOf\(appDataDir\)\)/)
+  assert.match(main, /app\.setPath\('userData', userData\.dir\)/)
+  assert.match(main, /if \(userData\.ownsLock\) petWindowPaths\.writeLock\(userData\.lockPath, process\.pid\)/)
+  assert.match(main, /app\.on\('will-quit',[\s\S]{0,240}releaseLock\(userData\.lockPath, process\.pid\)/)
+  // 宿主看门狗：ESRCH 才算宿主没了（EPERM = 进程仍在，当成「已退」会让桌面窗
+  // 自己消失），轮询 1000ms —— 宿主退出后窗口最多滞留 1 秒，同时也把新旧实例的
+  // userData 重叠窗口一起压到 1 秒内。
+  assert.match(main, /const hostGone = \(\) => \{/)
+  assert.match(main, /return Boolean\(error && error\.code === 'ESRCH'\)/)
+  assert.match(main, /\}, 1000\)/)
+  assert.doesNotMatch(main, /\}, 3000\)/, '看门狗间隔不应回到 3000ms')
+})
+
 // 右键菜单两端必须同骨架、**同顺序**、同名、同写入目标。
 // 历史病：曾经网页端只有「暂停动画 / 重置位置 / 桌面悬浮模式」，桌面端只有
 // 「画画 / 用量模式 / 切换到网页模式」——同一份配置在两端显示不同名字。也曾经

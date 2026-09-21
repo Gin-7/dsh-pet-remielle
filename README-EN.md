@@ -131,7 +131,8 @@ dsh plugin --profile web add dsh-pet-remielle
 - The desktop window compensates UI size from the system scale so it matches the in-page pet.
 - Double-click drawing: artwork appears in a **desktop top-right** independent window, brush-reveal along the diagonal, then "Pleased → fade-out".
 - Right-click menu: switch to web mode, lock, bubble toggle, size, drawing, etc.
-- Closing/switching returns to the in-page pet automatically; window closes when DSH host exits.
+- Closing/switching returns to the in-page pet automatically; the window closes when the DSH host exits (within 1 second).
+- The desktop window's Electron data dir is pinned under the system application-data directory (`%APPDATA%\dsh-pet-remielle` on Windows) instead of a temp dir, which disk-cleanup tools would wipe along with its cache. Only one desktop window may hold it at a time: on detecting another live instance (host restarted while the old window is still exiting) it falls back to a pid-suffixed sibling directory, so the two never share one Chromium cache.
 
 **Electron runtime sources (probed in order):** `DSH_PET_ELECTRON` env var → `vendor/electron-win32-x64/` (not in Git) → system-installed Electron → none → in-page only.
 

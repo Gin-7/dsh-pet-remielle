@@ -131,7 +131,8 @@ dsh plugin --profile web add dsh-pet-remielle
 - 桌面窗按系统缩放自动补偿 UI 尺寸，与网页端视觉大小一致。
 - 双击画画：作品显示在**桌面右上角**的独立小窗，粗笔刷沿对角来回揭示，完成后「得意中→淡出」。
 - 右键菜单与网页端完全一致（见下方「使用」）。
-- 关闭/切换后自动回到页面内；随 DSH host 退出自动关闭。
+- 关闭/切换后自动回到页面内；随 DSH host 退出自动关闭（宿主退出后最多 1 秒内消失）。
+- 桌面窗的 Electron 数据目录固定在系统应用数据目录（Windows `%APPDATA%\dsh-pet-remielle`，macOS / Linux 落在各自的应用数据目录），**不放临时目录**——`%TEMP%` 会被系统磁盘清理连缓存一起删掉。同一时刻只允许一个桌面窗持有它：检测到另一个存活实例（宿主刚重启、旧窗口还没退完）时自动退避到带 pid 的兄弟目录，两者不共用同一份 Chromium 缓存。
 
 **Electron 运行时来源（按顺序探测）**：`DSH_PET_ELECTRON` 环境变量 → `vendor/electron-<platform>-<arch>/`（本目录不进 Git，按当前系统自动下载对应平台包）→ 系统已安装的 Electron → 均无则仅页面内展示。
 

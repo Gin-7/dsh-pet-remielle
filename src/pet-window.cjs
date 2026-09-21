@@ -17,16 +17,34 @@
 const { app, BrowserWindow, ipcMain, screen, session, shell } = require('electron')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
+const petWindowPaths = require('./pet-window-paths.cjs')
 
 // Electron 在 macOS 上为透明窗（transparent:true）触发 'textured' 弃用警告。
 // 它无害（窗口正常工作），但会被子进程 stderr 转发进宿主终端造成噪音。
 // 关闭 DeprecationWarning 打印，保持终端干净；不影响任何功能。
 process.noDeprecation = true
 
-// Isolate the pet window's userData: sharing the default %APPDATA%/Electron
-// with the harness shell locks the disk cache and can serve stale cached
-// responses (the page kept running the old right-click-to-close logic).
-app.setPath('userData', path.join(app.getPath('temp'), 'dsh-pet-remielle'))
+// userData 目录（issue #21 追加建议）：从 %TEMP% 迁到稳定位置，并保证同一时刻
+// 只有一个 pet-window 进程在用它。
+//  ① 仍与宿主隔离：共享默认的 %APPDATA%/Electron 会锁住磁盘缓存、服务到陈旧
+//     响应（历史 bug：页面继续跑已经删掉的旧右键逻辑），所以必须是独立目录。
+//  ② 不再放 %TEMP%：系统磁盘清理会整目录删掉，Electron 缓存与渲染层
+//     localStorage 的位置兜底一起丢。
+//  ③ 稳定目录被别的存活实例占用时（宿主看门狗有延迟，快速重启宿主会重叠）
+//     退避到带自己 pid 的兄弟目录，避免两个进程共用一个 Chromium profile
+//     重新引出 ① 的陈旧缓存问题。
+// 判定与标记读写的细节见 pet-window-paths.cjs（纯逻辑，可单测）。
+const appDataDir = app.getPath('appData')
+const userData = petWindowPaths.resolveUserDataDir({
+  appDataDir,
+  pid: process.pid,
+  occupantPid: petWindowPaths.readOccupantPid(petWindowPaths.lockPathOf(appDataDir)),
+})
+app.setPath('userData', userData.dir)
+if (userData.fallback) {
+  console.error(`dsh-pet-window: userData dir busy (pid ${userData.occupantPid}), falling back to ${userData.dir}`)
+}
+if (userData.ownsLock) petWindowPaths.writeLock(userData.lockPath, process.pid)
 
 const url = process.env.DSH_PET_URL
 const parentPid = Number(process.env.DSH_PET_PARENT_PID || 0)
@@ -622,21 +640,36 @@ app.whenReady().then(() => {
   // kill(pid, 0) 的语义：ESRCH=进程不存在；EPERM=存在但无权发信号——后者
   // 恰恰说明父进程还活着，绝不能当成「宿主已退」误杀窗口（DSH Desktop 的
   // NodeService 宿主下曾表现为桌面窗弹出数秒内自动消失）。
+  // 轮询从 3000ms 收到 1000ms：宿主退出后窗口最多滞留 1 秒（用户感知是「一起
+  // 退出」），同时把「宿主已重启、旧窗口还没走」的 userData 重叠窗口一起缩短
+  // ——重叠越短，退避目录这条兜底路径越少被触发。
   if (parentPid) {
-    const timer = setInterval(() => {
+    const hostGone = () => {
       try {
         process.kill(parentPid, 0)
+        return false
       } catch (error) {
-        if (error && error.code !== 'ESRCH') return // 父进程仍在，继续观察
-        clearInterval(timer)
-        console.error('dsh-pet-window: host process gone, exiting')
-        app.quit()
+        // 只有 ESRCH 才算宿主没了；EPERM 等其余错误一律视为仍在，继续观察。
+        return Boolean(error && error.code === 'ESRCH')
       }
-    }, 3000)
+    }
+    const timer = setInterval(() => {
+      if (!hostGone()) return
+      clearInterval(timer)
+      console.error('dsh-pet-window: host process gone, exiting')
+      app.quit()
+    }, 1000)
     timer.unref?.()
   }
 })
 
 app.on('window-all-closed', () => {
   app.quit()
+})
+
+// 释放 userData 占用标记，让下一次启动能复用稳定目录。只在自己是标记主人时
+// 才删（releaseLock 内部判 pid）：退避实例根本没写过标记，进程被强杀时残留的
+// 标记也会因为 pid 已死而在下次启动被判为空闲，无需在此额外兜底。
+app.on('will-quit', () => {
+  if (userData.ownsLock) petWindowPaths.releaseLock(userData.lockPath, process.pid)
 })
