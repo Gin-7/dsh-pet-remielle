@@ -1421,8 +1421,7 @@
       .then(apply)
       .catch(function () {})
   }
-  // 兜底轮询：SSE（上面那条 ?client=pet 的订阅）正常时它是冗余的，一旦流断了它就是
-  // 唯一的同步渠道——原来 5s 太长，设置改动会静默滞后好几秒，收到 2s。
+  // 兜底轮询：SSE 断了它就是唯一的同步渠道，5s 太长，收到 2s。
   setInterval(poll, 2000)
   poll()
 

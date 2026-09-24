@@ -70,13 +70,8 @@ const petEntry = Schema.object({
 })
 
 /**
- * 每个字段都是 live 的：浏览器侧会在插件不重挂载的前提下改写它们
- * （CONFIG_PATCH_FIELDS，外加宠物注册表的 activePetId / pets）。
- *
- * DSH 0.1.7 起 settings 命名空间由本 schema 派生，而 `settings.update()` 会拒绝
- * 一个没有任何 `meta.volatile` 节点的 section（`Plugin entry "…" has no volatile
- * fields`）。所以这个标记不是样式问题，而是写入能否成立的前提。
- * `Schema.prototype.volatile` 来自 @deepseek-ai/schemastery 3.18.4（DSH 0.1.7 起随行）。
+ * 全部字段标 volatile：浏览器侧会在不重挂载的前提下改写它们，而 0.1.7 起
+ * `settings.update()` 会拒绝一个没有任何 volatile 节点的 section——这是写入的前提。
  */
 export const Config = Schema.object({
   enabled: Schema.boolean().default(true).volatile().description('启用桌宠'),
@@ -160,27 +155,18 @@ export function publicConfig(config = {}) {
 const EXTERNAL_RECHECK_MS = 60
 
 /**
- * 落盘前的静默窗口。
- *
- * 一次 profile 写入两三百毫秒起步，且同步占着事件循环。拖动滑块时客户端 100ms 一推，
- * 连续落盘会把宿主循环反复占住——实测拖动期间 `/state` 的 p50 从 2ms 涨到 64ms、
- * 最高 215ms，20 个 PATCH 一个都没返回。落盘不必发生在拖动中：宠物靠乐观广播即时
- * 跟随，磁盘上只要最终值。所以攒下的批次等静默这个窗口再写，一次拖动只落一次盘。
+ * 落盘前的静默窗口。拖动滑块时客户端 100ms 一推，连续落盘会把宿主事件循环反复占住
+ * （实测拖动期间 `/state` 的 p50 从 2ms 涨到 64ms）——攒到拖完再写一次就够了。
  */
 const PERSIST_QUIET_MS = 200
 
 /**
- * 把本插件的设置桥接到宿主的 settings 服务上（DSH 0.1.7+）。
+ * 把本插件的设置桥接到宿主的 settings 服务上（DSH 0.1.7+ 的 `describe()` /
+ * `update(ns, patch)`，命名空间 = 持有这份 schema 的那条 Loader row 的裸 id）。
  *
- * 命名空间由「持有这份 Config schema 的 Loader entry」派生，服务用 `describe()` /
- * `update(ns, patch)` 寻址，变更经 `settings/document-updated` 广播；写入还要求 schema
- * 至少有一个 `meta.volatile` 节点，否则整个 section 被拒（见 {@link Config}）。
- *
- * 这条路很慢：`SettingsForms.write()` 内部两趟 `describe()`（每趟重读重解析整个 profile
- * patch 集、把每个 entry 对每一层重新 compose），`ConfigEditor.edit()` 前后各一次
- * reconcile 并等 Loader settle——216 个 entry 的 profile 上单趟约 70ms。所以：视觉变更
- * 先就地生效并广播、再落盘；自己写入引发的信号不重读；落盘队列"最新的赢"并等静默窗口；
- * 外部变更的信号合并成一趟。
+ * 落盘很慢：一次写入要两趟 `describe()`（每趟重解析整个 profile patch 集），216 个 entry
+ * 的 profile 上单趟约 70ms。所以视觉变更先就地生效并广播、再落盘；自己写入引发的信号
+ * 不重读，外部变更（宿主设置页、手改 patch）的信号合并成一趟。
  *
  * @param {object} ctx 宿主插件上下文。
  * @param {object} base 挂载时已由 {@link publicConfig} 归一化的配置。
@@ -189,8 +175,7 @@ const PERSIST_QUIET_MS = 200
 function createSettingsScope(ctx, base) {
   const service = ctx.settings
   if (service === undefined || typeof service.update !== 'function' || typeof service.describe !== 'function') {
-    // 0.1.7 之前没有可写的 settings 服务：只读，且写入是「抛错」而不是「缺方法」——
-    // 缺方法正是「开关点了没反应、页面上没有任何线索」的成因。
+    // 没有可写的 settings 服务：只读，且写入抛错而不是缺方法（缺方法正是「没反应又无线索」的成因）。
     return {
       get: () => base,
       update: async () => {
@@ -200,9 +185,8 @@ function createSettingsScope(ctx, base) {
     }
   }
 
-  // 命名空间是本插件那条 Loader row 的**裸** id（`entry.options.id`）。不能用
-  // `entry.id`：那个 getter 会把所属 entry tree 的 id 前缀拼上来（得到
-  // `include:my-pet`），而 describe()/update() 认的是裸 id。
+  // 必须是裸 id（`entry.options.id`）：`entry.id` 那个 getter 会拼上 `include:` 前缀，
+  // 而 describe()/update() 认的是裸 id。
   const namespace = ctx.fiber?.entry?.options?.id ?? PLUGIN_KEY
   const describe = service.describe.bind(service)
   const persist = service.update.bind(service)
@@ -229,12 +213,7 @@ function createSettingsScope(ctx, base) {
     return current
   }
 
-  /**
-   * 只对「真的变了」的取值发通知。
-   *
-   * 一次写入可能走到这里多次：乐观生效一次、宿主广播一次、外部重读一次。
-   * 订阅方（桌面窗看门狗）按值比较可以兜住重复，但没有理由让它做多遍。
-   */
+  /** 一次写入可能走这里多次（乐观生效 / 宿主广播 / 外部重读），所以只对真变了的值发通知。 */
   const publish = () => {
     if (isDeepStrictEqual(published, current)) return
     published = { ...current }
@@ -248,13 +227,8 @@ function createSettingsScope(ctx, base) {
   }
 
   /**
-   * 把排队的补丁交给宿主，最新的赢，并且等这一批静默下来才写。
-   *
-   * 一次 profile 写入几百毫秒起步，比拖动滑块的推送节奏慢得多，所以：
-   *  - 在途期间攒下的补丁合并成下一批（后写的盖掉先写的）；
-   *  - 下一批要等静默窗口过去才落盘——拖动过程中宿主完全不用写盘，事件循环留给页面
-   *    与桌宠的其它请求；
-   *  - 落盘失败在这里就地收回乐观变更，因为批量期间的调用方可能早就不等了。
+   * 把排队的补丁交给宿主，最新的赢；等这一批静默下来才写。落盘失败在这里就地收回
+   * 乐观变更（批量期间的调用方可能早就不等了）。
    *
    * @returns {Promise<void>} 当前这一轮的落盘结束（成功或失败）。
    */
@@ -274,23 +248,19 @@ function createSettingsScope(ctx, base) {
         }
       } catch (error) {
         queued = null
-        // 以宿主为准收回乐观变更——不管还有没有调用方在等这个 promise。
         current = refresh()
         publish()
         throw error
       } finally {
         writing = null
-        // 期间又攒下的补丁另起一轮。没人 await 它，失败不能变成未处理拒绝。
+        // 期间又攒下的补丁另起一轮；没人 await 它，失败不能变成未处理拒绝。
         if (queued !== null) void drain().catch(() => {})
       }
     })()
     return writing
   }
 
-  /**
-   * 宿主自己改了这个 section（原生设置页、遗留导入、手改 patch 文件）时重读一次。
-   * 自己写入还占着队列时直接跳过：那些变更已经就地合进 `current` 了。
-   */
+  /** 宿主自己改了这个 section（原生设置页、手改 patch）时重读一次；自己写入在途则跳过。 */
   const scheduleRecheck = () => {
     if (ownWriteActive() || recheck !== 0) return
     recheck = setTimeout(() => {
@@ -302,7 +272,6 @@ function createSettingsScope(ctx, base) {
   }
 
   refresh()
-  // 用户 section 也可能在插件脚下被改动——宿主自己的设置页，或遗留 settings.yaml 导入。
   ctx.on('settings/document-updated', (changed) => {
     if (changed !== undefined && String(changed) !== namespace) return
     scheduleRecheck()
@@ -316,13 +285,11 @@ function createSettingsScope(ctx, base) {
   return {
     get: () => current,
     update: async (patch) => {
-      // 先就地生效再落盘：宿主那次写入要重解析整个 profile patch 集并等 Loader
-      // settle，拿它 gate 一次视觉变更，桌面窗里的宠物就会肉眼可见地滞后。
+      // 先就地生效并广播：宿主那次写入要几百毫秒，拿它 gate 一次视觉变更宠物就会肉眼可见地滞后。
       current = publicConfig({ ...current, ...patch })
       publish()
-      // 已经有在途或排队的批次时，这次的值会被下一个盖掉：没必要把请求挂在这里等落盘。
-      // 一次落盘几百毫秒，拖动滑块时几十个请求全挂住会把浏览器的同源连接数占满，
-      // 页面其它请求跟着排队——那本身就是「卡」的一半来源。
+      // 已经有在途/排队的批次时，这次的值会被下一个盖掉：不必把请求挂在这里等落盘
+      // （拖动时几十个请求全挂住会占满浏览器的同源连接数）。
       const superseded = ownWriteActive()
       queued = queued === null ? patch : { ...queued, ...patch }
       queuedAt = Date.now()
@@ -330,10 +297,8 @@ function createSettingsScope(ctx, base) {
         void drain().catch(() => {})
         return current
       }
-      // 先让这一轮广播离开事件循环（订阅方的快照要扫一遍 pets 目录），再开始那段
-      // 会把循环占住几百毫秒的落盘——否则这帧 SSE 要被压在同步的 describe() 后面。
+      // 让这轮广播先离开事件循环，再开始那段会把循环占住的落盘。
       await new Promise((resolve) => setImmediate(resolve))
-      // 落盘被拒时由 drain 就地收回乐观变更并把错误抛回来，这里只负责转交。
       await drain()
       return current
     },
@@ -1285,12 +1250,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       balanceService.invalidate()
     }
     // enabled/scale/opacity/locked are read live by the client on every poll.
-    //
-    // 但"每次轮询读得到"不等于"立刻看得见"：原来这一帧广播挂在 refreshRegistry()
-    // 后面，而刷新注册表要串几趟 readdir；紧接着 settings.update() 的落盘又会把事件
-    // 循环占住两百多毫秒（profile patch 集重解析 + 每个 entry 对每层重新 compose），
-    // 于是那几趟 I/O 回调全排在后面，广播硬生生被推后到落盘做完——实测一次改动
-    // 276ms 才到桌面窗。外观类改动必须先出一帧，注册表真的变了再补一帧。
+    // 外观类改动必须先出一帧：原来这帧挂在 refreshRegistry()（几趟 readdir）后面，而紧接着的
+    // 落盘会把循环占住两百多毫秒，广播被推到落盘之后——实测一次改动 276ms 才到桌面窗。
     hub.broadcast()
     const registryStamp = JSON.stringify([registry.activePetId, registry.pets])
     refreshRegistry().then(() => {

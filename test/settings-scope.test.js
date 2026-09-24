@@ -1,31 +1,13 @@
 /**
  * 设置桥接护栏（DSH 0.1.7 #677）。
  *
- * 背景一：0.1.7 移除了 `ctx.settings.register()`，命名空间改由「持有 Config schema 的
- * Loader entry」派生，服务改用 `describe()` / `update(ns, patch)` 寻址。本插件当时写的是
+ * 0.1.7 移除了 `ctx.settings.register()`，改用 `describe()` / `update(ns, patch)` 寻址，
+ * 且只接受带 `meta.volatile` 的 section。原先的可选调用静默退化成只读门面，于是每次
+ * `settings.update(...)` 都抛 TypeError、被 /config 报成一个光秃秃的 400 又被右键菜单
+ * 吞掉——「桌面悬浮模式」开关点了没反应就是这样来的。
  *
- *   ctx.settings?.register?.(PLUGIN_KEY, Config, { base, applies: 'live' })
- *     ?? localSettingsScope(base)
- *
- * 可选调用在 0.1.7+ 上返回 undefined，于是每一处 `settings.update(...)` 都变成
- * `TypeError: settings.update is not a function`：/config 路由把它报成一个光秃秃的
- * 400，右键菜单的 `patchConfig` 又 `.catch(function(){})` 静默吞掉。表现就是
- * 「桌面悬浮模式」开关点了没反应，宿主侧 desktopMode 永远停在 false，连
- * `{ kind: 'download', phase: 'confirm' }` 那个 Electron 下载确认框都不会弹。
- *
- * 背景二：能写之后剩下的是**延迟**。落盘一次要跑两趟 `describe()`（每趟重读重解析整个
- * profile patch 集、并把每个 entry 对每一层重新 compose），`ConfigEditor.edit()` 前后
- * 还各 reconcile 一次并等 Loader settle；216 个 entry 的 profile 上单趟实测约 70ms，
- * 而且 `edit()` 里那两次 reconcile 会各发一个 `app-boot/config-reload`，加上
- * `settings/document-updated`，一次编辑连发三个信号。
- *
- * 所以这里同时钉住四条契约：
- *   1. Config 每个字段都带 `meta.volatile` —— 0.1.7 的 `settings.update()` 会拒绝一个
- *      没有任何 volatile 节点的 section（`has no volatile fields`），这是写入的前提；
- *   2. 只有 `describe()` / `update(ns, patch)` 这一种宿主形态（0.1.7+）；
- *      没有可写的 settings 服务时只读，且写入是抛错、不是被吞掉的；
- *   3. **写入先就地生效再落盘**：订阅者与 `get()` 立刻看到新值，不等人落盘；
- *   4. 自己写入引发的信号不重读；外部变更的三个信号合并成一趟。
+ * 这里钉住四条契约：字段都标 volatile；只面向 0.1.7+ 这一种宿主形态（没有可写服务时
+ * 只读且写入抛错）；写入先就地生效再落盘；自己的信号不重读、外部变更的三个信号合成一趟。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -45,9 +27,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * @param {boolean} [options.defer] `update()` 先挂起，直到 `release()`，用来验乐观生效。
  */
 function modernHost({ ns = 'dsh-pet-remielle', reject = false, defer = false } = {}) {
-  // 命名空间取自 Loader row 的**裸** id（`ctx.fiber.entry.options.id`）。假 entry 的
-  // `id` getter 故意带上前缀：真实 loader 就是这么拼的（`include:<id>`），拿 `entry.id`
-  // 当命名空间的写法必须在这里就报红。
+  // 假 entry 的 `id` getter 故意带 `include:` 前缀（真实 loader 就这么拼）：拿 `entry.id`
+  // 当命名空间的写法必须在这里报红。
   const fiber = { uid: 1, entry: { id: `include:${ns}`, options: { id: ns, name: 'dsh-pet-remielle' } } }
   const listeners = new Map()
   let release
