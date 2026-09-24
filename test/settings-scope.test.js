@@ -1,7 +1,7 @@
 /**
  * 设置桥接护栏（DSH 0.1.7 #677）。
  *
- * 背景：0.1.7 移除了 `ctx.settings.register()`，命名空间改由「持有 Config schema 的
+ * 背景一：0.1.7 移除了 `ctx.settings.register()`，命名空间改由「持有 Config schema 的
  * Loader entry」派生，服务改用 `describe()` / `update(ns, patch)` 寻址。本插件当时写的是
  *
  *   ctx.settings?.register?.(PLUGIN_KEY, Config, { base, applies: 'live' })
@@ -13,11 +13,19 @@
  * 「桌面悬浮模式」开关点了没反应，宿主侧 desktopMode 永远停在 false，连
  * `{ kind: 'download', phase: 'confirm' }` 那个 Electron 下载确认框都不会弹。
  *
- * 这里钉住两件事，缺一个上面那条路就会重新断掉：
+ * 背景二：能写之后剩下的是**延迟**。落盘一次要跑两趟 `describe()`（每趟重读重解析整个
+ * profile patch 集、并把每个 entry 对每一层重新 compose），`ConfigEditor.edit()` 前后
+ * 还各 reconcile 一次并等 Loader settle；216 个 entry 的 profile 上单趟实测约 70ms，
+ * 而且 `edit()` 里那两次 reconcile 会各发一个 `app-boot/config-reload`，加上
+ * `settings/document-updated`，一次编辑连发三个信号。
+ *
+ * 所以这里同时钉住四条契约：
  *   1. Config 每个字段都带 `meta.volatile` —— 0.1.7 的 `settings.update()` 会拒绝一个
  *      没有任何 volatile 节点的 section（`has no volatile fields`），这是写入的前提；
  *   2. `createSettingsScope` 在「还有 register 的旧宿主」与「只有 describe/update 的
- *      0.1.7+ 宿主」两种形态下都真的写得进去，而且失败是抛出来的、不是被吞掉的。
+ *      0.1.7+ 宿主」两种形态下都写得进去，且失败是抛出来的、不是被吞掉的；
+ *   3. **写入先就地生效再落盘**：订阅者与 `get()` 立刻看到新值，不等人落盘；
+ *   4. 自己写入引发的信号不重读；外部变更的三个信号合并成一趟。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -26,28 +34,49 @@ import { Config, CONFIG_PATCH_FIELDS, createSettingsScope } from '../src/index.j
 /** 每个 Config 字段都是 live 的：config PATCH 白名单 + 宠物注册表那两个。 */
 const LIVE_FIELDS = [...CONFIG_PATCH_FIELDS, 'activePetId', 'pets'].sort()
 
-/** 一个 0.1.7 形态的宿主：有 describe/update，没有 register。 */
-function modernHost({ ns = 'dsh-pet-remielle', reject = false } = {}) {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * 一个 0.1.7 形态的宿主：有 describe/update，没有 register。
+ *
+ * @param {object} [options]
+ * @param {string} [options.ns] entry id（settings 命名空间）。
+ * @param {boolean} [options.reject] `update()` 一律拒绝，用来验回滚。
+ * @param {boolean} [options.defer] `update()` 先挂起，直到 `release()`，用来验乐观生效。
+ */
+function modernHost({ ns = 'dsh-pet-remielle', reject = false, defer = false } = {}) {
   const fiber = { uid: 1 }
-  const state = { fields: {}, updates: [], listeners: new Map() }
+  const listeners = new Map()
+  let release
+  const gate = defer ? new Promise((resolve) => { release = resolve }) : null
+  const state = {
+    fields: {},
+    sent: [], // 每次真正调进宿主的 batch
+    persisted: [], // 落盘成功的 batch
+    describes: 0,
+    disposers: [],
+  }
   const service = {
     writable: true,
     describe() {
+      state.describes += 1
       return [{
         ns,
         value: { ...state.fields },
-        revision: state.updates.length,
+        revision: state.persisted.length,
         schema: Config.toJSON(),
         applies: 'live',
       }]
     },
     async update(target, patch) {
+      state.sent.push({ ns: target, patch })
+      if (gate !== null) await gate
       if (reject) throw new Error(`Plugin entry "${target}" has no volatile fields`)
-      state.updates.push({ ns: target, patch })
+      state.persisted.push({ ns: target, patch })
       Object.assign(state.fields, patch)
       // 宿主把变更广播出去；插件靠它重读 section。
-      for (const listener of state.listeners.get('settings/document-updated') ?? []) {
-        listener(ns, state.updates.length)
+      for (const listener of listeners.get('settings/document-updated') ?? []) {
+        listener(ns, state.persisted.length)
       }
     },
   }
@@ -56,15 +85,30 @@ function modernHost({ ns = 'dsh-pet-remielle', reject = false } = {}) {
     fiber,
     loader: { entries: () => [{ options: { id: ns, name: 'dsh-pet-remielle' }, fiber, disabled: false }] },
     on(event, listener) {
-      const list = state.listeners.get(event) ?? []
+      const list = listeners.get(event) ?? []
       list.push(listener)
-      state.listeners.set(event, list)
+      listeners.set(event, list)
       return () => {
-        state.listeners.set(event, list.filter((candidate) => candidate !== listener))
+        listeners.set(event, list.filter((candidate) => candidate !== listener))
       }
     },
+    effect(callback) {
+      const disposer = callback()
+      if (typeof disposer === 'function') state.disposers.push(disposer)
+      return disposer
+    },
   }
-  return { ctx, state, service }
+  return {
+    ctx,
+    state,
+    service,
+    /** 放行被 `defer` 挂住的那批落盘。 */
+    release: () => release?.(),
+    /** 模拟宿主自己发信号。 */
+    emit: (event, ...args) => {
+      for (const listener of listeners.get(event) ?? []) listener(...args)
+    },
+  }
 }
 
 test('every Config field is marked volatile (the 0.1.7 write precondition)', () => {
@@ -86,7 +130,7 @@ test('the 0.1.7 face writes through update(ns, patch) and reads the value back',
 
   await settings.update({ desktopMode: true })
 
-  assert.deepEqual(state.updates, [{ ns: 'dsh-pet-remielle', patch: { desktopMode: true } }])
+  assert.deepEqual(state.persisted, [{ ns: 'dsh-pet-remielle', patch: { desktopMode: true } }])
   assert.equal(settings.get().desktopMode, true)
 })
 
@@ -96,12 +140,55 @@ test('writes address the entry id the user actually configured', async () => {
 
   await settings.update({ scale: 1.35 })
 
-  assert.equal(state.updates[0].ns, 'my-remielle')
+  assert.equal(state.persisted[0].ns, 'my-remielle')
   assert.equal(settings.get().scale, 1.35)
 })
 
-test('watch fires for own writes and for the host document broadcast', async () => {
-  const { ctx, state } = modernHost()
+test('a write takes effect locally before the host has persisted it', async () => {
+  const { ctx, state, release } = modernHost({ defer: true })
+  const settings = createSettingsScope(ctx, { desktopMode: false })
+  const seen = []
+  settings.watch((next) => seen.push(next.desktopMode))
+
+  const writing = settings.update({ desktopMode: true })
+  await Promise.resolve()
+
+  assert.equal(settings.get().desktopMode, true, 'the pet must not wait for a profile write')
+  assert.deepEqual(seen, [true], 'subscribers see it before persistence finishes')
+  assert.deepEqual(state.persisted, [], 'and nothing has landed yet')
+
+  release()
+  await writing
+  assert.deepEqual(state.persisted, [{ ns: 'dsh-pet-remielle', patch: { desktopMode: true } }])
+})
+
+test('a burst of writes coalesces, newest state winning', async () => {
+  const { ctx, state, release } = modernHost({ defer: true })
+  const settings = createSettingsScope(ctx, { scale: 1 })
+
+  const first = settings.update({ scale: 1.1 })
+  // update() 先让出一轮事件循环再落盘（好让广播先出去），所以等第一批发进宿主。
+  while (state.sent.length === 0) await sleep(1)
+
+  const second = settings.update({ scale: 1.2 })
+  const third = settings.update({ scale: 1.3 })
+  await sleep(1)
+
+  assert.equal(state.sent.length, 1, 'the queue holds at most one batch while a write is in flight')
+  assert.equal(settings.get().scale, 1.3, 'every caller sees its own value immediately')
+
+  release()
+  await Promise.all([first, second, third])
+
+  assert.deepEqual(
+    state.persisted.map((row) => row.patch),
+    [{ scale: 1.1 }, { scale: 1.3 }],
+    'the burst that piles up behind the in-flight write collapses into one follow-up batch',
+  )
+})
+
+test('watch fires for own writes and for an external change', async () => {
+  const { ctx, state, emit } = modernHost()
   const settings = createSettingsScope(ctx, { scale: 1 })
   const seen = []
   const off = settings.watch((next) => seen.push(next.scale))
@@ -109,7 +196,8 @@ test('watch fires for own writes and for the host document broadcast', async () 
   await settings.update({ scale: 1.5 })
   // 宿主自己的设置页（或遗留 settings.yaml 导入）改了同一个 section
   state.fields.scale = 1.8
-  for (const listener of state.listeners.get('settings/document-updated') ?? []) listener('dsh-pet-remielle', 9)
+  emit('settings/document-updated', 'dsh-pet-remielle', 9)
+  await sleep(120)
 
   assert.deepEqual(seen, [1.5, 1.8])
 
@@ -118,26 +206,57 @@ test('watch fires for own writes and for the host document broadcast', async () 
   assert.deepEqual(seen, [1.5, 1.8], 'a disposed watcher must stay disposed')
 })
 
-test('the host document broadcast ignores other namespaces', () => {
+test('our own write never re-reads the profile', async () => {
   const { ctx, state } = modernHost()
+  const settings = createSettingsScope(ctx, { scale: 1 })
+  const before = state.describes
+  assert.equal(before, 1, 'the scope reads the section once at mount')
+
+  await settings.update({ scale: 1.5 })
+  // 自己那次写入会连发 document-updated + 两个 config-reload；都得被忽略。
+  await sleep(120)
+
+  assert.equal(state.describes, before, 'no describe() for a change this plugin just made')
+})
+
+test('an external change is re-read once, however many signals it fires', async () => {
+  const { ctx, state, emit } = modernHost()
+  const settings = createSettingsScope(ctx, { scale: 1 })
+  const seen = []
+  settings.watch((next) => seen.push(next.scale))
+  const before = state.describes
+
+  state.fields.scale = 1.8
+  emit('settings/document-updated', 'dsh-pet-remielle', 4)
+  emit('app-boot/config-reload')
+  emit('app-boot/config-reload')
+  await sleep(120)
+
+  assert.equal(state.describes, before + 1, 'three signals, one re-read')
+  assert.deepEqual(seen, [1.8])
+})
+
+test('the host document broadcast ignores other namespaces', async () => {
+  const { ctx, state, emit } = modernHost()
   state.fields.scale = 1
   const settings = createSettingsScope(ctx, { scale: 1 })
   const seen = []
   settings.watch((next) => seen.push(next.scale))
 
   state.fields.scale = 1.9
-  for (const listener of state.listeners.get('settings/document-updated') ?? []) listener('some-other-plugin', 3)
+  emit('settings/document-updated', 'some-other-plugin', 3)
+  await sleep(120)
 
   assert.deepEqual(seen, [])
   assert.equal(settings.get().scale, 1)
 })
 
-test('a rejected write propagates instead of looking applied', async () => {
+test('a rejected write rolls the optimistic change back and propagates', async () => {
   const { ctx } = modernHost({ reject: true })
   const settings = createSettingsScope(ctx, { desktopMode: false })
 
   await assert.rejects(() => settings.update({ desktopMode: true }), /no volatile fields/)
-  assert.equal(settings.get().desktopMode, false, 'a refused write must not touch the cached section')
+  assert.equal(settings.get().desktopMode, false, 'a refused write must not stay applied')
 })
 
 test('a pre-0.1.7 host still gets the namespace-scoped face', async () => {
@@ -158,6 +277,7 @@ test('a pre-0.1.7 host still gets the namespace-scoped face', async () => {
     fiber,
     loader: { entries: () => [] },
     on: () => () => {},
+    effect: () => () => {},
   }
 
   const settings = createSettingsScope(ctx, { desktopMode: false })

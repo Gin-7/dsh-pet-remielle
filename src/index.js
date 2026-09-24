@@ -202,6 +202,16 @@ function ownSettingsNamespace(ctx) {
 }
 
 /**
+ * 合并外部变更信号的重读窗口。
+ *
+ * 一次宿主侧编辑会连发两三个信号：`settings/document-updated` 来自
+ * `SettingsForms.write()` 收尾那次 `describe()`，而 `ConfigEditor.edit()` 前后各跑一次
+ * `reconcileProfilePatches`，每次都 `emit("app-boot/config-reload")`。它们之间隔着
+ * 文件读写的 await，所以靠微任务合不掉，用一个几十毫秒的窗口收成一次重读。
+ */
+const EXTERNAL_RECHECK_MS = 60
+
+/**
  * 把本插件的设置桥接到宿主的 settings 服务上。
  *
  * DSH ≤ 0.1.6 由 `ctx.settings.register(ns, schema, { base })` 交出一个命名空间作用域
@@ -213,8 +223,15 @@ function ownSettingsNamespace(ctx) {
  * 表现就是「桌面悬浮模式」开关点了没反应、也永远等不到 Electron 下载确认框。
  * 这里两种形态都支持。
  *
- * `describe()` 不便宜：它每次都要重新读取并解析整个 profile patch 集，而 `get()` 处在
- * 每个会话事件的快照路径上。所以这个作用域缓存取值，只在宿主自己的变更信号上重读。
+ * 落盘本身很慢，而且慢得跟 `get()` 无关：`SettingsForms.write()` 内部要跑两次
+ * `describe()`（每次都要重读并重解析整个 profile patch 集、并把每个 entry 对每一层
+ * 重新 compose 一遍），`ConfigEditor.edit()` 还要前后各 reconcile 一次并等 Loader
+ * settle。216 个 entry 的 profile 上，单次 `describe()` 实测约 70ms。因此：
+ *
+ *  - `update()` **先就地生效并广播，再落盘**，失败才回滚。视觉变更不该被持久化路径 gate。
+ *  - 自己写入引发的信号一律不重读（本地合并已经是准的），省掉每次三趟 `describe()`。
+ *  - 落盘队列"最新的赢"：拖动滑块时新值会盖掉还没落盘的旧值，不会堆成写风暴。
+ *  - 外部变更（宿主原生设置页、遗留导入、手改 patch）才重读，且合并成一趟。
  *
  * @param {object} ctx 宿主插件上下文。
  * @param {object} base 挂载时已由 {@link publicConfig} 归一化的配置。
@@ -234,10 +251,14 @@ function createSettingsScope(ctx, base) {
 
   const namespace = ownSettingsNamespace(ctx) ?? PLUGIN_KEY
   const describe = service.describe.bind(service)
-  const update = service.update.bind(service)
+  const persist = service.update.bind(service)
   const listeners = new Set()
   let current = base
   let published = { ...base }
+  let queued = null // 还没落盘的最新补丁；攒着的时候后写的盖掉先写的
+  let writing = null // 正在落盘那一批的 promise
+  let ownWrites = 0 // 本插件自己的写入在途数（用来忽略自己引发的变更信号）
+  let recheck = 0 // 待执行的外部重读定时器
 
   /** 重读宿主为这个 entry 持有的 section。 */
   const refresh = () => {
@@ -255,9 +276,8 @@ function createSettingsScope(ctx, base) {
   /**
    * 只对「真的变了」的取值发通知。
    *
-   * 一次写入会走到这里两次：`update()` 自己合并后发一次，宿主紧接着在
-   * `settings/document-updated` 上再广播一次。订阅方（桌面窗看门狗）按值比较可以
-   * 兜住重复，但没有理由让它做两遍。
+   * 一次写入可能走到这里多次：乐观生效一次、宿主广播一次、外部重读一次。
+   * 订阅方（桌面窗看门狗）按值比较可以兜住重复，但没有理由让它做多遍。
    */
   const publish = () => {
     if (isDeepStrictEqual(published, current)) return
@@ -271,25 +291,82 @@ function createSettingsScope(ctx, base) {
     }
   }
 
+  /**
+   * 把排队的补丁交给宿主，最新的赢。
+   *
+   * 一次 profile 写入要几百毫秒（重解析 patch 集 + 等 Loader settle），比拖动滑块
+   * 的节奏慢得多，所以要合并：在途期间攒下的所有补丁并成下一批。调用方 await 的是
+   * 承载自己那次变更的那一批，因此被宿主拒绝时错误仍然回得来。
+   *
+   * @returns {Promise<void>} 当前这一轮落盘结束（成功或失败）。
+   */
+  const drain = () => {
+    if (writing !== null) return writing
+    writing = (async () => {
+      try {
+        while (queued !== null) {
+          const batch = queued
+          queued = null
+          await persist(namespace, batch)
+        }
+      } finally {
+        writing = null
+        // 期间又攒下的补丁另起一轮。没人 await 它，失败不能变成未处理拒绝。
+        if (queued !== null) void drain().catch(() => {})
+      }
+    })()
+    return writing
+  }
+
+  /**
+   * 宿主自己改了这个 section（原生设置页、遗留导入、手改 patch 文件）时重读一次。
+   * 自己写入在途时直接跳过：那一批已经就地合进 `current` 了。
+   */
+  const scheduleRecheck = () => {
+    if (ownWrites > 0 || recheck !== 0) return
+    recheck = setTimeout(() => {
+      recheck = 0
+      refresh()
+      publish()
+    }, EXTERNAL_RECHECK_MS)
+    recheck.unref?.()
+  }
+
   refresh()
   // 用户 section 也可能在插件脚下被改动——宿主自己的设置页，或遗留 settings.yaml 导入。
   ctx.on('settings/document-updated', (changed) => {
     if (changed !== undefined && String(changed) !== namespace) return
-    refresh()
-    publish()
+    scheduleRecheck()
   })
-  ctx.on('app-boot/config-reload', () => {
-    refresh()
-    publish()
-  })
+  ctx.on('app-boot/config-reload', scheduleRecheck)
+  ctx.effect(() => () => {
+    if (recheck !== 0) clearTimeout(recheck)
+    recheck = 0
+  }, 'dsh-pet-remielle: pending settings re-read')
 
   return {
     get: () => current,
     update: async (patch) => {
-      await update(namespace, patch)
-      // 本地合并：写入已经落地，缓存取值不该取决于 describe() 是否在同一 tick 里看到它。
+      // 先就地生效再落盘：宿主那次写入要重解析整个 profile patch 集并等 Loader
+      // settle，拿它 gate 一次视觉变更，桌面窗里的宠物就会肉眼可见地滞后。
+      const previous = current
       current = publicConfig({ ...current, ...patch })
+      ownWrites += 1
       publish()
+      queued = queued === null ? patch : { ...queued, ...patch }
+      try {
+        // 先让这一轮广播离开事件循环（订阅方的快照要扫一遍 pets 目录），再开始那段
+        // 会把循环占住几百毫秒的落盘——否则这帧 SSE 要被压在同步的 describe() 后面。
+        await new Promise((resolve) => setImmediate(resolve))
+        await drain()
+      } catch (error) {
+        // 落盘被拒：以宿主为准收回这次乐观变更，并把失败交回调用方。
+        current = refresh()
+        publish()
+        throw error
+      } finally {
+        ownWrites -= 1
+      }
       return current
     },
     watch: (listener) => {
@@ -1240,7 +1317,17 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       balanceService.invalidate()
     }
     // enabled/scale/opacity/locked are read live by the client on every poll.
-    refreshRegistry().then(() => hub.broadcast())
+    //
+    // 但"每次轮询读得到"不等于"立刻看得见"：原来这一帧广播挂在 refreshRegistry()
+    // 后面，而刷新注册表要串几趟 readdir；紧接着 settings.update() 的落盘又会把事件
+    // 循环占住两百多毫秒（profile patch 集重解析 + 每个 entry 对每层重新 compose），
+    // 于是那几趟 I/O 回调全排在后面，广播硬生生被推后到落盘做完——实测一次改动
+    // 276ms 才到桌面窗。外观类改动必须先出一帧，注册表真的变了再补一帧。
+    hub.broadcast()
+    const registryStamp = JSON.stringify([registry.activePetId, registry.pets])
+    refreshRegistry().then(() => {
+      if (JSON.stringify([registry.activePetId, registry.pets]) !== registryStamp) hub.broadcast()
+    })
   })
 
   void refreshRegistry()
