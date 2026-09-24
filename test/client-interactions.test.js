@@ -12,7 +12,7 @@ function cardHeightFromCss(css) {
   return Number(/(?<!-)height:\s*(\d+)px/.exec(rule)?.[1])
 }
 
-function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = []) {
+function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = [], modernNavigation = false) {
   const elements = []
   const fetches = []
   const opened = []
@@ -107,6 +107,24 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
       return []
     },
   }
+  const otherAllowBtn = {
+    textContent: '允许一次',
+    innerText: '允许一次',
+    getAttribute() { return '' },
+    click() { allowClicks.push('other-allow') },
+  }
+  const otherApprovalPanel = {
+    querySelectorAll(sel) {
+      if (String(sel).includes('button')) return [otherAllowBtn]
+      return []
+    },
+  }
+  const conversationFrame = {
+    querySelectorAll(sel) {
+      if (sel === '[data-approval-key]') return [approvalPanel]
+      return []
+    },
+  }
   const document = {
     body,
     head,
@@ -114,8 +132,13 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     createElement: (tag) => element(tag),
     addEventListener() {},
     removeEventListener() {},
-    querySelector(sel) { return sel === '[data-approval-key]' ? approvalPanel : null },
-    querySelectorAll(sel) { return sel === '[data-approval-key]' ? [approvalPanel] : [] },
+    querySelector(sel) {
+      if (sel === '[data-panel-conversation]') return conversationFrame
+      return sel === '[data-approval-key]' ? approvalPanel : null
+    },
+    querySelectorAll(sel) {
+      return sel === '[data-approval-key]' ? [otherApprovalPanel, approvalPanel] : []
+    },
   }
   class EventSourceStub {
     constructor() { stream = this }
@@ -172,20 +195,29 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     inject(name, callback) { callback(); return () => {} },
     register() { return () => {} },
   }
+  const openSession = (sessionId) => {
+    opened.push(sessionId)
+    if (autoSelect) {
+      current = sessionId
+      sessionListener?.()
+    }
+  }
   const sessions = {
     list: {
-      getSnapshot: () => ({ current, byId: snapshotItems }),
+      getSnapshot: () => modernNavigation
+        ? { byId: { ...snapshotItems, ...(current ? { [current]: { id: current, retainedBy: { mainView: 1 } } } : {}) } }
+        : { current, byId: snapshotItems },
       subscribe(listener) { sessionListener = listener; return () => {} },
     },
-    open(sessionId) {
-      opened.push(sessionId)
-      if (autoSelect) {
-        current = sessionId
-        sessionListener?.()
-      }
-    },
+    ...(modernNavigation ? {} : { open: openSession }),
   }
-  moduleExports.apply({ slots, sessions, effect: (callback) => callback() })
+  const uiWorkspace = { openSession }
+  moduleExports.apply({
+    slots,
+    sessions,
+    ...(modernNavigation ? { get(name) { return name === 'uiWorkspace' ? uiWorkspace : undefined } } : {}),
+    effect: (callback) => callback(),
+  })
 
   function send(snapshot) {
     stream.onmessage({ data: JSON.stringify(snapshot) })
@@ -320,6 +352,20 @@ test('multi-session deck renders an inert backboard with a dynamic click target'
   harness.flushTitleTimers()
   harness.click(backboard)
   assert.deepEqual(harness.opened, ['second', 'third'])
+})
+
+test('modern workspace navigation promotes the clicked lower bubble', () => {
+  const harness = createHarness('first', true, {}, true)
+  const sessions = [
+    { sessionId: 'first', state: 'WORKING', phase: 'tool-call', message: '首个对话', detail: '.dsh · 处理中', updatedAt: 3 },
+    { sessionId: 'second', state: 'WORKING', phase: 'tool-call', message: '第二个对话', detail: '.dsh · 处理中', updatedAt: 2 },
+  ]
+  harness.send({ ...base, sessions })
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  assert.ok(backboard)
+  harness.click(backboard)
+  assert.deepEqual(harness.opened, ['second'])
+  assert.match(harness.card('第二个对话').className, /\btop\b/)
 })
 
 test('backboard target and tip stay paired while sorting settles', () => {
@@ -671,15 +717,15 @@ test('desktop mode still acks the viewed session completion', async () => {
   )
 })
 
-test('desktop session-action without approve opens the conversation (bubble-card jump)', () => {
-  const harness = createHarness()
+test('desktop bubble click uses DSH 0.1.7 uiWorkspace navigation', () => {
+  const harness = createHarness('other', true, [], true)
   harness.send({ ...base, desktopActive: true, sessions: [] })
   harness.send({ kind: 'session-action', sessionId: 'desk-1', completed: true })
   assert.deepEqual(harness.opened, ['desk-1'])
 })
 
-test('desktop session-action approve opens the conversation for the native allow-once button', () => {
-  const harness = createHarness()
+test('desktop approval uses DSH 0.1.7 uiWorkspace navigation before allow-once', () => {
+  const harness = createHarness('other', true, [], true)
   harness.send({ ...base, desktopActive: true, sessions: [] })
   harness.send({ kind: 'session-action', sessionId: 'desk-2', approve: true })
   assert.deepEqual(harness.opened, ['desk-2'])

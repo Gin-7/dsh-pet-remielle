@@ -34,6 +34,7 @@ import {
   PET_MOODS,
   PET_MOOD_EXT,
   PET_MANIFEST,
+  PET_ID_RE,
   buildRegistry,
   isValidPetId,
   parseAssetPath,
@@ -63,35 +64,35 @@ export const PLUGIN_KEY = 'dsh-pet-remielle'
 export const BALANCE_ENDPOINT = '/plugins/dsh-pet-remielle/balance'
 
 const petEntry = Schema.object({
-  id: Schema.string().required().description('宠物 id（assets/pets/<id> 目录名）'),
+  id: Schema.string().required().pattern(PET_ID_RE).description('宠物 id（assets/pets/<id> 目录名）'),
   name: Schema.string().required().description('宠物显示名'),
   enabled: Schema.boolean().default(true).description('是否启用该宠物'),
 })
 
 export const Config = Schema.object({
-  enabled: Schema.boolean().default(true).description('启用桌宠'),
-  scale: Schema.number().min(0.5).max(2).step(0.05).default(1).role('slider').description('角色大小'),
-  mirror: Schema.boolean().default(false).description('左右镜像角色图案'),
-  bubbleScaleSync: Schema.boolean().default(true).description('消息气泡随桌宠同步缩放（关闭后气泡使用固定大小）'),
-  bubbleScaleRatio: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡相对桌宠的大小（同步缩放时生效，1 = 与桌宠等比）'),
-  bubbleFixedSize: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡固定大小（不随桌宠同步缩放时生效，1 = 基准大小）'),
-  opacity: Schema.number().min(0.3).max(1).step(0.05).default(1).role('slider').description('透明度'),
-  locked: Schema.boolean().default(false).description('锁定位置（禁止拖动）'),
-  paused: Schema.boolean().default(false).description('暂停动画'),
-  hidden: Schema.boolean().default(false).description('隐藏桌宠'),
-  includeSubagents: Schema.boolean().default(false).description('允许子 Agent 抢占宠物状态'),
-  showBubble: Schema.boolean().default(true).description('在宠物上方显示状态气泡（阶段/待办/进度）'),
-  showBubbleStatus: Schema.boolean().default(true).description('气泡中显示会话状态（任务阶段/进度）'),
-  showBubbleUsage: Schema.boolean().default(false).description('气泡中显示 DeepSeek 余额/今日已用'),
-  usageMode: Schema.string().default('ledger').description('今日已用统计模式：小鲸鱼记账（ledger，免令牌）或 实时·令牌（token，需平台会话令牌）'),
-  platformToken: Schema.string().default('').description('DEEPSEEK_PLATFORM_TOKEN 平台会话令牌（实时·令牌模式需要，留空时回落到 DSH 凭据服务）'),
-  desktopMode: Schema.boolean().default(false).description('桌面悬浮模式：用独立置顶窗口显示宠物（打开时如无 Electron 会自动下载运行时，下载失败则回落页面内）'),
-  posX: Schema.number().default(null).description('宠物 X 位置（null = 使用默认位置）'),
-  posY: Schema.number().default(null).description('宠物 Y 位置（null = 使用默认位置）'),
-  desktopX: Schema.number().default(null).description('桌面悬浮窗 X（自动记忆，坐标与窗口 bounds API 同空间；null = 使用默认位置）'),
-  desktopY: Schema.number().default(null).description('桌面悬浮窗 Y（自动记忆，坐标与窗口 bounds API 同空间；null = 使用默认位置）'),
-  activePetId: Schema.string().default(DEFAULT_PET_ID).description('当前展示的宠物'),
-  pets: Schema.array(petEntry).default([{ id: DEFAULT_PET_ID, name: '蕾米埃尔', enabled: true }]).description('宠物注册表'),
+  enabled: Schema.boolean().default(true).description('启用桌宠').volatile(),
+  scale: Schema.number().min(0.5).max(2).step(0.05).default(1).role('slider').description('角色大小').volatile(),
+  mirror: Schema.boolean().default(false).description('左右镜像角色图案').volatile(),
+  bubbleScaleSync: Schema.boolean().default(true).description('消息气泡随桌宠同步缩放（关闭后气泡使用固定大小）').volatile(),
+  bubbleScaleRatio: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡相对桌宠的大小（同步缩放时生效，1 = 与桌宠等比）').volatile(),
+  bubbleFixedSize: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡固定大小（不随桌宠同步缩放时生效，1 = 基准大小）').volatile(),
+  opacity: Schema.number().min(0.3).max(1).step(0.05).default(1).role('slider').description('透明度').volatile(),
+  locked: Schema.boolean().default(false).description('锁定位置（禁止拖动）').volatile(),
+  paused: Schema.boolean().default(false).description('暂停动画').volatile(),
+  hidden: Schema.boolean().default(false).description('隐藏桌宠').volatile(),
+  includeSubagents: Schema.boolean().default(false).description('允许子 Agent 抢占宠物状态').volatile(),
+  showBubble: Schema.boolean().default(true).description('在宠物上方显示状态气泡（阶段/待办/进度）').volatile(),
+  showBubbleStatus: Schema.boolean().default(true).description('气泡中显示会话状态（任务阶段/进度）').volatile(),
+  showBubbleUsage: Schema.boolean().default(false).description('气泡中显示 DeepSeek 余额/今日已用').volatile(),
+  usageMode: Schema.string().default('ledger').description('今日已用统计模式：小鲸鱼记账（ledger，免令牌）或 实时·令牌（token，需平台会话令牌）').volatile(),
+  platformToken: Schema.string().default('').role('secret').description('DEEPSEEK_PLATFORM_TOKEN 平台会话令牌（实时·令牌模式需要，留空时回落到 DSH 凭据服务）').volatile(),
+  desktopMode: Schema.boolean().default(false).description('桌面悬浮模式：用独立置顶窗口显示宠物（打开时如无 Electron 会自动下载运行时，下载失败则回落页面内）').volatile(),
+  posX: Schema.number().default(null).description('宠物 X 位置（null = 使用默认位置）').volatile(),
+  posY: Schema.number().default(null).description('宠物 Y 位置（null = 使用默认位置）').volatile(),
+  desktopX: Schema.number().default(null).description('桌面悬浮窗 X（自动记忆，坐标与窗口 bounds API 同空间；null = 使用默认位置）').volatile(),
+  desktopY: Schema.number().default(null).description('桌面悬浮窗 Y（自动记忆，坐标与窗口 bounds API 同空间；null = 使用默认位置）').volatile(),
+  activePetId: Schema.string().default(DEFAULT_PET_ID).pattern(PET_ID_RE).description('当前展示的宠物').volatile(),
+  pets: Schema.array(petEntry).default([{ id: DEFAULT_PET_ID, name: '蕾米埃尔', enabled: true }]).description('宠物注册表').volatile(),
 }).description('由 DeepSeek Harness 会话事件驱动的多宠物 Web 桌宠')
 
 export const defaults = Object.freeze({
@@ -150,6 +151,38 @@ function localSettingsScope(value) {
   return {
     get: () => value,
     watch: () => () => {},
+  }
+}
+
+function readConfig(config) {
+  const value = {}
+  for (const key of Object.keys(defaults)) {
+    const current = config[key]
+    value[key] = current && typeof current.get === 'function' ? current.get() : current ?? defaults[key]
+  }
+  return value
+}
+
+export function createSettingsScope(ctx, config = {}, eventCtx = ctx) {
+  const forms = ctx.settings
+  const get = () => readConfig(config)
+  if (typeof forms?.register === 'function') {
+    return forms.register(PLUGIN_KEY, Config, { base: publicConfig(get()), applies: 'live' })
+  }
+  if (typeof forms?.describe !== 'function') return localSettingsScope(publicConfig(get()))
+  const dispose = forms.configure?.({ auto: false }, eventCtx.fiber)
+  if (dispose) {
+    if (typeof ctx.effect === 'function') ctx.effect(() => dispose)
+    else if (typeof eventCtx.effect === 'function') eventCtx.effect(() => dispose)
+  }
+  return {
+    get,
+    watch(listener) {
+      return eventCtx.on('loader/volatile-update', () => listener(get()))
+    },
+    update(patch) {
+      return forms.update(PLUGIN_KEY, patch)
+    },
   }
 }
 
@@ -828,11 +861,8 @@ function sseHeaders(res) {
 
 function mount(ctx, config = {}, eventCtx = ctx) {
   const logger = ctx.logger ?? console
-  const base = publicConfig(config)
-  const settings = ctx.settings?.register?.(PLUGIN_KEY, Config, {
-    base,
-    applies: 'live',
-  }) ?? localSettingsScope(base)
+  const settings = createSettingsScope(ctx, config, eventCtx)
+  const base = publicConfig(settings.get())
 
   const resolveCredential = (name) => {
     const cred = eventCtx.credentials ?? ctx.credentials
