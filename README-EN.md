@@ -12,7 +12,7 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 - Built-in version check + one-click incremental update
 - Settings panel: pet management (tabbed) + plugin config card
 
-> Compatible with DeepSeek Harness (and its forks) web profile; desktop mode is off by default and can be enabled anytime. Desktop mode requires DSH `>= 0.1.2-alpha.1` to provide an authenticated root URL with a launch token.
+> Compatible with the DeepSeek Harness (and its forks) web profile; requires DSH `>= 0.1.7` (settings writes use the `settings.describe()` / `update(ns, patch)` shape introduced there). Desktop mode is off by default and can be enabled anytime.
 
 ---
 

@@ -12,7 +12,7 @@
 - 一键版本检查 + 增量更新
 - 设置面板：宠物管理（多标签页）、插件配置卡片
 
-> 兼容 DeepSeek Harness（含其分支）的 web profile；桌面悬浮模式默认关闭，可按需开启。桌面模式要求 DSH `>= 0.1.2-alpha.1`，以提供带 token 的认证根 URL。
+> 兼容 DeepSeek Harness（含其分支）的 web profile，要求 DSH `>= 0.1.7`（设置写入依赖 0.1.7 起的 `settings.describe()` / `update(ns, patch)` 形态）；桌面悬浮模式默认关闭，可按需开启。
 
 ---
 

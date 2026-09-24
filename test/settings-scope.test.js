@@ -22,8 +22,8 @@
  * 所以这里同时钉住四条契约：
  *   1. Config 每个字段都带 `meta.volatile` —— 0.1.7 的 `settings.update()` 会拒绝一个
  *      没有任何 volatile 节点的 section（`has no volatile fields`），这是写入的前提；
- *   2. `createSettingsScope` 在「还有 register 的旧宿主」与「只有 describe/update 的
- *      0.1.7+ 宿主」两种形态下都写得进去，且失败是抛出来的、不是被吞掉的；
+ *   2. 只有 `describe()` / `update(ns, patch)` 这一种宿主形态（0.1.7+）；
+ *      没有可写的 settings 服务时只读，且写入是抛错、不是被吞掉的；
  *   3. **写入先就地生效再落盘**：订阅者与 `get()` 立刻看到新值，不等人落盘；
  *   4. 自己写入引发的信号不重读；外部变更的三个信号合并成一趟。
  */
@@ -45,7 +45,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * @param {boolean} [options.defer] `update()` 先挂起，直到 `release()`，用来验乐观生效。
  */
 function modernHost({ ns = 'dsh-pet-remielle', reject = false, defer = false } = {}) {
-  const fiber = { uid: 1 }
+  // 命名空间取自 Loader row 的**裸** id（`ctx.fiber.entry.options.id`）。假 entry 的
+  // `id` getter 故意带上前缀：真实 loader 就是这么拼的（`include:<id>`），拿 `entry.id`
+  // 当命名空间的写法必须在这里就报红。
+  const fiber = { uid: 1, entry: { id: `include:${ns}`, options: { id: ns, name: 'dsh-pet-remielle' } } }
   const listeners = new Map()
   let release
   const gate = defer ? new Promise((resolve) => { release = resolve }) : null
@@ -83,7 +86,6 @@ function modernHost({ ns = 'dsh-pet-remielle', reject = false, defer = false } =
   const ctx = {
     settings: service,
     fiber,
-    loader: { entries: () => [{ options: { id: ns, name: 'dsh-pet-remielle' }, fiber, disabled: false }] },
     on(event, listener) {
       const list = listeners.get(event) ?? []
       list.push(listener)
@@ -297,38 +299,20 @@ test('a rejected write rolls the optimistic change back and propagates', async (
   assert.equal(settings.get().desktopMode, false, 'a refused write must not stay applied')
 })
 
-test('a pre-0.1.7 host still gets the namespace-scoped face', async () => {
-  const fiber = { uid: 2 }
-  const registered = []
-  const scoped = {
-    get: () => ({ desktopMode: false }),
-    update: async () => {},
-    watch: () => () => {},
-  }
-  const ctx = {
-    settings: {
-      register(ns, schema, options) {
-        registered.push({ ns, options })
-        return scoped
-      },
-    },
-    fiber,
-    loader: { entries: () => [] },
-    on: () => () => {},
-    effect: () => () => {},
-  }
+test('a fallback namespace is used when the Loader row cannot be read', async () => {
+  const { ctx, state } = modernHost()
+  delete ctx.fiber.entry
 
-  const settings = createSettingsScope(ctx, { desktopMode: false })
+  const settings = createSettingsScope(ctx, { scale: 1 })
+  await settings.update({ scale: 1.4 })
 
-  assert.equal(settings, scoped)
-  assert.equal(registered[0].ns, 'dsh-pet-remielle')
-  assert.equal(registered[0].options.base.desktopMode, false)
+  assert.equal(state.persisted[0].ns, 'dsh-pet-remielle', 'falls back to the id this package ships')
 })
 
-test('a host with no usable settings service stays read-only and says so', async () => {
-  const ctx = { settings: {}, fiber: { uid: 3 }, loader: { entries: () => [] }, on: () => () => {} }
+test('a host with no writable settings service stays read-only and says so', async () => {
+  const ctx = { settings: {}, fiber: { uid: 3 }, on: () => () => {} }
   const settings = createSettingsScope(ctx, { desktopMode: false })
 
   assert.equal(settings.get().desktopMode, false)
-  await assert.rejects(() => settings.update({ desktopMode: true }), /settings service is not available/)
+  await assert.rejects(() => settings.update({ desktopMode: true }), /needs the DSH settings service/)
 })

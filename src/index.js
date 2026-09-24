@@ -156,114 +156,54 @@ export function publicConfig(config = {}) {
   }
 }
 
-/**
- * 宿主完全没有 settings 服务时的只读门面。
- *
- * `update` 是「抛错」而不是「不存在」：原先兜底对象缺这个方法，调用方拿到的是
- * `TypeError: settings.update is not a function`，被 /config 路由报成 400、被右键
- * 菜单的 `.catch(function(){})` 吞掉，于是整个故障看起来像「开关坏了但没有任何线索」。
- *
- * @param {object} value 挂载时已归一化的配置。
- * @returns {{get: Function, update: Function, watch: Function}} 只读作用域。
- */
-function readOnlySettingsScope(value) {
-  return {
-    get: () => value,
-    update: async () => {
-      throw new Error('the settings service is not available in this host')
-    },
-    watch: () => () => {},
-  }
-}
-
-/**
- * 解析本插件自己的 Loader row id。
- *
- * DSH 0.1.7 起 settings 命名空间由「持有这份 Config schema 的 Loader entry」派生，
- * 因此读写都必须用用户在 profile patch 里实际写的那个 id —— {@link PLUGIN_KEY}
- * 只是本包在自己 cordis.patch.yml 里惯用的 id。
- *
- * @param {object} ctx 宿主插件上下文。
- * @returns {string|undefined} 所属 entry id；找不到对应 row 时返回 undefined。
- */
-function ownSettingsNamespace(ctx) {
-  let fallback
-  try {
-    for (const entry of ctx.loader?.entries?.() ?? []) {
-      const id = entry.options?.id
-      if (entry.options?.name !== PLUGIN_KEY || typeof id !== 'string' || id === '') continue
-      if (entry.fiber === ctx.fiber) return id
-      if (entry.disabled !== true && fallback === undefined) fallback = id
-    }
-  } catch {
-    return undefined
-  }
-  return fallback
-}
-
-/**
- * 合并外部变更信号的重读窗口。
- *
- * 一次宿主侧编辑会连发两三个信号：`settings/document-updated` 来自
- * `SettingsForms.write()` 收尾那次 `describe()`，而 `ConfigEditor.edit()` 前后各跑一次
- * `reconcileProfilePatches`，每次都 `emit("app-boot/config-reload")`。它们之间隔着
- * 文件读写的 await，所以靠微任务合不掉，用一个几十毫秒的窗口收成一次重读。
- */
+/** 合并外部变更信号的重读窗口：一次宿主编辑会连发两三个（见 {@link createSettingsScope}）。 */
 const EXTERNAL_RECHECK_MS = 60
 
 /**
  * 落盘前的静默窗口。
  *
- * 一次 profile 写入两三百毫秒起步（`SettingsForms.write()` 两趟 `describe()` +
- * `ConfigEditor.edit()` 前后两次 reconcile，都是同步占着事件循环）。拖动滑块时按
- * 客户端的推送节奏（100ms 一次）连续落盘，等于宿主循环被反复占住：实测拖动期间
- * `/state` 的 p50 从 2ms 涨到 64ms、最高 215ms，20 个 PATCH 一个都没返回——页面与
- * 桌宠的其它请求全排在后面，手感就是「卡」。
- *
- * 而落盘根本不必发生在拖动过程中：宠物靠乐观广播即时跟随，磁盘上最终只要最后那个值。
- * 所以攒下一批后等它静默这个窗口再写，一次拖动只落一次盘。
+ * 一次 profile 写入两三百毫秒起步，且同步占着事件循环。拖动滑块时客户端 100ms 一推，
+ * 连续落盘会把宿主循环反复占住——实测拖动期间 `/state` 的 p50 从 2ms 涨到 64ms、
+ * 最高 215ms，20 个 PATCH 一个都没返回。落盘不必发生在拖动中：宠物靠乐观广播即时
+ * 跟随，磁盘上只要最终值。所以攒下的批次等静默这个窗口再写，一次拖动只落一次盘。
  */
 const PERSIST_QUIET_MS = 200
 
 /**
- * 把本插件的设置桥接到宿主的 settings 服务上。
+ * 把本插件的设置桥接到宿主的 settings 服务上（DSH 0.1.7+）。
  *
- * DSH ≤ 0.1.6 由 `ctx.settings.register(ns, schema, { base })` 交出一个命名空间作用域
- * 的 `{ get, update, watch }`。DSH 0.1.7 (#677) **移除了这个方法**：命名空间改为由
- * 所属 entry 的 Config schema 派生，服务改用 `describe()` / `update(ns, patch)` 寻址，
- * 变更通过 `settings/document-updated` 广播。于是原来那句可选调用在 0.1.7+ 上返回
- * undefined，写入变成 `TypeError: settings.update is not a function` —— /config 路由
- * 把它报成一个光秃秃的 400，右键菜单更是 `.catch(function(){})` 静默吞掉，
- * 表现就是「桌面悬浮模式」开关点了没反应、也永远等不到 Electron 下载确认框。
- * 这里两种形态都支持。
+ * 命名空间由「持有这份 Config schema 的 Loader entry」派生，服务用 `describe()` /
+ * `update(ns, patch)` 寻址，变更经 `settings/document-updated` 广播；写入还要求 schema
+ * 至少有一个 `meta.volatile` 节点，否则整个 section 被拒（见 {@link Config}）。
  *
- * 落盘本身很慢，而且慢得跟 `get()` 无关：`SettingsForms.write()` 内部要跑两次
- * `describe()`（每次都要重读并重解析整个 profile patch 集、并把每个 entry 对每一层
- * 重新 compose 一遍），`ConfigEditor.edit()` 还要前后各 reconcile 一次并等 Loader
- * settle。216 个 entry 的 profile 上，单次 `describe()` 实测约 70ms。因此：
- *
- *  - `update()` **先就地生效并广播，再落盘**，失败才回滚。视觉变更不该被持久化路径 gate。
- *  - 自己写入引发的信号一律不重读（本地合并已经是准的），省掉每次三趟 `describe()`。
- *  - 落盘队列"最新的赢"：拖动滑块时新值会盖掉还没落盘的旧值，不会堆成写风暴。
- *  - 外部变更（宿主原生设置页、遗留导入、手改 patch）才重读，且合并成一趟。
+ * 这条路很慢：`SettingsForms.write()` 内部两趟 `describe()`（每趟重读重解析整个 profile
+ * patch 集、把每个 entry 对每一层重新 compose），`ConfigEditor.edit()` 前后各一次
+ * reconcile 并等 Loader settle——216 个 entry 的 profile 上单趟约 70ms。所以：视觉变更
+ * 先就地生效并广播、再落盘；自己写入引发的信号不重读；落盘队列"最新的赢"并等静默窗口；
+ * 外部变更的信号合并成一趟。
  *
  * @param {object} ctx 宿主插件上下文。
  * @param {object} base 挂载时已由 {@link publicConfig} 归一化的配置。
- * @returns {{get: Function, update: Function, watch: Function}} 稳定的作用域门面，绝不返回 undefined。
+ * @returns {{get: Function, update: Function, watch: Function}} 稳定的作用域门面。
  */
 function createSettingsScope(ctx, base) {
   const service = ctx.settings
-
-  // DSH ≤ 0.1.6：服务自己拥有命名空间，并把作用域门面交出来，照原契约用它。
-  if (typeof service?.register === 'function') {
-    const registered = service.register(PLUGIN_KEY, Config, { base, applies: 'live' })
-    if (registered !== undefined && typeof registered.update === 'function') return registered
-  }
   if (service === undefined || typeof service.update !== 'function' || typeof service.describe !== 'function') {
-    return readOnlySettingsScope(base)
+    // 0.1.7 之前没有可写的 settings 服务：只读，且写入是「抛错」而不是「缺方法」——
+    // 缺方法正是「开关点了没反应、页面上没有任何线索」的成因。
+    return {
+      get: () => base,
+      update: async () => {
+        throw new Error('dsh-pet-remielle needs the DSH settings service (0.1.7+)')
+      },
+      watch: () => () => {},
+    }
   }
 
-  const namespace = ownSettingsNamespace(ctx) ?? PLUGIN_KEY
+  // 命名空间是本插件那条 Loader row 的**裸** id（`entry.options.id`）。不能用
+  // `entry.id`：那个 getter 会把所属 entry tree 的 id 前缀拼上来（得到
+  // `include:my-pet`），而 describe()/update() 认的是裸 id。
+  const namespace = ctx.fiber?.entry?.options?.id ?? PLUGIN_KEY
   const describe = service.describe.bind(service)
   const persist = service.update.bind(service)
   const listeners = new Set()
