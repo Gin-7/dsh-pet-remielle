@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixes
+- 设置写入在 DSH 0.1.7 上全部失效，「桌面悬浮模式」开关点了没反应：0.1.7 (#677) 移除了 `ctx.settings.register()`，命名空间改为由所属 entry 的 Config schema 派生、服务改用 `describe()` / `update(ns, patch)` 寻址，变更走 `settings/document-updated` 广播。插件原先的 `ctx.settings?.register?.(...) ?? localSettingsScope(base)` 在 0.1.7+ 上静默退化成只读门面（`get` + 空 `watch`，没有 `update`），于是每一处 `settings.update(...)` 都抛 `TypeError: settings.update is not a function`：/config 路由把它报成一个光秃秃的 400，右键菜单的 `patchConfig` 又 `.catch(function(){})` 吞掉、连提示都没有。后果是 CONFIG_PATCH_FIELDS 全部 21 个字段（角色大小 / 透明度 / 镜像 / 锁定 / 暂停动画 / 显示气泡 / 用量模式 / 平台令牌 / 坐标记忆 / 桌面悬浮模式…）无一能写，宿主侧 `desktopMode` 永远停在 false，桌面窗的 `startDesktop()` 启动时就被 `settings.get().desktopMode === false` 拦下、`settings.watch` 又是空函数，因此也永远走不到 `{ kind: 'download', phase: 'confirm' }` —— 用户既开不了桌面窗，也等不到 Electron 下载确认框，而页面上没有任何错误线索。现 `createSettingsScope()` 同时支持两种宿主形态：≤0.1.6 仍原样沿用服务交出的 scoped 门面，0.1.7+ 走 `describe()` / `update(ns, patch)` 并订阅 `settings/document-updated` 与 `app-boot/config-reload` 重读。取值带缓存（`describe()` 每次都要重新读取并解析整个 profile patch 集，而 `get()` 挂在每个会话事件的快照路径上），写成功后就地合并、只对真正变化的值发通知（一次写入会同时经手本地合并与宿主广播两条路）。完全没有 settings 服务的宿主改用只读门面，其 `update` 是抛错而不是缺方法 —— 缺方法正是这次故障表现成「无线索 400」的原因。
+- Config 全字段补 `meta.volatile`：0.1.7 的 `settings.update()` 会拒绝一个没有任何 volatile 节点的 section（`Plugin entry "…" has no volatile fields`），这是写入能否成立的前提，不是样式问题；`@deepseek-ai/schemastery` 依赖相应提到 `^3.18.4`（`Schema.prototype.volatile` 的引入版本）。`pets` 只标数组本身，元素 schema 不标（schemastery 不允许 volatile 字段套在 volatile 字段里）。
+- 新增 `test/settings-scope.test.js` 护栏：钉住「每个 Config 字段都 volatile」「0.1.7 形态按 entry id 走 `update(ns, patch)` 且 `get()` 读得到新值」「写入被宿主拒绝时抛错、而不是看起来成功」「≤0.1.6 的 scoped 门面照旧原样返回」「没有 settings 服务时只读且报错」「`document-updated` 只认自己的命名空间、重复通知会去重」。
+
 ## [0.4.2] — 2026-09-21
 
 ### Changes

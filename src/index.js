@@ -19,6 +19,7 @@ import { createRequire } from 'node:module'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import Schema from '@deepseek-ai/schemastery'
 import { PetReducer, isSubagent, titleFromSessionLog } from './pet-reducer.js'
 import { PetMessageKind, PetState, createMessage } from './protocol.js'
@@ -68,30 +69,39 @@ const petEntry = Schema.object({
   enabled: Schema.boolean().default(true).description('是否启用该宠物'),
 })
 
+/**
+ * 每个字段都是 live 的：浏览器侧会在插件不重挂载的前提下改写它们
+ * （CONFIG_PATCH_FIELDS，外加宠物注册表的 activePetId / pets）。
+ *
+ * DSH 0.1.7 起 settings 命名空间由本 schema 派生，而 `settings.update()` 会拒绝
+ * 一个没有任何 `meta.volatile` 节点的 section（`Plugin entry "…" has no volatile
+ * fields`）。所以这个标记不是样式问题，而是写入能否成立的前提。
+ * `Schema.prototype.volatile` 来自 @deepseek-ai/schemastery 3.18.4（DSH 0.1.7 起随行）。
+ */
 export const Config = Schema.object({
-  enabled: Schema.boolean().default(true).description('启用桌宠'),
-  scale: Schema.number().min(0.5).max(2).step(0.05).default(1).role('slider').description('角色大小'),
-  mirror: Schema.boolean().default(false).description('左右镜像角色图案'),
-  bubbleScaleSync: Schema.boolean().default(true).description('消息气泡随桌宠同步缩放（关闭后气泡使用固定大小）'),
-  bubbleScaleRatio: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡相对桌宠的大小（同步缩放时生效，1 = 与桌宠等比）'),
-  bubbleFixedSize: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡固定大小（不随桌宠同步缩放时生效，1 = 基准大小）'),
-  opacity: Schema.number().min(0.3).max(1).step(0.05).default(1).role('slider').description('透明度'),
-  locked: Schema.boolean().default(false).description('锁定位置（禁止拖动）'),
-  paused: Schema.boolean().default(false).description('暂停动画'),
-  hidden: Schema.boolean().default(false).description('隐藏桌宠'),
-  includeSubagents: Schema.boolean().default(false).description('允许子 Agent 抢占宠物状态'),
-  showBubble: Schema.boolean().default(true).description('在宠物上方显示状态气泡（阶段/待办/进度）'),
-  showBubbleStatus: Schema.boolean().default(true).description('气泡中显示会话状态（任务阶段/进度）'),
-  showBubbleUsage: Schema.boolean().default(false).description('气泡中显示 DeepSeek 余额/今日已用'),
-  usageMode: Schema.string().default('ledger').description('今日已用统计模式：小鲸鱼记账（ledger，免令牌）或 实时·令牌（token，需平台会话令牌）'),
-  platformToken: Schema.string().default('').description('DEEPSEEK_PLATFORM_TOKEN 平台会话令牌（实时·令牌模式需要，留空时回落到 DSH 凭据服务）'),
-  desktopMode: Schema.boolean().default(false).description('桌面悬浮模式：用独立置顶窗口显示宠物（打开时如无 Electron 会自动下载运行时，下载失败则回落页面内）'),
-  posX: Schema.number().default(null).description('宠物 X 位置（null = 使用默认位置）'),
-  posY: Schema.number().default(null).description('宠物 Y 位置（null = 使用默认位置）'),
-  desktopX: Schema.number().default(null).description('桌面悬浮窗 X（自动记忆，坐标与窗口 bounds API 同空间；null = 使用默认位置）'),
-  desktopY: Schema.number().default(null).description('桌面悬浮窗 Y（自动记忆，坐标与窗口 bounds API 同空间；null = 使用默认位置）'),
-  activePetId: Schema.string().default(DEFAULT_PET_ID).description('当前展示的宠物'),
-  pets: Schema.array(petEntry).default([{ id: DEFAULT_PET_ID, name: '蕾米埃尔', enabled: true }]).description('宠物注册表'),
+  enabled: Schema.boolean().default(true).volatile().description('启用桌宠'),
+  scale: Schema.number().min(0.5).max(2).step(0.05).default(1).role('slider').volatile().description('角色大小'),
+  mirror: Schema.boolean().default(false).volatile().description('左右镜像角色图案'),
+  bubbleScaleSync: Schema.boolean().default(true).volatile().description('消息气泡随桌宠同步缩放（关闭后气泡使用固定大小）'),
+  bubbleScaleRatio: Schema.number().min(0.5).max(2).step(0.05).default(1).volatile().description('气泡相对桌宠的大小（同步缩放时生效，1 = 与桌宠等比）'),
+  bubbleFixedSize: Schema.number().min(0.5).max(2).step(0.05).default(1).volatile().description('气泡固定大小（不随桌宠同步缩放时生效，1 = 基准大小）'),
+  opacity: Schema.number().min(0.3).max(1).step(0.05).default(1).role('slider').volatile().description('透明度'),
+  locked: Schema.boolean().default(false).volatile().description('锁定位置（禁止拖动）'),
+  paused: Schema.boolean().default(false).volatile().description('暂停动画'),
+  hidden: Schema.boolean().default(false).volatile().description('隐藏桌宠'),
+  includeSubagents: Schema.boolean().default(false).volatile().description('允许子 Agent 抢占宠物状态'),
+  showBubble: Schema.boolean().default(true).volatile().description('在宠物上方显示状态气泡（阶段/待办/进度）'),
+  showBubbleStatus: Schema.boolean().default(true).volatile().description('气泡中显示会话状态（任务阶段/进度）'),
+  showBubbleUsage: Schema.boolean().default(false).volatile().description('气泡中显示 DeepSeek 余额/今日已用'),
+  usageMode: Schema.string().default('ledger').volatile().description('今日已用统计模式：小鲸鱼记账（ledger，免令牌）或 实时·令牌（token，需平台会话令牌）'),
+  platformToken: Schema.string().default('').volatile().description('DEEPSEEK_PLATFORM_TOKEN 平台会话令牌（实时·令牌模式需要，留空时回落到 DSH 凭据服务）'),
+  desktopMode: Schema.boolean().default(false).volatile().description('桌面悬浮模式：用独立置顶窗口显示宠物（打开时如无 Electron 会自动下载运行时，下载失败则回落页面内）'),
+  posX: Schema.number().default(null).volatile().description('宠物 X 位置（null = 使用默认位置）'),
+  posY: Schema.number().default(null).volatile().description('宠物 Y 位置（null = 使用默认位置）'),
+  desktopX: Schema.number().default(null).volatile().description('桌面悬浮窗 X（自动记忆，坐标与窗口 bounds API 同空间；null = 使用默认位置）'),
+  desktopY: Schema.number().default(null).volatile().description('桌面悬浮窗 Y（自动记忆，坐标与窗口 bounds API 同空间；null = 使用默认位置）'),
+  activePetId: Schema.string().default(DEFAULT_PET_ID).volatile().description('当前展示的宠物'),
+  pets: Schema.array(petEntry).default([{ id: DEFAULT_PET_ID, name: '蕾米埃尔', enabled: true }]).volatile().description('宠物注册表'),
 }).description('由 DeepSeek Harness 会话事件驱动的多宠物 Web 桌宠')
 
 export const defaults = Object.freeze({
@@ -146,10 +156,148 @@ export function publicConfig(config = {}) {
   }
 }
 
-function localSettingsScope(value) {
+/**
+ * 宿主完全没有 settings 服务时的只读门面。
+ *
+ * `update` 是「抛错」而不是「不存在」：原先兜底对象缺这个方法，调用方拿到的是
+ * `TypeError: settings.update is not a function`，被 /config 路由报成 400、被右键
+ * 菜单的 `.catch(function(){})` 吞掉，于是整个故障看起来像「开关坏了但没有任何线索」。
+ *
+ * @param {object} value 挂载时已归一化的配置。
+ * @returns {{get: Function, update: Function, watch: Function}} 只读作用域。
+ */
+function readOnlySettingsScope(value) {
   return {
     get: () => value,
+    update: async () => {
+      throw new Error('the settings service is not available in this host')
+    },
     watch: () => () => {},
+  }
+}
+
+/**
+ * 解析本插件自己的 Loader row id。
+ *
+ * DSH 0.1.7 起 settings 命名空间由「持有这份 Config schema 的 Loader entry」派生，
+ * 因此读写都必须用用户在 profile patch 里实际写的那个 id —— {@link PLUGIN_KEY}
+ * 只是本包在自己 cordis.patch.yml 里惯用的 id。
+ *
+ * @param {object} ctx 宿主插件上下文。
+ * @returns {string|undefined} 所属 entry id；找不到对应 row 时返回 undefined。
+ */
+function ownSettingsNamespace(ctx) {
+  let fallback
+  try {
+    for (const entry of ctx.loader?.entries?.() ?? []) {
+      const id = entry.options?.id
+      if (entry.options?.name !== PLUGIN_KEY || typeof id !== 'string' || id === '') continue
+      if (entry.fiber === ctx.fiber) return id
+      if (entry.disabled !== true && fallback === undefined) fallback = id
+    }
+  } catch {
+    return undefined
+  }
+  return fallback
+}
+
+/**
+ * 把本插件的设置桥接到宿主的 settings 服务上。
+ *
+ * DSH ≤ 0.1.6 由 `ctx.settings.register(ns, schema, { base })` 交出一个命名空间作用域
+ * 的 `{ get, update, watch }`。DSH 0.1.7 (#677) **移除了这个方法**：命名空间改为由
+ * 所属 entry 的 Config schema 派生，服务改用 `describe()` / `update(ns, patch)` 寻址，
+ * 变更通过 `settings/document-updated` 广播。于是原来那句可选调用在 0.1.7+ 上返回
+ * undefined，写入变成 `TypeError: settings.update is not a function` —— /config 路由
+ * 把它报成一个光秃秃的 400，右键菜单更是 `.catch(function(){})` 静默吞掉，
+ * 表现就是「桌面悬浮模式」开关点了没反应、也永远等不到 Electron 下载确认框。
+ * 这里两种形态都支持。
+ *
+ * `describe()` 不便宜：它每次都要重新读取并解析整个 profile patch 集，而 `get()` 处在
+ * 每个会话事件的快照路径上。所以这个作用域缓存取值，只在宿主自己的变更信号上重读。
+ *
+ * @param {object} ctx 宿主插件上下文。
+ * @param {object} base 挂载时已由 {@link publicConfig} 归一化的配置。
+ * @returns {{get: Function, update: Function, watch: Function}} 稳定的作用域门面，绝不返回 undefined。
+ */
+function createSettingsScope(ctx, base) {
+  const service = ctx.settings
+
+  // DSH ≤ 0.1.6：服务自己拥有命名空间，并把作用域门面交出来，照原契约用它。
+  if (typeof service?.register === 'function') {
+    const registered = service.register(PLUGIN_KEY, Config, { base, applies: 'live' })
+    if (registered !== undefined && typeof registered.update === 'function') return registered
+  }
+  if (service === undefined || typeof service.update !== 'function' || typeof service.describe !== 'function') {
+    return readOnlySettingsScope(base)
+  }
+
+  const namespace = ownSettingsNamespace(ctx) ?? PLUGIN_KEY
+  const describe = service.describe.bind(service)
+  const update = service.update.bind(service)
+  const listeners = new Set()
+  let current = base
+  let published = { ...base }
+
+  /** 重读宿主为这个 entry 持有的 section。 */
+  const refresh = () => {
+    try {
+      const row = describe().find((candidate) => String(candidate.ns) === namespace)
+      if (row !== undefined && row.value !== null && typeof row.value === 'object') {
+        current = publicConfig({ ...base, ...row.value })
+      }
+    } catch {
+      // 描述不了的宿主保留本作用域已有的取值。
+    }
+    return current
+  }
+
+  /**
+   * 只对「真的变了」的取值发通知。
+   *
+   * 一次写入会走到这里两次：`update()` 自己合并后发一次，宿主紧接着在
+   * `settings/document-updated` 上再广播一次。订阅方（桌面窗看门狗）按值比较可以
+   * 兜住重复，但没有理由让它做两遍。
+   */
+  const publish = () => {
+    if (isDeepStrictEqual(published, current)) return
+    published = { ...current }
+    for (const listener of [...listeners]) {
+      try {
+        listener(current)
+      } catch {
+        // 订阅者自己的问题；写入本身已经成功。
+      }
+    }
+  }
+
+  refresh()
+  // 用户 section 也可能在插件脚下被改动——宿主自己的设置页，或遗留 settings.yaml 导入。
+  ctx.on('settings/document-updated', (changed) => {
+    if (changed !== undefined && String(changed) !== namespace) return
+    refresh()
+    publish()
+  })
+  ctx.on('app-boot/config-reload', () => {
+    refresh()
+    publish()
+  })
+
+  return {
+    get: () => current,
+    update: async (patch) => {
+      await update(namespace, patch)
+      // 本地合并：写入已经落地，缓存取值不该取决于 describe() 是否在同一 tick 里看到它。
+      current = publicConfig({ ...current, ...patch })
+      publish()
+      return current
+    },
+    watch: (listener) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
   }
 }
 
@@ -829,10 +977,7 @@ function sseHeaders(res) {
 function mount(ctx, config = {}, eventCtx = ctx) {
   const logger = ctx.logger ?? console
   const base = publicConfig(config)
-  const settings = ctx.settings?.register?.(PLUGIN_KEY, Config, {
-    base,
-    applies: 'live',
-  }) ?? localSettingsScope(base)
+  const settings = createSettingsScope(ctx, base)
 
   const resolveCredential = (name) => {
     const cred = eventCtx.credentials ?? ctx.credentials
@@ -1544,4 +1689,5 @@ export {
   PetMessageKind,
   PetReducer,
   PetState,
+  createSettingsScope,
 }
