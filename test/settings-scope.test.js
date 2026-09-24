@@ -187,6 +187,44 @@ test('a burst of writes coalesces, newest state winning', async () => {
   )
 })
 
+test('a continuous burst is not persisted until it quiets down', async () => {
+  const { ctx, state } = modernHost()
+  const settings = createSettingsScope(ctx, { scale: 1 })
+
+  const writes = []
+  for (let i = 0; i < 5; i++) {
+    writes.push(settings.update({ scale: 1 + i * 0.05 }))
+    await sleep(40) // 比静默窗口密：拖动滑块时客户端就是 100ms 一推
+  }
+
+  assert.deepEqual(state.persisted, [], 'a drag must not write the profile while it is still moving')
+  assert.equal(settings.get().scale, 1.2, 'but the pet already followed every step')
+
+  await Promise.all(writes)
+  assert.deepEqual(
+    state.persisted.map((row) => row.patch),
+    [{ scale: 1.2 }],
+    'one profile write for the whole gesture',
+  )
+})
+
+test('a superseded write resolves without holding the request open', async () => {
+  const { ctx, state, release } = modernHost({ defer: true })
+  const settings = createSettingsScope(ctx, { scale: 1 })
+
+  const first = settings.update({ scale: 1.1 })
+  while (state.sent.length === 0) await sleep(5) // 第一批已交给宿主，并被 defer 挂住
+
+  const second = settings.update({ scale: 1.2 })
+  const race = await Promise.race([second.then(() => 'resolved'), sleep(60).then(() => 'pending')])
+  assert.equal(race, 'resolved', 'a value that is already superseded must not wait for a disk write')
+  assert.equal(settings.get().scale, 1.2)
+
+  release()
+  await Promise.all([first, second])
+  assert.deepEqual(state.persisted.map((row) => row.patch), [{ scale: 1.1 }, { scale: 1.2 }])
+})
+
 test('watch fires for own writes and for an external change', async () => {
   const { ctx, state, emit } = modernHost()
   const settings = createSettingsScope(ctx, { scale: 1 })

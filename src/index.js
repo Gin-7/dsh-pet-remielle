@@ -212,6 +212,20 @@ function ownSettingsNamespace(ctx) {
 const EXTERNAL_RECHECK_MS = 60
 
 /**
+ * 落盘前的静默窗口。
+ *
+ * 一次 profile 写入两三百毫秒起步（`SettingsForms.write()` 两趟 `describe()` +
+ * `ConfigEditor.edit()` 前后两次 reconcile，都是同步占着事件循环）。拖动滑块时按
+ * 客户端的推送节奏（100ms 一次）连续落盘，等于宿主循环被反复占住：实测拖动期间
+ * `/state` 的 p50 从 2ms 涨到 64ms、最高 215ms，20 个 PATCH 一个都没返回——页面与
+ * 桌宠的其它请求全排在后面，手感就是「卡」。
+ *
+ * 而落盘根本不必发生在拖动过程中：宠物靠乐观广播即时跟随，磁盘上最终只要最后那个值。
+ * 所以攒下一批后等它静默这个窗口再写，一次拖动只落一次盘。
+ */
+const PERSIST_QUIET_MS = 200
+
+/**
  * 把本插件的设置桥接到宿主的 settings 服务上。
  *
  * DSH ≤ 0.1.6 由 `ctx.settings.register(ns, schema, { base })` 交出一个命名空间作用域
@@ -256,9 +270,11 @@ function createSettingsScope(ctx, base) {
   let current = base
   let published = { ...base }
   let queued = null // 还没落盘的最新补丁；攒着的时候后写的盖掉先写的
+  let queuedAt = 0 // `queued` 最后一次被更新的时刻（静默窗口按它算）
   let writing = null // 正在落盘那一批的 promise
-  let ownWrites = 0 // 本插件自己的写入在途数（用来忽略自己引发的变更信号）
   let recheck = 0 // 待执行的外部重读定时器
+  /** 本插件自己的写入是否正占着队列（用来忽略自己引发的变更信号）。 */
+  const ownWriteActive = () => writing !== null || queued !== null
 
   /** 重读宿主为这个 entry 持有的 section。 */
   const refresh = () => {
@@ -292,23 +308,36 @@ function createSettingsScope(ctx, base) {
   }
 
   /**
-   * 把排队的补丁交给宿主，最新的赢。
+   * 把排队的补丁交给宿主，最新的赢，并且等这一批静默下来才写。
    *
-   * 一次 profile 写入要几百毫秒（重解析 patch 集 + 等 Loader settle），比拖动滑块
-   * 的节奏慢得多，所以要合并：在途期间攒下的所有补丁并成下一批。调用方 await 的是
-   * 承载自己那次变更的那一批，因此被宿主拒绝时错误仍然回得来。
+   * 一次 profile 写入几百毫秒起步，比拖动滑块的推送节奏慢得多，所以：
+   *  - 在途期间攒下的补丁合并成下一批（后写的盖掉先写的）；
+   *  - 下一批要等静默窗口过去才落盘——拖动过程中宿主完全不用写盘，事件循环留给页面
+   *    与桌宠的其它请求；
+   *  - 落盘失败在这里就地收回乐观变更，因为批量期间的调用方可能早就不等了。
    *
-   * @returns {Promise<void>} 当前这一轮落盘结束（成功或失败）。
+   * @returns {Promise<void>} 当前这一轮的落盘结束（成功或失败）。
    */
   const drain = () => {
     if (writing !== null) return writing
     writing = (async () => {
       try {
         while (queued !== null) {
+          const idle = Date.now() - queuedAt
+          if (idle < PERSIST_QUIET_MS) {
+            await new Promise((resolve) => setTimeout(resolve, PERSIST_QUIET_MS - idle))
+            continue
+          }
           const batch = queued
           queued = null
           await persist(namespace, batch)
         }
+      } catch (error) {
+        queued = null
+        // 以宿主为准收回乐观变更——不管还有没有调用方在等这个 promise。
+        current = refresh()
+        publish()
+        throw error
       } finally {
         writing = null
         // 期间又攒下的补丁另起一轮。没人 await 它，失败不能变成未处理拒绝。
@@ -320,10 +349,10 @@ function createSettingsScope(ctx, base) {
 
   /**
    * 宿主自己改了这个 section（原生设置页、遗留导入、手改 patch 文件）时重读一次。
-   * 自己写入在途时直接跳过：那一批已经就地合进 `current` 了。
+   * 自己写入还占着队列时直接跳过：那些变更已经就地合进 `current` 了。
    */
   const scheduleRecheck = () => {
-    if (ownWrites > 0 || recheck !== 0) return
+    if (ownWriteActive() || recheck !== 0) return
     recheck = setTimeout(() => {
       recheck = 0
       refresh()
@@ -349,24 +378,23 @@ function createSettingsScope(ctx, base) {
     update: async (patch) => {
       // 先就地生效再落盘：宿主那次写入要重解析整个 profile patch 集并等 Loader
       // settle，拿它 gate 一次视觉变更，桌面窗里的宠物就会肉眼可见地滞后。
-      const previous = current
       current = publicConfig({ ...current, ...patch })
-      ownWrites += 1
       publish()
+      // 已经有在途或排队的批次时，这次的值会被下一个盖掉：没必要把请求挂在这里等落盘。
+      // 一次落盘几百毫秒，拖动滑块时几十个请求全挂住会把浏览器的同源连接数占满，
+      // 页面其它请求跟着排队——那本身就是「卡」的一半来源。
+      const superseded = ownWriteActive()
       queued = queued === null ? patch : { ...queued, ...patch }
-      try {
-        // 先让这一轮广播离开事件循环（订阅方的快照要扫一遍 pets 目录），再开始那段
-        // 会把循环占住几百毫秒的落盘——否则这帧 SSE 要被压在同步的 describe() 后面。
-        await new Promise((resolve) => setImmediate(resolve))
-        await drain()
-      } catch (error) {
-        // 落盘被拒：以宿主为准收回这次乐观变更，并把失败交回调用方。
-        current = refresh()
-        publish()
-        throw error
-      } finally {
-        ownWrites -= 1
+      queuedAt = Date.now()
+      if (superseded) {
+        void drain().catch(() => {})
+        return current
       }
+      // 先让这一轮广播离开事件循环（订阅方的快照要扫一遍 pets 目录），再开始那段
+      // 会把循环占住几百毫秒的落盘——否则这帧 SSE 要被压在同步的 describe() 后面。
+      await new Promise((resolve) => setImmediate(resolve))
+      // 落盘被拒时由 drain 就地收回乐观变更并把错误抛回来，这里只负责转交。
+      await drain()
       return current
     },
     watch: (listener) => {
