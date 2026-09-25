@@ -211,13 +211,14 @@ test('disabled config is reflected in the snapshot', () => {
   assert.equal(snapshot.enabled, false)
 })
 
-test('snapshot sessions follow session-order: approval > ask > completion > current > recency', () => {
+test('snapshot sessions follow session-order: approval > plan review > ask > completion > current > recency', () => {
   const snapshot = snapshotWith({
     latest: idle,
     getCurrent: () => 'cur',
     getStates: () => [
       { sessionId: 'think', state: PetState.THINKING, attention: false, updatedAt: 9 },
       { sessionId: 'cur', state: PetState.WORKING, attention: false, updatedAt: 1 },
+      { sessionId: 'plan', state: PetState.WAITING, planReview: true, attention: true, updatedAt: 4 },
       { sessionId: 'ask', state: PetState.WAITING, ask: true, attention: true, updatedAt: 2 },
       { sessionId: 'appr', state: PetState.WAITING, approval: true, attention: true, updatedAt: 3 },
     ],
@@ -231,6 +232,7 @@ test('snapshot sessions follow session-order: approval > ask > completion > curr
   })
   assert.deepEqual(snapshot.sessions.map((entry) => entry.sessionId), [
     'appr',
+    'plan',
     'ask',
     'completion:done',
     'cur',

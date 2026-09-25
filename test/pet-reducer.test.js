@@ -82,6 +82,29 @@ test('mid-turn attachment handles results for registered tools', () => {
   assert.equal(reducer.states()[0].state, PetState.THINKING)
 })
 
+test('exit_plan_mode keeps a plan-review card until the tool resolves', () => {
+  const reducer = new PetReducer()
+  const sess = session()
+  collect(reducer, sess, [
+    event('turn/start'),
+    event('tool/call', {
+      callId: 'plan-1',
+      name: 'exit_plan_mode',
+      arguments: { plan: '# 推理面板改材质\n\n让面板和官方菜单一致。' },
+    }, 2),
+  ])
+  const pending = reducer.states()[0]
+  assert.equal(pending.state, PetState.WAITING)
+  assert.equal(pending.planReview, true)
+  assert.equal(pending.ask, false)
+  assert.equal(pending.approval, false)
+  assert.equal(pending.phase, 'plan-review')
+  assert.match(pending.detail, /计划待审 · 推理面板改材质/)
+
+  collect(reducer, sess, [event('tool/result', { callId: 'plan-1' }, 3)])
+  assert.equal(reducer.states()[0].state, PetState.THINKING)
+})
+
 test('tool/result returns to THINKING, then streaming sticker (01) returns', () => {
   const reducer = new PetReducer()
   const messages = collect(reducer, session(), [

@@ -824,7 +824,7 @@
     return n
   }
   // 排序逻辑与网页客户端共用 src/session-order.cjs（宿主仍以 /session-order.js 提供）：
-  // 审批 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
+  // 审批 > 计划审核 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
   var __order = window.__rm2SessionOrder
   // 宿主 /session-order.js 加载失败时早失败并给出可定位的成因（与网页端一致）
   if (!__order) throw new Error('__rm2SessionOrder is missing: session-order.js script failed to load')
@@ -832,6 +832,7 @@
   var completionOf = __order.completionOf
   var targetSessionOf = __order.targetSessionOf
   var approvalOf = __order.approvalOf
+  var planReviewOf = __order.planReviewOf
   function orderSessions(sessions) {
     return __order.orderSessions(sessions, currentSessionId)
   }
@@ -1107,6 +1108,7 @@
     applyBubbleTitle(el, entry)
     // 详情行为单行文本，用 block 使 overflow/ellipsis 生效（display:flex 会让 text-overflow 失效）
     var detailShown = detail.replace(/^\s*[·•]\s*/, '· ')
+    var planSummary = detailShown.replace(/^计划待审\s*·\s*/, '')
     el.detail.style.display = detail ? 'block' : 'none'
     if (detail !== el.lastDetail) {
       el.lastDetail = detail
@@ -1114,22 +1116,23 @@
     }
     var attention = attentionOf(entry)
     var approval = approvalOf(entry)
+    var planReview = planReviewOf(entry)
     var completed = completionOf(entry)
     el.targetSessionId = targetSessionOf(entry)
     el.canApprove = approval
     el.completed = completed
-    var actionNotif = approval || (attention && !completed)
+    var actionNotif = approval || planReview || (attention && !completed)
     if (actionNotif) {
-      var glyph = approval ? '✓' : entry.phase === 'ask' ? '?' : '!'
+      var glyph = approval ? '✓' : (planReview || entry.phase === 'ask') ? '?' : '!'
       if (el.action.textContent !== glyph) el.action.textContent = glyph
-      el.action.setAttribute('aria-label', approval ? '允许一次，点击直接确认' : completed ? '任务已完成，点击查看' : '需要处理，点击跳转')
+      el.action.setAttribute('aria-label', approval ? '允许一次，点击直接确认' : planReview ? '计划待审，点击打开审核' : completed ? '任务已完成，点击查看' : '需要处理，点击跳转')
     } else if (el.action.firstChild !== el.brandImg) {
       el.action.textContent = ''
       el.action.appendChild(el.brandImg)
       el.action.setAttribute('aria-label', '蕾米埃尔桌宠')
     }
     el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
-    el.node.className = 'rm2-pet-bubble' + (index === 0 ? ' top' : '') + (attention ? ' attention' : '') + (approval ? ' approval' : '') + (completed ? ' completed' : '') + (entry.idlePlaceholder ? ' idle-placeholder' : '') + (entry.summaryCount ? ' summary-backboard' : '')
+    el.node.className = 'rm2-pet-bubble' + (index === 0 ? ' top' : '') + (attention ? ' attention' : '') + (approval ? ' approval' : '') + (planReview ? ' plan-review' : '') + (completed ? ' completed' : '') + (entry.idlePlaceholder ? ' idle-placeholder' : '') + (entry.summaryCount ? ' summary-backboard' : '')
     el.node.setAttribute('aria-disabled', entry.idlePlaceholder ? 'true' : 'false')
     // 光标策略与网页端对齐（src/client.core.js）：点击行为统一为整卡跳转后，
     // 工作卡同样可点，仅待机占位卡显示 default；旧的「非审批/完成即 default」
@@ -1140,7 +1143,7 @@
     // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，自绘
     // 浮层才能读到请求内容；原生 title 不随 zoom 缩放已废弃；操作说明在勾号
     // aria-label 里。title 置空避免与自绘浮层双重提示。
-    el.node.dataset.rm2Tip = entry.idlePlaceholder ? '' : approval ? (detailShown || '') : completed ? '完成啦~ 点击查看结果哦' : attention ? '轮到你啦，点击跳到这里处理呢' : '点击跳到这里看一下~'
+    el.node.dataset.rm2Tip = entry.idlePlaceholder ? '' : approval ? (detailShown || '') : planReview ? (planSummary ? '计划待审：' + planSummary + '，点击打开同意执行/要求修改' : '计划待审，点击打开同意执行/要求修改') : completed ? '完成啦~ 点击查看结果哦' : attention ? '轮到你啦，点击跳到这里处理呢' : '点击跳到这里看一下~'
     el.node.title = ''
     if (petTipAnchor === el.node) showPetTip(el.node)
     el.node.style.zIndex = String(100 - index)
