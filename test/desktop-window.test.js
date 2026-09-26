@@ -226,7 +226,39 @@ test('DesktopWindow start is idempotent while running and fires onExit', () => {
   window.stop()
   assert.equal(exited, 0)
   childRef.emit('exit')
-  assert.equal(exited, 1)
+  assert.equal(exited, 1, 'stop() 主动停掉的进程，其退出仍要通知 onExit')
+})
+
+// 旧进程的 exit 事件姗姗来迟，而用户已经重启了桌面模式：新进程正在跑，旧进程的
+// 退出回调不得把它抹掉。上一版 this.child 的清理有 === child 保护、onExit 却是
+// 无条件调用，于是宿主把 desktop 置空 → 宿主认为没有桌宠窗，用户再开一次就是
+// 两个置顶窗，外加一个失去引用的僵尸 electron 进程。
+test('a superseded window exiting late never clears the newer window', () => {
+  const spawned = []
+  let exited = 0
+  const window = new DesktopWindow({
+    url: 'http://127.0.0.1:1/x',
+    backend: { kind: 'electron', command: 'E:/electron.exe', args: [] },
+    onExit: () => { exited += 1 },
+    spawnImpl: () => {
+      const child = new EventEmitter()
+      child.exitCode = null
+      child.killed = false
+      child.kill = () => { child.killed = true }
+      spawned.push(child)
+      return child
+    },
+  })
+  window.start()
+  const stale = spawned[0]
+  // 旧进程没退，但调用方已经重新 start 过一次 → this.child 指向新进程
+  stale.exitCode = 0
+  window.start()
+  assert.equal(spawned.length, 2, '前一个进程还活着时不该被判定为 running')
+
+  stale.emit('exit')
+  assert.equal(exited, 0, '被取代的旧进程退出时不得触发 onExit——那会清掉正在跑的新进程')
+  assert.equal(window.running, true, '新进程应仍在运行')
 })
 
 test('DesktopWindow reports asynchronous spawn failures through onExit once', () => {
@@ -387,11 +419,20 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   }
 })
 
-test('desktop idle-bubble click defers to an open web client', () => {
+test('desktop idle-bubble click defers to an open web client but says so', () => {
   const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
   // 有网页在线时不重复调 openExternal（浏览器不会复用已有标签，只会越堆越多）；
   // webClients 来自宿主快照的 SSE 订阅计数。
   assert.match(html, /if \(!\(lastSnapshot && lastSnapshot\.webClients > 0\)\) __tip\.openIdleDshPage\(window\.petBridge\)/)
+  // 但「不打开」不等于「不响应」。原先这条路径直接 return，点击完全静默，用户分不清
+  // 是卡住了还是被拦下了。必须给一句说明去哪儿看——这条判据本身还有已知缺口
+  // （Chromium 的 tab discarding 会冻结后台标签页，SSE 连接不 close，订阅计数虚高），
+  // 正是因为那个缺口会让用户看到「点了没反应」，提示才更不能少。
+  assert.match(html, /else showTransientTip\(el\.node, /)
+  assert.match(html, /function showTransientTip\(anchor, text, ms\)/, '一次性提示的辅助函数必须存在')
+  // 提示用完要还原，否则会污染该卡后续的悬停 tooltip。
+  assert.match(html, /if \(had\) anchor\.dataset\.rm2Tip = prev/)
+  assert.match(html, /else delete anchor\.dataset\.rm2Tip/)
 })
 
 test('pet-view menu expands to the work-area box and restores on close', () => {

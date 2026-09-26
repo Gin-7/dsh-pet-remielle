@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
@@ -780,4 +781,23 @@ test('config field lists and DSH 0.1.7 schema boundaries stay in sync', () => {
   const expected = Object.keys(dict).filter((key) => !registryOnly.has(key)).sort()
   assert.deepEqual([...CONFIG_PATCH_FIELDS].sort(), expected)
   assert.deepEqual(Object.keys(publicConfig({})).sort(), expected)
+})
+
+// 路由注册只应依赖 webServer。
+//
+// 上游一度写成 ctx.inject(['webServer', 'connection'], cb)，而 cordis 的 inject
+// 要求列表里**所有**服务都可用才执行回调——那个回调里包着 mount() 的全部 20 条
+// webServer.register。于是在没有 connection 服务的宿主上，插件不是某个端点坏，
+// 而是整张路由表都不注册：没有状态推送、没有气泡、没有设置面板，且没有任何报错。
+// 那个 commit 的本意只是让 desktop url 带上进程 token，不该 gate 整张路由表。
+//
+// 钉的是依赖**清单**这个配置事实：把 'connection' 加回列表就报红。这里仍用源码
+// 匹配而非真的 mount 一遍——mount 会读宠物注册表并起一堆异步，mock 成本高且脆；
+// 而这条断言要防的正是「有人顺手把可选服务写进 inject 列表」这一种改动。
+test('route registration does not depend on the optional connection service', () => {
+  const index = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
+  const match = index.match(/ctx\.inject\(\[([^\]]*)\]/)
+  assert.ok(match, 'mount() 应有一个 ctx.inject 依赖列表')
+  const deps = match[1].split(',').map((name) => name.trim().replace(/^'|'$/g, ''))
+  assert.deepEqual(deps, ['webServer'], '路由注册只应依赖 webServer；connection 由 httpCtx.get() 按需取')
 })

@@ -222,13 +222,26 @@ export class DesktopWindow {
     const notifyExit = () => {
       if (exitNotified) return
       exitNotified = true
-      if (this.child === child) this.child = undefined
+      // 这个退出回调属于 child。宿主可能已经因为别的原因换上了新进程
+      // （用户重启桌面模式，而本进程的 exit 事件姗姗来迟），此时 this.child
+      // 指向的是**别人**。
+      //
+      // 上一版对两件事的处理不对称：this.child 的清理有 `=== child` 保护，
+      // onExit 却是无条件调用。宿主侧的 onExit 会把 desktop 引用置空，于是
+      // 「旧进程的迟到退出」抹掉了「正在跑的新进程」——宿主认为没有桌宠窗，
+      // 用户再开一次就出现两个置顶窗，外加一个失去引用的僵尸 electron 进程。
+      //
+      // 判 stale 只认「确实有另一个进程顶上」：this.child 已是 undefined 是
+      // stop() 主动停掉的正常路径，那种退出仍要通知 onExit（宿主有别处依赖
+      // 退出回调做收尾），不能一并吞掉。
+      const superseded = this.child !== undefined && this.child !== child
+      if (!superseded) this.child = undefined
       // 退出原因必须可见：桌面窗进程死得无声会让「位置/启动类」问题完全没法
       // 排查（DSH Desktop 宿主不转发子进程 stdio 到日志，只有这条能落盘）。
       const code = child.exitCode
       const signal = child.signalCode
-      this.logger.info?.(`dsh-pet-remielle: pet window exited (code=${code === null ? 'signal:' + String(signal) : code})`)
-      this.onExit?.()
+      this.logger.info?.(`dsh-pet-remielle: pet window exited (code=${code === null ? 'signal:' + String(signal) : code}${superseded ? ', superseded by a newer window' : ''})`)
+      if (!superseded) this.onExit?.()
     }
     const forward = (stream, dest) => {
       if (!stream || typeof stream.on !== 'function' || !dest || typeof dest.write !== 'function') return
