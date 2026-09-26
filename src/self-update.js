@@ -16,7 +16,12 @@
  *                                          -> running state, elapsed time and the
  *                                             tail of live output while updating
  *
- * All routes only accept local-loopback requests (CSRF guard).
+ * Every route requires a loopback peer, a pinned HTTP method (POST for
+ * `update`, GET for the reads), *and*, when the browser sends one, a
+ * same-origin Origin — see `localHostOk` below. Host-header checking alone is
+ * not a CSRF guard, and neither is the Origin check on its own: browsers omit
+ * `Origin` on cross-origin GET/HEAD, so the method pin is what makes the
+ * missing header unreachable for a hostile page.
  */
 
 import { spawn } from 'node:child_process'
@@ -281,6 +286,10 @@ export function progressHandler(req, res) {
     json(res, 403, { ok: false, error: 'forbidden: progress route is local-only' })
     return
   }
+  if (req.method !== 'GET') {
+    json(res, 405, { ok: false, error: 'method not allowed (GET only)' })
+    return
+  }
   json(res, 200, { ok: true, ...getUpdateProgress() })
 }
 
@@ -388,9 +397,33 @@ export function verifyInstallIntegrity(pkgDir) {
   return { ok: problems.length === 0, problems, pkgDir: dir }
 }
 
+/**
+ * Loopback + same-origin guard, same standard as `localOnly` in src/index.js.
+ *
+ * The Host header alone is not a CSRF guard: it is derived from the request
+ * target, so a hostile page reaching `http://127.0.0.1:<port>/…` produces a
+ * request that passes a Host check while coming from somewhere else entirely.
+ * Only `socket.remoteAddress` is unforgeable by page script.
+ *
+ * The Origin check is the second layer, and it is **not sufficient alone**:
+ * browsers only attach `Origin` to a cross-origin request when the request is
+ * CORS-tainted or the method is outside GET/HEAD/POST-with-simple-headers. A
+ * hostile page's `<img src="…/update">` arrives with no `Origin` at all and
+ * passes everything below. That is why every handler here also pins its
+ * method — see `updateHandler`, which is the one route with side effects.
+ */
 export function localHostOk(req) {
-  const host = req.headers.host || ''
-  return /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)
+  const address = req.socket?.remoteAddress
+  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
+  const host = req.headers?.host || ''
+  if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return false
+  const origin = req.headers?.origin
+  if (origin) {
+    let originHost
+    try { originHost = new URL(origin).host } catch { return false }
+    if (!originHost || originHost !== host) return false
+  }
+  return true
 }
 
 function json(res, code, payload) {
@@ -398,7 +431,17 @@ function json(res, code, payload) {
   res.end(JSON.stringify(payload))
 }
 
-export function infoHandler(_req, res) {
+export function infoHandler(req, res) {
+  // The payload carries absolute profileDir / repoDir paths. Guard it like every
+  // other route here instead of leaving it as the one unguarded read endpoint.
+  if (!localHostOk(req)) {
+    json(res, 403, { ok: false, error: 'forbidden: info route is local-only' })
+    return
+  }
+  if (req.method !== 'GET') {
+    json(res, 405, { ok: false, error: 'method not allowed (GET only)' })
+    return
+  }
   try {
     const info = resolveInstall()
     const needsReinstall = needsCleanReinstallFor(info.version)
@@ -428,6 +471,10 @@ export function infoHandler(_req, res) {
 export async function checkHandler(req, res) {
   if (!localHostOk(req)) {
     json(res, 403, { ok: false, error: 'forbidden: check route is local-only' })
+    return
+  }
+  if (req.method !== 'GET') {
+    json(res, 405, { ok: false, error: 'method not allowed (GET only)' })
     return
   }
   try {
@@ -489,6 +536,13 @@ async function quiesceDesktopWindow() {
 export async function updateHandler(req, res) {
   if (!localHostOk(req)) {
     json(res, 403, { ok: false, output: 'forbidden: update route is local-only' })
+    return
+  }
+  // 方法必须钉死：Fetch 规范下跨源 GET/HEAD（<img src=...>、<form method=GET>）不带
+  // Origin 头，mode 是 no-cors 而非 cors，于是上面三项守卫全部通过。不钉方法的话，
+  // 恶意页面一个 <img> 就能触发 git pull / pnpm update（后者会跑依赖 lifecycle scripts）。
+  if (req.method !== 'POST') {
+    json(res, 405, { ok: false, output: 'method not allowed (POST only)' })
     return
   }
   // 全量兜底：更新链路上任何意外异常（如包目录正处于被替换的中间态）

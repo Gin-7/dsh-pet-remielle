@@ -34,6 +34,7 @@ const statePriority = Object.freeze({
   [PetState.DISCONNECTED]: -1,
 })
 
+const ASK_USER_TOOL = 'ask_user_question'
 const PLAN_REVIEW_TOOL = 'exit_plan_mode'
 
 function toolActivity(name) {
@@ -73,6 +74,13 @@ function normalizeTitle(value) {
  * foldSessionTitle 同源）。宿主 Session 的公开快照 API 是 `snapshotEvents()`；
  * `session.events` 并不存在（内部 log 不对外），只认实时事件会漏掉插件加载前
  * 已写入的标题——DSH 重启后恢复运行的老会话就是这样，标题事件不会重放。
+ *
+ * 权衡（已知的弃用风险）：DSH 在 2026-09-09 的架构说明里把同步读事件
+ * （`snapshotEvents` / `eventAt` / `ownEvents`）标为 `@deprecated`，注明
+ * 「已有逻辑可暂不迁移，但禁止新增调用」。本函数是 2026-09-15 引入的新调用，
+ * 严格说踩了这条约定。当时可用的替代面只有同样被弃用的同步读，或自行从
+ * 事件流重放重建标题（后者要自建每会话缓存，成本与收益不匹配）。
+ * 后续 DSH 给出正式替代（`session.surface` 之类）时，这里应一并迁过去。
  */
 export function titleFromSessionLog(session) {
   let events
@@ -322,7 +330,7 @@ export class PetReducer {
           return this.#render()
         }
         // Asking the human a question is a "waiting" state, not "摸鱼中".
-        if (name === 'ask_user_question') {
+        if (name === ASK_USER_TOOL) {
           record.askTools.add(callId)
           this.#enterWait(record, {
             kind: 'ask',
