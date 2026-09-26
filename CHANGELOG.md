@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## [0.4.3] — 2026-09-26
 
 ### Fixes
 - 计划模式进入审核队列后，桌宠新增独立「计划待审」状态：显示计划标题摘要与气泡提示，排序位于普通审批之后、普通提问之前；气泡只负责打开审核，不复用「允许一次」自动确认。
 - 多标签页下只有活动标签页（或桌面悬浮窗）会自动清除当前会话的完成提醒；后台标签页不再覆盖宿主当前会话，也不会提前清掉其他对话的完成卡。
+- 适配 DSH 0.1.7 volatile settings API：正确注册 `SettingsForms.configure()` disposer，`platformToken` 标记为 secret；`uiWorkspace` 改为可选服务（优先 0.1.7 工作区导航，缺失回退旧 `sessions.open`），未提高 DSH 最低版本。
+- 宠物 ID 增加格式约束（`PET_ID_RE` 进 schema）；schemastery 依赖升级 ^3.18.4。
 
 ## [0.4.2] — 2026-09-21
 
