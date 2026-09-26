@@ -599,13 +599,7 @@ export function readSessionTitle(ctx, sessionId) {
 export function dropSubagentCompletions(completionQueue, isSubagentSession) {
   let dropped = false
   for (const sessionId of [...completionQueue.keys()]) {
-    let subagent = false
-    try {
-      subagent = isSubagentSession(sessionId) === true
-    } catch {
-      continue
-    }
-    if (subagent) {
+    if (isSubagentSession(sessionId) === true) {
       completionQueue.delete(sessionId)
       dropped = true
     }
@@ -683,6 +677,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         attention: activePulse.state === PetState.WAITING || activePulse.state === PetState.ERROR,
         approval: false,
         ask: false,
+        planReview: false,
         completed: activePulse.state === PetState.SUCCESS,
         updatedAt: now,
         pulseUntil: activePulse.until,
@@ -713,6 +708,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         attention: false,
         approval: false,
         ask: false,
+        planReview: false,
       }))
     }
     const currentId = currentOf() || undefined
@@ -733,7 +729,12 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       showBubbleStatus: config.showBubbleStatus !== false,
       showBubbleUsage: config.showBubbleUsage === true,
       usageMode: config.usageMode ?? 'ledger',
-      platformToken: config.platformToken ?? '',
+      // platformToken 不进 /state 快照：快照经 SSE 广播给所有订阅者（任意网页标签
+      // 页、桌面窗），明文带令牌等于把平台凭证散给每个连上快照的页面。
+      // 注意这只挡住了广播这一条路，**不是**把令牌从接口上摘掉了：/config 的 GET
+      // 返回的是 settings.get() 全量（不是 publicConfig），令牌仍在响应里，只是靠
+      // localOnly（回环 + Origin 同源）挡着。设置页从 /config 取，balance 服务直读
+      // settings.get()。若日后要给令牌做真正的 secret 处理，两处都要动。
       paused: config.paused === true,
       hidden: config.hidden === true,
       desktopActive: desktopActiveOf(),
@@ -1010,6 +1011,11 @@ function mount(ctx, config = {}, eventCtx = ctx) {
 
   // webClients 要在快照里读 hub，而 hub 又要靠这份快照做 serve —— 用延迟绑定打破这个环。
   let hubRef = null
+  // 网页端上报的当前会话：TTL 内才认（宿主退出/页面崩溃后不残留僵尸 id）。
+  // 快照与「当前会话失败即已读」判定共用这一个口径。
+  const currentSessionNow = () => (
+    Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''
+  )
   const serveState = createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
@@ -1020,7 +1026,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
     getStates: () => reducer.states(),
     getCompletions: () => [...completionQueue.values()],
-    getCurrent: () => (Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''),
+    getCurrent: () => currentSessionNow(),
     getTheme: () => (Date.now() - reportedHostThemeAt < HOST_THEME_TTL_MS ? reportedHostTheme : ''),
     getSessionTitle: (sessionId) => readSessionTitle(ctx, sessionId),
   })
@@ -1052,9 +1058,6 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     subagentSessionIds.delete(id)
     hub.broadcast()
   }
-  const currentSessionNow = () => (
-    Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''
-  )
   const dismissErrorIfNeeded = (sessionId) => {
     if (!sessionId) return
     const hadError = reducer.states().some((entry) => entry.sessionId === sessionId && entry.state === PetState.ERROR)
@@ -1305,6 +1308,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         gifFrameJs = await readFile(new URL('../src/gif-frame.cjs', import.meta.url), 'utf8')
         return gifFrameJs
       }
+      let bubbleTitleJs = null
+      const readBubbleTitle = async () => {
+        if (bubbleTitleJs) return bubbleTitleJs
+        bubbleTitleJs = await readFile(new URL('../src/bubble-title.cjs', import.meta.url), 'utf8')
+        return bubbleTitleJs
+      }
 
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: CONFIG_ENDPOINT, handler: createConfigHandler(settings) }),
@@ -1478,6 +1487,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           res.end(js)
         } }),
         'dsh-pet-remielle: shared gif frame script',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/bubble-title.js', handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const js = await readBubbleTitle()
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'cache-control': 'no-store',
+          })
+          res.end(js)
+        } }),
+        'dsh-pet-remielle: shared bubble card script',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({
