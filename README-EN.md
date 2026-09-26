@@ -24,11 +24,11 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | State machine | Pure-function `PetReducer` with mood mapping (unit-tested) |
 | Message protocol | Typed protocol (protocol.js) |
 | Configuration | schemastery persistence + settings card |
-| Multi-session priority | Approval > waiting for an answer (ask_user_question) > completion reminder > waiting/error > current session > state priority > recency. Hysteresis only stabilizes the top two; third and later still rotate with recency |
+| Multi-session priority | Approval > plan review > waiting for an answer (ask_user_question) > completion reminder > waiting/error > current session > state priority > recency. Hysteresis only stabilizes the top two; third and later still rotate with recency |
 | Live push | SSE stream (auto-reconnect + polling fallback) |
 | Status bubble | Adaptive two-layer deck on both the in-page pet and the desktop window: top status card + `+N` summary backboard; message + detail (project · completed x/y · phase) |
 | Session actions | Web and desktop match: card / `?` / `!` open the session, `✓` allows once; with no web client online, a card/icon click opens the DSH page in the system browser |
-| Completion reminders | Persist until handled; a completion on the current session is auto-cleared; opening that session (in-page jump or browser) also clears it. The already-open session has no unread dot (current Host lifetime only) |
+| Completion reminders | Persist until handled; a completion on the current session is auto-cleared only by a foreground browser tab (even while the desktop window is up), so background tabs never clear a reminder ahead of you; the desktop window only shows the reminder — opening that session (in-page jump, browser, or clicking the desktop completion card) also clears it. The already-open session has no unread dot (current Host lifetime only) |
 | Error reminders | A failed turn (model-call error, etc.) keeps the pink attention mark until that conversation is opened; a failure in the current session never becomes a reminder. Opening the session (bubble jump or sidebar) dismisses it. Approvals and questions are unchanged |
 | Balance | With both status and usage on, the left dot or a wheel on the bubble switches to the balance page (60s auto-refresh, rolling-number animation, stale fallback on network blips); stays on the current page, no auto-return |
 | Today usage | Two modes: ledger (default, token-free, balance-delta) / real-time token (platform usage API + peak/off-peak pricing, exact) |
@@ -46,10 +46,10 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | 02 Slacking | <img src="assets/pets/remielle/02.gif" width="56" alt="02 Slacking"/> | WORKING / ERROR: tool calls (search/edit/test/command) |
 | 03 Pleased | <img src="assets/pets/remielle/03.gif" width="56" alt="03 Pleased"/> | PULSE SUCCESS: turn completed / drawing finished / click interaction |
 | 04 Thinking | <img src="assets/pets/remielle/04.gif" width="56" alt="04 Thinking"/> | THINKING: turn/step start, reasoning, result compilation |
-| 05 Waiting | <img src="assets/pets/remielle/05.gif" width="56" alt="05 Waiting"/> | WAITING: question answer, approval pending, turn blocked |
+| 05 Waiting | <img src="assets/pets/remielle/05.gif" width="56" alt="05 Waiting"/> | WAITING: question answer, approval pending, plan review, turn blocked |
 | 06 Idle | <img src="assets/pets/remielle/06.gif" width="56" alt="06 Idle"/> | IDLE / DISCONNECTED: idle, after turn ends |
 
-When multiple sessions run concurrently, the top task is selected by `approval > waiting for an answer > completion reminder > waiting/error > current session > state priority > recency`; every other session is represented by a clickable `+N` summary backboard. Sub-agents are ignored by default (configurable).
+When multiple sessions run concurrently, the top task is selected by `approval > plan review > waiting for an answer > completion reminder > waiting/error > current session > state priority > recency`; every other session is represented by a clickable `+N` summary backboard. Sub-agents are ignored by default (configurable).
 
 ### Pet Definition Convention
 
