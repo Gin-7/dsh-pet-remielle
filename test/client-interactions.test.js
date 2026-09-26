@@ -105,11 +105,26 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
       return []
     },
   }
-  // 第二个审批面板：只用来把页面上「同时存在多个审批面板」这件事构造出来。
-  // 它内部不带可点按钮——自动允许一次的闸门是「恰好一个面板才点」，多面板时
-  // 一个都不点，所以这里不需要（也不该）准备第二个「允许一次」按钮。
+  // 第二个审批面板：挂在**另一个**会话根（otherConversationFrame）下。
+  //
+  // 它必须带一个可点按钮。此前这里 querySelectorAll 恒返回 []，理由写的是
+  // 「多面板时一个都不点，所以不需要按钮」——那个理由只对 document 级闸门成立，
+  // 对会话作用域分支是致命的：根里没有可点按钮时，approvalPanels() 哪怕把别的
+  // 会话根也收了进来，结果与只收当前根**完全一样**，于是
+  // `if (sessionId && rootSession !== sessionId) continue` 这句删掉也测不出来
+  // （变异验证：改成 if (false) continue，287 用例全绿）。按钮文案与正确那个
+  // 区分开，点错根就会记成别的，断言随之报红。
+  const otherAllowBtn = {
+    textContent: '允许一次（other 会话）',
+    innerText: '允许一次（other 会话）',
+    getAttribute() { return '' },
+    click() { allowClicks.push('allow-other') },
+  }
   const otherApprovalPanel = {
-    querySelectorAll() { return [] },
+    querySelectorAll(sel) {
+      if (String(sel).includes('button')) return [otherAllowBtn]
+      return []
+    },
   }
   const conversationFrame = {
     getAttribute(name) { return name === 'data-conversation-session' ? current : '' },
@@ -1108,7 +1123,15 @@ test('active global panel keeps the retained session completion unacknowledged',
 
 // 「只有一张完成卡」不等于「用户正在看它」。宿主没给出当前会话时（页面刚加载、
 // 多标签互相覆盖）猜错就是静默吞掉一条没看过的提醒，宁可留给手动点击。
-// 传 null 而不是 undefined：createHarness 的默认值是 'other'，undefined 会触发它。
+//
+// 这条用例钉的是「不猜」这个整体行为，**不区分** ackCurrentSessionCompletion 里
+// `if (!target) return` 那句守卫：夹具换成 undefined（触发 createHarness 的默认值
+// 'other'）结果同样是全绿，因为「没有当前会话」与「有但不匹配」都不发 ack。
+// 那句守卫也无法用行为断言单独钉住——想造出差异只能让完成卡自己也没有
+// target（entry 既无 targetSessionId 也无 sessionId，targetSessionOf 返回
+// undefined），但那样 acknowledgeCompletion(undefined) 会被它自己开头的
+// `if (!sessionId) return` 挡下，删掉守卫同样全绿（已实测）。换言之这两句
+// 守卫在所有可达路径上行为等价，后者是前者的冗余保险，不需要测试保护。
 test('a lone completion card stays unacknowledged while the viewed session is unknown', async () => {
   const harness = createHarness(null, false, [], true)
   harness.send({
