@@ -266,6 +266,23 @@
   function layoutPetTip(anchor, L, T, R, B) {
     __tip.layoutPetTip(petTip, anchor, L, T, R, B)
   }
+  // 一次性提示：把锚点的 tip 换成指定文案显示 ms 毫秒后还原。
+  // 用于「按设计没有执行某个动作」的时刻——比什么都不做更可解释。
+  var TRANSIENT_TIP_MS = 2600
+  function showTransientTip(anchor, text, ms) {
+    if (!anchor || !anchor.dataset) return
+    var had = Object.prototype.hasOwnProperty.call(anchor.dataset, 'rm2Tip')
+    var prev = anchor.dataset.rm2Tip
+    anchor.dataset.rm2Tip = text
+    showPetTip(anchor)
+    window.setTimeout(function () {
+      if (had) anchor.dataset.rm2Tip = prev
+      else delete anchor.dataset.rm2Tip
+      // 还原后若鼠标仍悬停在锚点上，showPetTip 会用原 tooltip 接管；
+      // 已移开则 renderBubble 那侧的 hidePetTip 已经收尾。
+      if (petTipAnchor === anchor) showPetTip(anchor)
+    }, ms || TRANSIENT_TIP_MS)
+  }
   function showPetTip(anchor) {
     var text = anchor && anchor.dataset ? anchor.dataset.rm2Tip : ''
     if (!text) { hidePetTip(); return }
@@ -967,9 +984,20 @@
       // 不把 __pet_idle__ 当作真实会话发送给宿主。
       if (el.node.dataset.idlePlaceholder === 'true') {
         // 已经有网页开着就别再开一个（浏览器不会复用已有标签，只会越堆越多）：webClients
-        // 是宿主快照里的 SSE 订阅计数，比"10 分钟 TTL 的当前会话上报"可靠得多。
-        // 代价：网页在线时点击没有可见反馈——刻意取舍，宁可不响应也不堆标签。
+        // 是宿主快照里的 SSE 订阅计数。
+        //
+        // 代价不只是「不新开」——什么都不做等于**点击完全静默**，用户分不清是卡住了
+        // 还是被拦下了。所以这里给一句说明去哪儿看。
+        //
+        // 顺带记录这条判据的已知缺口：webClients 是 SSE 订阅计数，而 Chromium 的
+        // tab discarding 会冻结/丢弃后台标签页，冻结期间连接不 close（hub.add 只在
+        // close/error 时清理，没有 idle 超时），于是计数虚高——用户明明关掉了所有
+        // 网页，点待机气泡却因为「以为还有网页开着」而不打开。彻底修它需要客户端
+        // 标识 + 定期心跳 + 按活跃度计数，是协议级改动，且阈值取小会把「网页真开着
+        // 但页面卡住」误判成没开、进而堆出一串标签。两害相权，这里选择保证不堆标签，
+        // 代价是至少让用户知道发生了什么。
         if (!(lastSnapshot && lastSnapshot.webClients > 0)) __tip.openIdleDshPage(window.petBridge)
+        else showTransientTip(el.node, '网页端已经开着啦，切过去看看~')
         return
       }
       // 假背板：点击时按当帧排序动态解析第 2 名会话并跳转。

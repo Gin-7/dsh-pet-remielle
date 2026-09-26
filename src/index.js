@@ -1149,7 +1149,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   void refreshRegistry()
 
   if (typeof ctx.inject === 'function') {
-    ctx.inject(['webServer', 'connection'], (httpCtx) => {
+    // 只注入 webServer。写上 connection 会让整个回调（内含全部 20 条路由注册）
+    // 在没有该服务的宿主上不执行，插件静默全瘫——见下方 dshWebUrl 的说明。
+    ctx.inject(['webServer'], (httpCtx) => {
       const port = httpCtx.webServer.port
 
       // ---- desktop pet window (transparent always-on-top Electron) ----
@@ -1164,8 +1166,26 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       }
       const origin = `http://127.0.0.1:${port}`
       const desktopUrl = `${origin}${PET_VIEW_ENDPOINT}`
-      // DSH 0.1.2-alpha.1 起 Web 壳根路径必须通过 connection 带进程 token。
-      const dshWebUrl = () => httpCtx.connection.authenticatedUrl(origin)
+      // DSH 0.1.2-alpha.1 起 Web 壳根路径要带进程 token，走 connection 的
+      // authenticatedUrl。connection 是**可选依赖**：上一版把它写进
+      // ctx.inject(['webServer', 'connection'])，而 cordis 的 inject 要所有服务
+      // 都可用才执行回调——这一整个块里包着全部 20 条 webServer.register，于是
+      // 宿主一旦没有 connection 服务，插件不是某个端点坏，而是整条路由表都不
+      // 注册，且没有任何报错。commit 的本意只是让 desktop url 带 token，不该
+      // gate 整张表，故这里改回只注入 webServer，connection 走 get() 取。
+      // 同时保留容错：authenticatedUrl 抛错时回落裸 origin，别让一次取 URL
+      // 的异常把整个桌面窗启动流程带走。
+      const dshWebUrl = () => {
+        try {
+          const connection = httpCtx.get('connection')
+          return typeof connection?.authenticatedUrl === 'function'
+            ? connection.authenticatedUrl(origin)
+            : origin
+        } catch (error) {
+          logger.warn?.(`dsh-pet-remielle: dshWebUrl() 失败，回落 origin（${String(error)}）`)
+          return origin
+        }
+      }
       // DSH Desktop 宿主给 WebServer 所有路由套了 desktopBrowserAccess 准入
       // （仅带渲染进程专属头的请求放行，未开「浏览器访问」时其余一律 403
       // "forbidden"）。独立桌宠 Electron 窗口必须从宿主上下文取 rendererHeader
