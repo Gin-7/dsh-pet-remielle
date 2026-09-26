@@ -1,8 +1,8 @@
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
-import { DEFAULT_PET_ID } from '../src/pets.js'
+import { applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
+import { DEFAULT_PET_ID, PET_ID_RE } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
 function snapshotWith({ latest, pulse = null, config = {}, petId, getStates, getCompletions, getCurrent }) {
@@ -211,13 +211,14 @@ test('disabled config is reflected in the snapshot', () => {
   assert.equal(snapshot.enabled, false)
 })
 
-test('snapshot sessions follow session-order: approval > ask > completion > current > recency', () => {
+test('snapshot sessions follow session-order: approval > plan review > ask > completion > current > recency', () => {
   const snapshot = snapshotWith({
     latest: idle,
     getCurrent: () => 'cur',
     getStates: () => [
       { sessionId: 'think', state: PetState.THINKING, attention: false, updatedAt: 9 },
       { sessionId: 'cur', state: PetState.WORKING, attention: false, updatedAt: 1 },
+      { sessionId: 'plan', state: PetState.WAITING, planReview: true, attention: true, updatedAt: 4 },
       { sessionId: 'ask', state: PetState.WAITING, ask: true, attention: true, updatedAt: 2 },
       { sessionId: 'appr', state: PetState.WAITING, approval: true, attention: true, updatedAt: 3 },
     ],
@@ -231,6 +232,7 @@ test('snapshot sessions follow session-order: approval > ask > completion > curr
   })
   assert.deepEqual(snapshot.sessions.map((entry) => entry.sessionId), [
     'appr',
+    'plan',
     'ask',
     'completion:done',
     'cur',
@@ -706,6 +708,68 @@ test('defaults mirrors the Config schema fields and their defaults', () => {
   for (const [key, field] of Object.entries(dict)) {
     assert.deepEqual(defaults[key], field.meta?.default, `${key} 的默认值与 schema 不一致`)
   }
+})
+
+test('Config fields are volatile for DSH 0.1.7 profile settings', () => {
+  for (const [key, field] of Object.entries(Config.dict)) {
+    assert.equal(field.meta?.volatile, true, `${key} 必须是 volatile 配置字段`)
+  }
+})
+
+test('platformToken is redacted by the settings schema', () => {
+  assert.equal(Config.dict.platformToken.meta?.role, 'secret')
+  assert.equal(Config.dict.platformToken.meta?.volatile, true)
+})
+
+test('registry ids are constrained at the settings boundary', () => {
+  assert.equal(Config.dict.activePetId.meta?.pattern?.source, PET_ID_RE.source)
+  assert.equal(Config.dict.pets.inner.dict.id.meta?.pattern?.source, PET_ID_RE.source)
+})
+
+test('createSettingsScope reads volatile refs and disposes the profile presentation', async () => {
+  const writes = []
+  const disposers = []
+  let configured
+  let activeOwner
+  let updateListener
+  const formsContext = {
+    settings: {
+      describe() {},
+      configure(...args) {
+        configured = args
+        if (activeOwner === args[1]) throw new Error('already configured')
+        activeOwner = args[1]
+        return () => {
+          if (activeOwner === args[1]) activeOwner = undefined
+        }
+      },
+      update(...args) { writes.push(args); return Promise.resolve() },
+    },
+    effect(callback) { disposers.push(callback()) },
+  }
+  const eventContext = {
+    fiber: {},
+    on(name, listener) {
+      assert.equal(name, 'loader/volatile-update')
+      updateListener = listener
+      return () => {}
+    },
+  }
+  const config = new Config()
+  assert.equal(typeof config.desktopMode.get, 'function')
+  const scope = createSettingsScope(formsContext, config, eventContext)
+  assert.deepEqual(configured, [{ auto: false }, eventContext.fiber])
+  assert.equal(disposers.length, 1)
+  assert.equal(scope.get().desktopMode, false)
+  assert.equal(typeof updateListener, 'undefined')
+  scope.watch(() => {})
+  assert.equal(typeof updateListener, 'function')
+  disposers[0]()
+  createSettingsScope(formsContext, config, eventContext)
+  assert.equal(disposers.length, 2)
+  disposers[1]()
+  await scope.update({ desktopMode: true })
+  assert.deepEqual(writes, [['dsh-pet-remielle', { desktopMode: true }]])
 })
 
 // 关掉「响应子 Agent」时要撤掉队列里残留的子会话完成卡：网页端那层过滤只管合成卡，

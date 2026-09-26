@@ -34,6 +34,8 @@ const statePriority = Object.freeze({
   [PetState.DISCONNECTED]: -1,
 })
 
+const PLAN_REVIEW_TOOL = 'exit_plan_mode'
+
 function toolActivity(name) {
   const value = String(name || '').toLowerCase()
   if (/search|grep|find|glob|web|read|fetch|open/.test(value)) return 'searching'
@@ -145,12 +147,30 @@ function approvalContent(toolName, reason, argsRaw) {
   return clipLine(toolName) || '等待确认'
 }
 
+function planReviewContent(argsRaw) {
+  const args = parseToolArgs(argsRaw)
+  const markdown = String(args?.plan ?? '').replace(/\r\n?/g, '\n').trim()
+  if (!markdown) return '计划待审'
+  const heading = markdown.match(/^#\s+(.+)$/mu)
+  if (heading) return clipLine(heading[1]) || '计划待审'
+  const paragraph = markdown.split(/\n\s*\n/u).map((part) => part.trim()).find(Boolean)
+  return clipLine(paragraph || markdown) || '计划待审'
+}
+
 function detailFor(record, stage = record.payload.stage) {
   const approval = record.waits?.find((wait) => wait.kind === 'approval')
   if (approval) {
     const parts = []
     if (record.project) parts.push(record.project)
     parts.push(approval.payload.preview || approval.payload.toolName || '等待确认')
+    return parts.join(' · ')
+  }
+  const planReview = record.waits?.find((wait) => wait.kind === 'plan-review')
+  if (planReview) {
+    const parts = []
+    if (record.project) parts.push(record.project)
+    parts.push('计划待审')
+    if (planReview.payload.preview && planReview.payload.preview !== '计划待审') parts.push(planReview.payload.preview)
     return parts.join(' · ')
   }
   const parts = []
@@ -221,6 +241,7 @@ export class PetReducer {
         record.turnActive = true
         record.openTools.clear()
         record.askTools.clear()
+        record.planTools.clear()
         record.waits.length = 0
         record.savedState = undefined
         record.savedPayload = undefined
@@ -283,6 +304,23 @@ export class PetReducer {
         const callId = String(event.data?.callId ?? `seq-${String(event.seq ?? 'unknown')}`)
         const name = String(event.data?.name ?? 'tool')
         record.openTools.set(callId, { name, args: event.data?.arguments })
+        // 计划审核通过 user-questions waterfall 呈现，不会发 approval/asked；
+        // 但 exit_plan_mode 的 tool/call 是它进入等待期的稳定宿主信号。
+        if (name === PLAN_REVIEW_TOOL) {
+          record.planTools.add(callId)
+          this.#enterWait(record, {
+            kind: 'plan-review',
+            id: callId,
+            payload: {
+              phase: 'plan-review',
+              stage: '计划待审',
+              toolName: name,
+              preview: planReviewContent(event.data?.arguments),
+              message: '计划待审',
+            },
+          })
+          return this.#render()
+        }
         // Asking the human a question is a "waiting" state, not "摸鱼中".
         if (name === 'ask_user_question') {
           record.askTools.add(callId)
@@ -401,6 +439,8 @@ export class PetReducer {
         // Only an unresolved approval wait may render the actionable ✓.
         // Generic WAITING (ask_user_question) and ERROR must not inherit it.
         approval: record.waits.some((wait) => wait.kind === 'approval'),
+        // 计划审核是独立的用户决策门，不复用普通审批或普通提问字段。
+        planReview: record.waits.some((wait) => wait.kind === 'plan-review'),
         // 等待用户回答（ask_user_question）单独暴露，供气泡排序置于审批之下、完成之上。
         ask: record.waits.some((wait) => wait.kind === 'ask'),
         attention: record.state === PetState.WAITING || record.state === PetState.ERROR,
@@ -417,15 +457,17 @@ export class PetReducer {
       ?? event.data?.message?.callId
       ?? event.data?.callId
       ?? '')
-    const knownTool = callId ? record.openTools.has(callId) || record.askTools.has(callId) : false
+    const knownTool = callId ? record.openTools.has(callId) || record.askTools.has(callId) || record.planTools.has(callId) : false
     if (!record.turnActive && !knownTool) return []
     const wasAsk = callId ? record.askTools.has(callId) : false
+    const wasPlanReview = callId ? record.planTools.has(callId) : false
     if (wasAsk) record.askTools.delete(callId)
+    if (wasPlanReview) record.planTools.delete(callId)
     if (callId) record.openTools.delete(callId)
-    // An answered question ends the waiting state; restore what the pet was
-    // doing underneath (e.g. THINKING while streaming the next answer).
-    if (wasAsk) {
-      this.#exitWait(record, 'ask', callId)
+    // An answered question or plan review ends the waiting state; restore what
+    // the pet was doing underneath (e.g. THINKING while streaming the answer).
+    if (wasAsk || wasPlanReview) {
+      this.#exitWait(record, wasPlanReview ? 'plan-review' : 'ask', callId)
       return this.#render()
     }
     const next = record.openTools.size > 0 ? PetState.WORKING : PetState.THINKING
@@ -499,6 +541,7 @@ export class PetReducer {
     record.turnActive = false
     record.openTools.clear()
     record.askTools.clear()
+    record.planTools.clear()
     record.waits.length = 0
     record.savedState = undefined
     record.savedPayload = undefined
@@ -585,6 +628,7 @@ export class PetReducer {
       turnActive: false,
       openTools: new Map(),
       askTools: new Set(),
+      planTools: new Set(),
       waits: [],
       savedState: undefined,
       savedPayload: undefined,

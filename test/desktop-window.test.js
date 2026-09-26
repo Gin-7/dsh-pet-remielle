@@ -296,6 +296,9 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   assert.match(html, /bubbleEl\.style\.zoom = String\(bubbleZoom\)/)
   assert.match(html, /bubbleStack\.style\.zoom = String\(bubbleZoom\)/)
   assert.match(html, /imgEl\.style\.transform = snapshot\.mirror === true \? 'scaleX\(-1\)' : ''/)
+  assert.match(html, /var planReviewOf = __order\.planReviewOf/)
+  assert.match(html, /planReview \? ' plan-review' : ''/)
+  assert.match(html, /计划待审，点击打开同意执行\/要求修改/)
   assert.match(html, /clearPulse:\s*true/)
   // SSE 订阅带 ?client=pet：宿主据此把桌宠窗口排除在 session-action 重放计数之外
   // （与 index.js streamClientOf 的约定一致），否则"无网页在线"判定永远不成立。

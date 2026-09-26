@@ -6,7 +6,7 @@
  * 文件用 .cjs：包是 "type":"module"，宿主 ESM 经 createRequire 才能拿到导出。
  * 对外 URL 仍是 session-order.js（浏览器 script 不认 .cjs 扩展语义）。
  *
- * Priority: approval > ask (ask_user_question) > completion > attention
+ * Priority: approval > plan review > ask (ask_user_question) > completion > attention
  * > current session > state rank > updatedAt.
  */
 ;(function (global) {
@@ -35,11 +35,15 @@
   function approvalOf(entry) {
     return entry.approval === true
   }
+  function planReviewOf(entry) {
+    return entry.planReview === true
+  }
   function askOf(entry) {
     return entry.ask === true
   }
   function tierOf(entry) {
-    if (approvalOf(entry)) return 5
+    if (approvalOf(entry)) return 6
+    if (planReviewOf(entry)) return 5
     if (askOf(entry)) return 4
     if (completionOf(entry)) return 3
     if (attentionOf(entry)) return 2
@@ -95,6 +99,7 @@
     completionOf: completionOf,
     targetSessionOf: targetSessionOf,
     approvalOf: approvalOf,
+    planReviewOf: planReviewOf,
     orderSessions: orderSessions,
     compareSessions: compareSessions,
   }

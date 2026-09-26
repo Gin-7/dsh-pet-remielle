@@ -12,7 +12,7 @@ function cardHeightFromCss(css) {
   return Number(/(?<!-)height:\s*(\d+)px/.exec(rule)?.[1])
 }
 
-function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = []) {
+function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = [], modernNavigation = false) {
   const elements = []
   const fetches = []
   const opened = []
@@ -22,6 +22,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
   let current = initialCurrent
   let sessionListener
   let stream
+  let visibilityState = 'visible'
 
   function element(tag = 'div') {
     let node
@@ -107,15 +108,39 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
       return []
     },
   }
+  const otherAllowBtn = {
+    textContent: '允许一次',
+    innerText: '允许一次',
+    getAttribute() { return '' },
+    click() { allowClicks.push('other-allow') },
+  }
+  const otherApprovalPanel = {
+    querySelectorAll(sel) {
+      if (String(sel).includes('button')) return [otherAllowBtn]
+      return []
+    },
+  }
+  const conversationFrame = {
+    querySelectorAll(sel) {
+      if (sel === '[data-approval-key]') return [approvalPanel]
+      return []
+    },
+  }
   const document = {
     body,
     head,
     documentElement: element('html'),
+    get visibilityState() { return visibilityState },
     createElement: (tag) => element(tag),
     addEventListener() {},
     removeEventListener() {},
-    querySelector(sel) { return sel === '[data-approval-key]' ? approvalPanel : null },
-    querySelectorAll(sel) { return sel === '[data-approval-key]' ? [approvalPanel] : [] },
+    querySelector(sel) {
+      if (sel === '[data-panel-conversation]') return conversationFrame
+      return sel === '[data-approval-key]' ? approvalPanel : null
+    },
+    querySelectorAll(sel) {
+      return sel === '[data-approval-key]' ? [otherApprovalPanel, approvalPanel] : []
+    },
   }
   class EventSourceStub {
     constructor() { stream = this }
@@ -172,20 +197,29 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     inject(name, callback) { callback(); return () => {} },
     register() { return () => {} },
   }
+  const openSession = (sessionId) => {
+    opened.push(sessionId)
+    if (autoSelect) {
+      current = sessionId
+      sessionListener?.()
+    }
+  }
   const sessions = {
     list: {
-      getSnapshot: () => ({ current, byId: snapshotItems }),
+      getSnapshot: () => modernNavigation
+        ? { byId: { ...snapshotItems, ...(current ? { [current]: { id: current, retainedBy: { mainView: 1 } } } : {}) } }
+        : { current, byId: snapshotItems },
       subscribe(listener) { sessionListener = listener; return () => {} },
     },
-    open(sessionId) {
-      opened.push(sessionId)
-      if (autoSelect) {
-        current = sessionId
-        sessionListener?.()
-      }
-    },
+    ...(modernNavigation ? {} : { open: openSession }),
   }
-  moduleExports.apply({ slots, sessions, effect: (callback) => callback() })
+  const uiWorkspace = { openSession }
+  moduleExports.apply({
+    slots,
+    sessions,
+    ...(modernNavigation ? { get(name) { return name === 'uiWorkspace' ? uiWorkspace : undefined } } : {}),
+    effect: (callback) => callback(),
+  })
 
   function send(snapshot) {
     stream.onmessage({ data: JSON.stringify(snapshot) })
@@ -213,7 +247,11 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
   function dispatchWindowEvent(name) {
     for (const listener of windowListeners.get(name) ?? []) listener({})
   }
-  return { allowClicks, beacons, card, click, dispatchWindowEvent, elements, fetches, navigator: navigatorStub, opened, select, send, styleWrites, flushTitleTimers }
+  function setVisibility(next) {
+    visibilityState = next
+    dispatchWindowEvent('visibilitychange')
+  }
+  return { allowClicks, beacons, card, click, dispatchWindowEvent, elements, fetches, navigator: navigatorStub, opened, select, send, setVisibility, styleWrites, flushTitleTimers }
 }
 
 const base = {
@@ -320,6 +358,20 @@ test('multi-session deck renders an inert backboard with a dynamic click target'
   harness.flushTitleTimers()
   harness.click(backboard)
   assert.deepEqual(harness.opened, ['second', 'third'])
+})
+
+test('modern workspace navigation promotes the clicked lower bubble', () => {
+  const harness = createHarness('first', true, {}, true)
+  const sessions = [
+    { sessionId: 'first', state: 'WORKING', phase: 'tool-call', message: '首个对话', detail: '.dsh · 处理中', updatedAt: 3 },
+    { sessionId: 'second', state: 'WORKING', phase: 'tool-call', message: '第二个对话', detail: '.dsh · 处理中', updatedAt: 2 },
+  ]
+  harness.send({ ...base, sessions })
+  const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
+  assert.ok(backboard)
+  harness.click(backboard)
+  assert.deepEqual(harness.opened, ['second'])
+  assert.match(harness.card('第二个对话').className, /\btop\b/)
 })
 
 test('backboard target and tip stay paired while sorting settles', () => {
@@ -560,6 +612,30 @@ test('current conversation WAITING card stays until the question is answered', (
   assert.ok(card.className.includes('attention'))
 })
 
+test('plan review card renders with its own tooltip and opens without auto-approving', () => {
+  const harness = createHarness('plan')
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'plan',
+      state: 'WAITING',
+      phase: 'plan-review',
+      message: '计划待审',
+      detail: '计划待审 · 推理面板改材质',
+      planReview: true,
+      attention: true,
+      updatedAt: 1,
+    }],
+  })
+  const card = harness.card('计划待审')
+  assert.ok(card.className.includes('plan-review'))
+  assert.equal(card.className.includes('approval'), false)
+  assert.match(card.dataset.rm2Tip, /计划待审：推理面板改材质，点击打开同意执行\/要求修改/)
+  harness.click(card)
+  assert.deepEqual(harness.opened, ['plan'])
+  assert.equal(harness.allowClicks.length, 0)
+})
+
 test('current conversation completion is acknowledged without a green reminder', async () => {
   const harness = createHarness('done')
   harness.send({
@@ -578,6 +654,42 @@ test('current conversation completion is acknowledged without a green reminder',
   await Promise.resolve()
   assert.ok(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')))
   assert.equal(harness.card('任务已完成').className.includes(' completed'), false)
+})
+
+test('hidden tab keeps its completion reminder until the tab becomes visible', async () => {
+  const harness = createHarness('done')
+  harness.setVisibility('hidden')
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'completion:done',
+      targetSessionId: 'done',
+      state: 'SUCCESS',
+      message: '任务已完成',
+      detail: '结果',
+      completed: true,
+      completionNotification: true,
+    }],
+  })
+  await Promise.resolve()
+  assert.equal(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')), false)
+  harness.card('任务已完成')
+
+  harness.setVisibility('visible')
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'completion:done',
+      targetSessionId: 'done',
+      state: 'SUCCESS',
+      message: '任务已完成',
+      detail: '结果',
+      completed: true,
+      completionNotification: true,
+    }],
+  })
+  await Promise.resolve()
+  assert.ok(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')))
 })
 
 test('same-mood bubble title holds until the refresh interval elapses', () => {
@@ -651,6 +763,7 @@ test('desktop mode still acks the viewed session completion', async () => {
   // 桌面模式下 applySnapshot 会因 desktopActive 提前 return（隐藏页面宠物），渲染整段跳过；
   // 但「我看着它完成」仍然成立，已读不能跟着渲染一起被跳过——否则绿点只能手动点击才消。
   const harness = createHarness('watched')
+  harness.setVisibility('hidden')
   harness.send({
     ...base,
     desktopActive: true,
@@ -671,15 +784,15 @@ test('desktop mode still acks the viewed session completion', async () => {
   )
 })
 
-test('desktop session-action without approve opens the conversation (bubble-card jump)', () => {
-  const harness = createHarness()
+test('desktop bubble click uses DSH 0.1.7 uiWorkspace navigation', () => {
+  const harness = createHarness('other', true, [], true)
   harness.send({ ...base, desktopActive: true, sessions: [] })
   harness.send({ kind: 'session-action', sessionId: 'desk-1', completed: true })
   assert.deepEqual(harness.opened, ['desk-1'])
 })
 
-test('desktop session-action approve opens the conversation for the native allow-once button', () => {
-  const harness = createHarness()
+test('desktop approval uses DSH 0.1.7 uiWorkspace navigation before allow-once', () => {
+  const harness = createHarness('other', true, [], true)
   harness.send({ ...base, desktopActive: true, sessions: [] })
   harness.send({ kind: 'session-action', sessionId: 'desk-2', approve: true })
   assert.deepEqual(harness.opened, ['desk-2'])
@@ -841,14 +954,31 @@ test('deck order puts approval above ask above completion', () => {
     sessions: [
       { sessionId: 'done', state: 'SUCCESS', message: '任务已完成', detail: '结果', completed: true, completionNotification: true, updatedAt: 3 },
       { sessionId: 'ask-1', state: 'WAITING', phase: 'ask', message: '等待回答', detail: '问题', ask: true, attention: true, updatedAt: 2 },
+      { sessionId: 'plan-1', state: 'WAITING', phase: 'plan-review', message: '计划待审', detail: '计划待审 · 计划', planReview: true, attention: true, updatedAt: 1 },
       { sessionId: 'appr-1', state: 'WAITING', phase: 'approval', message: '等待确认', detail: '审批', approval: true, attention: true, updatedAt: 1 },
     ],
   })
   const titles = harness.elements
     .filter((node) => node.className === 'rm2-pet-bubble-title' && node.textContent)
     .map((node) => node.textContent)
-  // 牌叠只渲染首层真卡：approval 居首，ask/completion 都收进假背板的 +N。
+  // 牌叠只渲染首层真卡：approval 居首，plan/ask/completion 都收进假背板的 +N。
   assert.deepEqual(titles, ['等待确认'])
+})
+
+test('plan review outranks ask and completion when no tool approval is pending', () => {
+  const harness = createHarness()
+  harness.send({
+    ...base,
+    sessions: [
+      { sessionId: 'done', state: 'SUCCESS', message: '任务已完成', detail: '结果', completed: true, completionNotification: true, updatedAt: 3 },
+      { sessionId: 'ask-1', state: 'WAITING', phase: 'ask', message: '等待回答', detail: '问题', ask: true, attention: true, updatedAt: 2 },
+      { sessionId: 'plan-1', state: 'WAITING', phase: 'plan-review', message: '计划待审', detail: '计划待审 · 计划', planReview: true, attention: true, updatedAt: 1 },
+    ],
+  })
+  const titles = harness.elements
+    .filter((node) => node.className === 'rm2-pet-bubble-title' && node.textContent)
+    .map((node) => node.textContent)
+  assert.deepEqual(titles, ['计划待审'])
 })
 
 test('same-tier streaming sessions keep the top card stable (no width flapping)', () => {
@@ -960,6 +1090,20 @@ test('current-session uplink fires on mount/select and clears on page unload', (
   assert.match(code, /addEventListener\('beforeunload',\s*clearReportedCurrentSession\)/)
   assert.match(code, /navigator\.sendBeacon/)
   assert.match(code, /keepalive:\s*true/)
+})
+
+test('hidden tab does not overwrite the reported current session until it becomes visible', () => {
+  const harness = createHarness('other')
+  const currentPosts = () => harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/session/current'))
+  const initialCount = currentPosts().length
+
+  harness.setVisibility('hidden')
+  harness.select('background')
+  assert.equal(currentPosts().length, initialCount, 'hidden tab must not report its selection')
+
+  harness.setVisibility('visible')
+  assert.equal(currentPosts().length, initialCount + 1, 'becoming visible re-reports the local selection')
+  assert.equal(JSON.parse(currentPosts().at(-1).options.body).sessionId, 'background')
 })
 
 test('desktop bubble click (session-action without approve) opens its conversation only', () => {

@@ -34,7 +34,7 @@
     "check": "node --check lib/client.js && node --check src/index.js && node --check src/pet-reducer.js && node --check src/session-order.cjs && node --check src/gif-frame.cjs && node --check src/turn-watchdog.js && node --check src/protocol.js && node --check src/status-copy.js && node --check src/pets.js && node --check src/self-update.js && node --check src/desktop-window.js && node --check src/electron-fetch.mjs && node --check src/pet-window.cjs && node --check src/pet-tip.cjs && node --check src/balance.js && node --check src/holidays.js && node --check scripts/build-client.mjs"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1"
+    "@deepseek-ai/schemastery": "^3.18.4"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
