@@ -726,8 +726,7 @@ test('registry ids are constrained at the settings boundary', () => {
   assert.equal(Config.dict.pets.inner.dict.id.meta?.pattern?.source, PET_ID_RE.source)
 })
 
-test('createSettingsScope reads volatile refs and disposes the profile presentation', async () => {
-  const writes = []
+test('createSettingsScope reads volatile refs and disposes the profile presentation', async () => {  const writes = []
   const disposers = []
   let configured
   let activeOwner
@@ -770,6 +769,60 @@ test('createSettingsScope reads volatile refs and disposes the profile presentat
   disposers[1]()
   await scope.update({ desktopMode: true })
   assert.deepEqual(writes, [['dsh-pet-remielle', { desktopMode: true }]])
+})
+
+// DSH 的 settings.resolve 是 `schema(base+section)`：0.4.3 起 schema 字段带
+// .volatile()，schemastery 会把每个字段解析成 cosmokit volatile 包装对象（值藏在
+// wrapper.get() 里），DSH 的 scope.get()/watch 原样返回这层包装。插件若直接属性
+// 访问，pets 变非数组（宠物列表清空）、usageMode 变 '[object Object]'——2026-09-26
+// 真机事故。register 分支的 get/watch 必须先解包再交给插件内部。
+test('createSettingsScope unwraps volatile wrappers on the DSH register path', () => {
+  const section = {
+    enabled: true,
+    scale: 1.2,
+    usageMode: 'token',
+    platformToken: 'tok-123',
+    desktopX: 280,
+    desktopY: 482,
+    activePetId: 'remielle',
+    pets: [{ id: 'remielle', name: '蕾米埃尔', enabled: true }],
+  }
+  // 模拟 DSH：把持久化 section 灌进真实 schema，得到 wrapper 层 resolved 值
+  const resolved = Config(section)
+  assert.equal(typeof resolved.usageMode.get, 'function')
+  let watchCallback
+  const formsContext = {
+    settings: {
+      register(ns, schema, options) {
+        assert.equal(ns, 'dsh-pet-remielle')
+        return {
+          get: () => resolved,
+          watch(callback) { watchCallback = callback; return () => {} },
+          update: () => Promise.resolve(),
+        }
+      },
+    },
+  }
+  const scope = createSettingsScope(formsContext, {}, formsContext)
+  const got = scope.get()
+  assert.equal(got.usageMode, 'token')
+  assert.equal(got.platformToken, 'tok-123')
+  assert.equal(got.scale, 1.2)
+  assert.equal(got.desktopX, 280)
+  assert.equal(got.activePetId, 'remielle')
+  assert.equal(Array.isArray(got.pets), true)
+  assert.equal(got.pets.length, 1)
+  assert.equal(got.pets[0].name, '蕾米埃尔')
+  // 未持久化的字段回落 schema 默认值，而不是 undefined/包装对象
+  assert.equal(got.bubbleScaleSync, true)
+  // watch 回调同样解包：next.desktopMode === false 的判断要能成立
+  const seen = []
+  scope.watch((next) => seen.push(next))
+  assert.equal(typeof watchCallback, 'function')
+  watchCallback(resolved, resolved)
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].desktopMode, false)
+  assert.equal(seen[0].usageMode, 'token')
 })
 
 // 关掉「响应子 Agent」时要撤掉队列里残留的子会话完成卡：网页端那层过滤只管合成卡，

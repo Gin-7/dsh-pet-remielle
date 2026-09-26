@@ -109,8 +109,8 @@ Built-in update check in Settings → Pet Management → Update + bottom-right u
 
 ```powershell
 # Uninstall by the actual old row id (whichever applies):
-dsh plugin --profile web remove @dsh-external/dsh-client-ui-pet-remielle   # < 0.2.0
-dsh plugin --profile web remove dsh-pet-remielle                            # 0.2.0 – 0.3.0
+dsh plugin --profile web remove @dsh-external/dsh-client-ui-pet-remielle   # <= 0.2.0
+dsh plugin --profile web remove dsh-pet-remielle                            # > 0.2.0
 
 # Reinstall latest:
 dsh plugin --profile web add dsh-pet-remielle

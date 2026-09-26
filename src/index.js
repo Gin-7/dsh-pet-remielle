@@ -25,8 +25,8 @@ import { PetMessageKind, PetState, createMessage } from './protocol.js'
 import { DesktopWindow } from './desktop-window.js'
 import { electronArtifact, ensureElectronRuntime, missingRuntimeFiles } from './electron-fetch.mjs'
 import {
-  CHECK_ENDPOINT, UPDATE_ENDPOINT, INFO_ENDPOINT,
-  checkHandler, updateHandler, infoHandler, setSelfUpdateHooks, killActiveUpdate,
+  CHECK_ENDPOINT, UPDATE_ENDPOINT, PROGRESS_ENDPOINT, INFO_ENDPOINT,
+  checkHandler, updateHandler, progressHandler, infoHandler, setSelfUpdateHooks, killActiveUpdate,
 } from './self-update.js'
 import {
   DEFAULT_PET_ID,
@@ -154,11 +154,12 @@ function localSettingsScope(value) {
   }
 }
 
-function readConfig(config) {
+function readConfig(config = {}) {
   const value = {}
   for (const key of Object.keys(defaults)) {
     const current = config[key]
-    value[key] = current && typeof current.get === 'function' ? current.get() : current ?? defaults[key]
+    const raw = current && typeof current.get === 'function' ? current.get() : current
+    value[key] = raw ?? defaults[key]
   }
   return value
 }
@@ -167,7 +168,20 @@ export function createSettingsScope(ctx, config = {}, eventCtx = ctx) {
   const forms = ctx.settings
   const get = () => readConfig(config)
   if (typeof forms?.register === 'function') {
-    return forms.register(PLUGIN_KEY, Config, { base: publicConfig(get()), applies: 'live' })
+    const scope = forms.register(PLUGIN_KEY, Config, { base: publicConfig(get()), applies: 'live' })
+    // DSH 的 resolve 流程是 `schema(base+section)`：0.4.3 起 schema 字段带
+    // .volatile()（schemastery 会把每个字段解析成 cosmokit volatile 包装对象，
+    // 值藏在 wrapper.get() 里），而 DSH 的 scope.get() 原样返回这层包装——
+    // 插件直接属性访问拿到的是对象不是值（实测 pets 变非数组、usageMode 变
+    // '[object Object]'，宠物列表因此清空）。这里在返回给插件内部之前统一
+    // 解包回真实值；watch/update 仍走 DSH 原实现。
+    return {
+      ...scope,
+      get: () => readConfig(scope.get()),
+      // watch 回调拿到的 next/prev 同样是 DSH resolve 出来的 wrapper 层（见上），
+      // 一并解包，否则 `next.desktopMode === false` 这类判断永远不成立。
+      watch: (listener) => scope.watch((next, prev) => listener(readConfig(next), readConfig(prev))),
+    }
   }
   if (typeof forms?.describe !== 'function') return localSettingsScope(publicConfig(get()))
   const dispose = forms.configure?.({ auto: false }, eventCtx.fiber)
@@ -1539,6 +1553,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: UPDATE_ENDPOINT, handler: updateHandler }),
         'dsh-pet-remielle: one-click update endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: PROGRESS_ENDPOINT, handler: progressHandler }),
+        'dsh-pet-remielle: live update progress endpoint',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: INFO_ENDPOINT, handler: infoHandler }),

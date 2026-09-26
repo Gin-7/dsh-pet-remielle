@@ -255,3 +255,52 @@ test('renderMarkdown behavior (slice-evaluated from source)', () => {
   assert.ok(code2.includes('**不是粗体**') && !code2.includes('<strong>'), '代码块内容不得被 markdown 解析')
   assert.ok(code2.includes('&lt;img&gt;'), '代码块内容必须转义')
 })
+
+test('update card live progress wiring (source guards)', () => {
+  // 进度端点常量 + 看门狗轮询
+  assert.ok(src.includes("var PROGRESS_ENDPOINT = '/plugins/dsh-pet-remielle/update-progress'"), '客户端必须定义 update-progress 端点')
+  assert.ok(/PROGRESS_ENDPOINT \+ '\?t='/.test(src), '看门狗必须轮询进度端点（与 /info 并行，1s 周期）')
+  assert.ok(/fetchJson\(PROGRESS_ENDPOINT[\s\S]{0,1600}?}, 1000\)/.test(src), '看门狗轮询周期必须是 1s（进度行每秒增长）')
+  // running 态渲染实时输出尾部 + 已耗时
+  assert.ok(src.includes("progPre.className = 'rm2-upd-progress'"), '更新中必须渲染实时输出尾部 pre')
+  assert.ok(/progPre = mk\('pre', '[^']*max-height:120px[^']*', '──── 实时输出（自动刷新）/.test(src), '实时输出区高度必须是 120px（用户要求缩小）')
+  assert.ok(src.includes('实时输出（自动刷新）'), '实时输出区必须有可辨识标题')
+  // 卡片不得被长输出拉长：失败输出与成功输出区都必须限高滚动
+  assert.ok(/else if \(lastUpdateError\) \{[\s\S]{0,120}?mk\('pre', '[^']*max-height:120px;overflow:auto/.test(src), '失败输出必须限高 120px 滚动（pnpm 全量日志不得撑长弹窗）')
+  assert.ok(/max-height:120px;overflow:auto[^']*', '──── 更新输出 ────/.test(src), '成功输出必须限高 120px 滚动')
+  assert.ok(/notesBox = mk\('div', '[^']*max-height:180px/.test(src), 'release 说明区限高 180px')
+  assert.ok(src.includes("已进行 ' + elapsedS + ' 秒"), 'running 态必须显示已耗时')
+  // 变化检测：输出或秒数没变不重绘，避免卡片重建打断用户滚动
+  assert.ok(/key !== lastProgressKey/.test(src), '进度轮询必须做变化检测')
+  // 超时错误翻译成简短提示（不展开 pnpm/镜像细节，手动操作走 GitHub 按钮）
+  assert.ok(/function friendlyUpdateError/.test(src), '必须存在超时文案翻译函数')
+  assert.ok(/\[timeout/.test(src), '翻译函数必须识别宿主超时标记')
+  assert.ok(src.includes('手动更新（GitHub）'), '更新弹窗必须常驻「手动更新（GitHub）」按钮')
+  // 合并检查只针对更新弹窗区域：设置页「关于」标签的「去 GitHub 查看」是另一界面，保留
+  const cardRegion = /function renderUpdateCard[\s\S]*?function openUpdateCard/.exec(src)?.[0]
+  assert.ok(cardRegion && cardRegion.includes('手动更新（GitHub）'), '常驻按钮必须在 renderUpdateCard 内')
+  assert.ok(cardRegion && !cardRegion.includes('去 GitHub 查看'), '弹窗内「去 GitHub 查看」必须与手动更新按钮合并（避免同跳发布页的两个按钮并存）')
+  // 常驻 = 按钮创建在状态分支之外（由 needsCleanReinstall 守卫，不锁进某个 phase）
+  assert.ok(/if \(!latestInfo\.needsCleanReinstall\) \{[\s\S]*?var manualBtn/.test(src), '手动更新按钮必须渲染在状态分支之外（常驻）')
+  // GitHub 按钮一律跳仓库首页（用户要求，不跳 releases 发布页）
+  assert.ok(cardRegion && cardRegion.includes("window.open('https://github.com/Gin-7/dsh-pet-remielle', '_blank')"), '手动更新按钮必须跳仓库首页')
+  assert.ok(cardRegion && !cardRegion.includes('/releases'), '更新弹窗内不得再跳 releases 发布页')
+  // 更新输出是进程日志，保持等宽纯文本，不得被 markdown 化
+  assert.ok(!/renderMarkdown\(updateState\.output/.test(src), '更新输出必须保持纯文本 pre')
+
+  // friendlyUpdateError 行为切片：超时给简短解释，普通错误追加一句手动更新建议；
+  // pnpm/镜像细节必须从失败提示中移除（Electron 运行时下载文案里的 npmmirror 与此无关，
+  // 所以断言只针对本函数切片，不扫全文）
+  const fn = /function friendlyUpdateError[\s\S]*?\n\}/.exec(src)?.[0]
+  assert.ok(fn, 'friendlyUpdateError 必须可按源码切片')
+  assert.ok(!fn.includes('npmmirror'), '失败提示不得再展开镜像方案（已收敛为手动更新 + GitHub 按钮）')
+  assert.ok(!fn.includes('pnpm add'), '失败提示不得再展开 pnpm add 指令（已收敛为手动更新 + GitHub 按钮）')
+  const sandbox = {}
+  runInNewContext(fn + '; this.__f = friendlyUpdateError', sandbox)
+  const timedOut = sandbox.__f('resolved 9\n[timeout: no output for 60s — 更新进程疑似挂起]')
+  assert.ok(timedOut.includes('网络较慢导致下载超时'), '超时错误必须说明原因')
+  assert.ok(timedOut.includes('手动更新'), '超时错误必须建议手动更新')
+  assert.ok(!timedOut.includes('续传'), '不得再声称重试可续传（pnpm 不缓存未完成的下载）')
+  assert.ok(!timedOut.includes('npmmirror'), '不得再给出镜像方案')
+  assert.equal(sandbox.__f('EPERM: resource busy'), 'EPERM: resource busy\n\n💡 建议手动更新。', '普通错误追加一句手动更新建议')
+})

@@ -12,6 +12,9 @@
  *                                             first so its electron.exe does not
  *                                             lock the package directory
  *   GET  /plugins/dsh-pet-remielle/info    -> install mode, versions, command
+ *   GET  /plugins/dsh-pet-remielle/update-progress
+ *                                          -> running state, elapsed time and the
+ *                                             tail of live output while updating
  *
  * All routes only accept local-loopback requests (CSRF guard).
  */
@@ -32,6 +35,7 @@ export const TAGS_API = `https://api.github.com/repos/${REPO}/tags`
 
 export const CHECK_ENDPOINT = '/plugins/dsh-pet-remielle/check'
 export const UPDATE_ENDPOINT = '/plugins/dsh-pet-remielle/update'
+export const PROGRESS_ENDPOINT = '/plugins/dsh-pet-remielle/update-progress'
 export const INFO_ENDPOINT = '/plugins/dsh-pet-remielle/info'
 
 // 包名/行 id 自 0.3.0 起变动（0.2.0 之前为 @dsh-external/dsh-client-ui-pet-remielle，
@@ -229,14 +233,91 @@ export function resolveInstall() {
   return { mode: 'github', profileDir: pkgDir.slice(0, idx), version }
 }
 
-export function run(cmd, args, cwd) {
+// ---- 更新进度（环形缓冲 + 实时端点） ----
+// 固定 90s 硬超时的教训（0.4.3 慢网用户大量被误杀）：pnpm 解析元数据 + 下载
+// tarball 本来就可能超过 90s（国内直连 npmjs 时单个包解析就能花 13s+），但只要
+// 子进程还在持续输出就说明它没挂。改为「空闲超时」：每收到一段输出就重置计时器，
+// 连续 60s 无任何输出才判定挂起；另设 10 分钟总上限兜底（防输出不断但永远不结束）。
+export const IDLE_TIMEOUT_MS = 60000
+export const TOTAL_TIMEOUT_MS = 600000
+
+// 进度只保留末尾 ~50 行：进度卡片只需要最近的下载/安装动态，全量输出仍在
+// 最终响应里返回（done 态展示）。pnpm 进度条用 \r 刷新，这里按行切开后自然会
+// 只留最后一帧附近的内容。
+const PROGRESS_TAIL_LINES = 50
+
+let updateProgress = { running: false, startedAt: 0, lastActivityAt: 0, tail: [] }
+
+/** 追加一段子进程输出到进度缓冲（按行切分，超出保留窗口的旧行丢弃）。 */
+function pushProgressOutput(text) {
+  const lines = String(text).split(/\r?\n|\r/)
+  for (const ln of lines) {
+    if (!ln) continue
+    updateProgress.tail.push(ln)
+  }
+  while (updateProgress.tail.length > PROGRESS_TAIL_LINES) updateProgress.tail.shift()
+  updateProgress.lastActivityAt = Date.now()
+}
+
+function beginUpdateProgress() {
+  updateProgress = { running: true, startedAt: Date.now(), lastActivityAt: Date.now(), tail: [] }
+}
+
+function endUpdateProgress() {
+  updateProgress.running = false
+}
+
+/** 进度端点负载：更新是否进行中、已耗时、最近输出尾部。 */
+export function getUpdateProgress() {
+  return {
+    running: updateProgress.running,
+    elapsedMs: updateProgress.running ? Date.now() - updateProgress.startedAt : 0,
+    outputTail: updateProgress.tail.join('\n'),
+  }
+}
+
+export function progressHandler(req, res) {
+  if (!localHostOk(req)) {
+    json(res, 403, { ok: false, error: 'forbidden: progress route is local-only' })
+    return
+  }
+  json(res, 200, { ok: true, ...getUpdateProgress() })
+}
+
+/** Windows 上 shell:true 包了层 cmd.exe，taskkill /T 连树一起杀，避免 pnpm.exe 孤儿。 */
+function killChildTree(child) {
+  try {
+    if (isWin && child.pid) {
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+      killer.on?.('error', () => { try { child.kill() } catch { /* ignore */ } })
+    } else {
+      child.kill()
+    }
+  } catch {
+    try { child.kill() } catch { /* ignore */ }
+  }
+}
+
+export function run(cmd, args, cwd, opts) {
+  const idleTimeoutMs = (opts && opts.idleTimeoutMs) || IDLE_TIMEOUT_MS
+  const totalTimeoutMs = (opts && opts.totalTimeoutMs) || TOTAL_TIMEOUT_MS
   return new Promise((resolvePromise) => {
     let settled = false
+    let idleTimer = null
+    let totalTimer = null
     const finish = (ok, output) => {
       if (settled) return
       settled = true
+      if (idleTimer) clearTimeout(idleTimer)
+      if (totalTimer) clearTimeout(totalTimer)
       if (activeChild === child) activeChild = null
       resolvePromise({ ok, output })
+    }
+    // 超时终止：先杀进程树再落结论——挂死的 pnpm 若继续活着改写 node_modules，
+    // 用户重试更新就是在半成品上叠半成品
+    const finishTimedOut = (output) => {
+      killChildTree(child)
+      finish(false, output)
     }
     let child
     try {
@@ -253,12 +334,27 @@ export function run(cmd, args, cwd) {
     }
     activeChild = child
     let out = ''
-    child.stdout?.on('data', (d) => (out += String(d)))
-    child.stderr?.on('data', (d) => (out += String(d)))
+    // 空闲超时：任何一段输出（stdout/stderr）都重置计时器。慢网下载期间 pnpm
+    // 持续产出进度行，不会被误杀；真正挂死的进程 60s 内无输出、被终止。
+    const armIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer)
+      idleTimer = setTimeout(
+        () => finishTimedOut(out + `\n[timeout: no output for ${Math.max(1, Math.round(idleTimeoutMs / 1000))}s — 更新进程疑似挂起]`),
+        idleTimeoutMs,
+      )
+      idleTimer.unref?.()
+    }
+    child.stdout?.on('data', (d) => { out += String(d); pushProgressOutput(String(d)); armIdleTimer() })
+    child.stderr?.on('data', (d) => { out += String(d); pushProgressOutput(String(d)); armIdleTimer() })
     child.on('error', (err) => finish(false, out + '\n' + String(err.message)))
     child.on('close', (code) => finish(code === 0, out))
-    // hard cap so a hung git/pnpm never wedges the request
-    setTimeout(() => finish(false, out + '\n[timeout after 90s]'), 90000).unref()
+    // 总上限兜底：输出一直有但进程永不结束（如交互式提示卡住）也能退出
+    totalTimer = setTimeout(
+      () => finishTimedOut(out + `\n[timeout: exceeded total ${Math.max(1, Math.round(totalTimeoutMs / 1000))}s]`),
+      totalTimeoutMs,
+    )
+    totalTimer.unref?.()
+    armIdleTimer()
   })
 }
 
@@ -268,17 +364,28 @@ let activeChild = null
 export function killActiveUpdate() {
   const child = activeChild
   if (!child || child.exitCode !== null) return
+  killChildTree(child)
+}
+
+// ---- 失败后旧安装完整性自检 ----
+// pnpm 被超时/宿主退出中途杀掉时，node_modules 可能已被动到一半（pnpm 无回滚）：
+// 旧版当下还能跑（代码在内存里），但下次重启可能加载失败。更新失败时立即检测
+// 自己的包目录并如实上报，让用户马上知道旧版还能不能继续用，而不是等重启才炸。
+export function verifyInstallIntegrity(pkgDir) {
+  const dir = pkgDir || dirname(dirname(fileURLToPath(import.meta.url)))
+  const problems = []
+  let pj = null
   try {
-    if (isWin && child.pid) {
-      // shell:true 包了层 cmd.exe，taskkill /T 连树一起杀，避免 pnpm.exe 孤儿
-      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
-      killer.on?.('error', () => { try { child.kill() } catch { /* ignore */ } })
-    } else {
-      child.kill()
-    }
-  } catch {
-    try { child.kill() } catch { /* ignore */ }
+    pj = JSON.parse(readFileSync(`${dir}/package.json`, 'utf8'))
+  } catch (err) {
+    problems.push(`package.json 不可读（${String((err && err.message) || err).slice(0, 80)}）`)
   }
+  if (pj) {
+    const entry = typeof pj.main === 'string' && pj.main ? pj.main : 'src/index.js'
+    if (!existsSync(`${dir}/${entry}`)) problems.push(`入口文件缺失: ${entry}`)
+  }
+  if (!existsSync(`${dir}/src`)) problems.push('src/ 目录缺失')
+  return { ok: problems.length === 0, problems, pkgDir: dir }
 }
 
 export function localHostOk(req) {
@@ -402,15 +509,22 @@ export async function updateHandler(req, res) {
     // 否则 pnpm/git 替换包内容时报 EPERM（link 模式的 git pull 同理）
     await quiesceDesktopWindow()
     let result
-    if (info.mode === 'link' && info.repoDir) {
-      result = await hooks.run('git', ['-C', info.repoDir, 'pull'], info.repoDir)
-    } else if (info.profileDir && existsSync(info.profileDir)) {
-      // --latest：跨出 package.json 里可能被钉死的精确版本号（如 "0.3.3"）。
-      // 普通 pnpm update 只在声明范围内升级，精确锁会永远原地重装旧版却报成功。
-      result = await hooks.run('pnpm', ['update', '--latest', PKG], info.profileDir)
-    } else {
-      json(res, 500, { ok: false, output: 'unknown install shape' })
-      return
+    // 进度跟踪围着 hooks.run 包一层（真/假 run 都被覆盖）：running 态期间
+    // 客户端看门狗会轮询 /update-progress 拿输出尾部实时展示。
+    beginUpdateProgress()
+    try {
+      if (info.mode === 'link' && info.repoDir) {
+        result = await hooks.run('git', ['-C', info.repoDir, 'pull'], info.repoDir)
+      } else if (info.profileDir && existsSync(info.profileDir)) {
+        // --latest：跨出 package.json 里可能被钉死的精确版本号（如 "0.3.3"）。
+        // 普通 pnpm update 只在声明范围内升级，精确锁会永远原地重装旧版却报成功。
+        result = await hooks.run('pnpm', ['update', '--latest', PKG], info.profileDir)
+      } else {
+        json(res, 500, { ok: false, output: 'unknown install shape' })
+        return
+      }
+    } finally {
+      endUpdateProgress()
     }
     // 成功后置回调：宿主借此收尾（如关闭桌面模式——运行时已随更新被移除）。
     // 返回字符串则追加到输出里展示给用户。
@@ -419,6 +533,23 @@ export async function updateHandler(req, res) {
         const note = hooks.onUpdateSuccess()
         if (typeof note === 'string' && note) result = { ok: true, output: result.output + '\n' + note }
       } catch { /* 收尾失败不影响更新结果 */ }
+    }
+    // 失败自检：pnpm 中途被杀可能留下半成品 node_modules——旧版当下不受影响
+    // （代码已加载进内存），但要立刻告诉用户磁盘上的旧安装是否还能撑到下次重启
+    if (!result.ok) {
+      try {
+        const pkgDir = info.mode === 'link' && info.repoDir
+          ? info.repoDir
+          : info.profileDir
+            ? `${info.profileDir}/node_modules/${PKG}`
+            : null
+        if (pkgDir) {
+          const integrity = verifyInstallIntegrity(pkgDir)
+          result.output += integrity.ok
+            ? '\n\n✅ 自检：当前安装完好，旧版本可继续正常使用，稍后可重试更新。'
+            : `\n\n⚠️ 自检：当前安装完整性异常（${integrity.problems.join('；')}）——旧版本重启后可能无法加载，建议到 GitHub Releases 按指引手动重装。`
+        }
+      } catch { /* 自检失败不影响原有错误响应 */ }
     }
     json(res, result.ok ? 200 : 500, { ok: result.ok, output: result.output.slice(-6000) })
   } catch (err) {

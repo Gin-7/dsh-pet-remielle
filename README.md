@@ -110,7 +110,7 @@ dsh plugin --profile web add "C:\Users\you\Downloads\dsh-pet-remielle-<version>.
 ```powershell
 # 按实际安装的旧行 id 卸载（以下两条按需执行）
 dsh plugin --profile web remove @dsh-external/dsh-client-ui-pet-remielle   # 0.2.0 及之前
-dsh plugin --profile web remove dsh-pet-remielle                            # 0.2.0 – 0.3.0
+dsh plugin --profile web remove dsh-pet-remielle                            # 0.2.0 之后
 
 # 重新安装最新版（npm 或 GitHub 均可）
 dsh plugin --profile web add dsh-pet-remielle
