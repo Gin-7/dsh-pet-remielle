@@ -1,0 +1,21 @@
+# 行尾策略：仓库内一律按 LF 存储，检出时交给各人的 git 配置决定。
+#
+# 写 text=auto 而不写 eol=crlf：后者会覆盖平台默认，把 Linux/macOS 贡献者也
+# 强制成 CRLF，以后任何需要 LF 的文件（shell 脚本、CI 里喂给工具的清单）都会踩坑。
+# core.autocrlf=true（Windows 默认）本来就得到 CRLF 检出，用 text=auto 即可。
+* text=auto
+
+# 少数必须保持 LF 的文件：被 shell / CI 直接消费，CRLF 会出诡异问题。
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# lib/client.js 是提交进版本库的构建产物，scripts/build-client.mjs 恒定输出 LF。
+# 不钉住的话：Windows 的 core.autocrlf=true 把它检出成 CRLF，而 pretest 重建后又
+# 写回 LF，于是每跑一次 npm test / build:client，这个最常被提交的产物就永久变成
+# 「已修改」——git status 撒谎、git diff 却是空白，git update-index --refresh 也清不掉。
+lib/client.js text eol=lf
+
+# 二进制素材：不做行尾转换、不做 diff。
+*.gif binary
+*.png binary

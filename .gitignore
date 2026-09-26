@@ -1,6 +1,7 @@
 # node_modules and package artifacts
 node_modules/
 package-lock.json
+pnpm-lock.yaml
 
 # python helper build artifacts
 runtime/__pycache__/
