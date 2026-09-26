@@ -14,8 +14,15 @@ import { join, resolve, dirname } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { downloadMirrors, ensureElectronRuntime, electronArtifact, runtimeTarget, electronBinaryIn, requiredRuntimeFiles, missingRuntimeFiles, ELECTRON_VERSION } from '../src/electron-fetch.mjs'
 
-/** The platform-specific executable name (electron.exe on Windows, electron elsewhere). */
-const BIN = electronArtifact().binary
+/**
+ * 本文件下方的 ensureElectronRuntime 用例一律按 `platform: 'win32'` 驱动，所以夹具
+ * 必须落 win32 的可执行名。此前这里取的是 `electronArtifact().binary`（不带参数 =
+ * 运行平台），于是夹具在 Windows runner 上写 electron.exe、在 Ubuntu 上写 electron，
+ * 而生产代码是按**传入的** platform 查找的 —— 非 Windows runner 上两者对不上，
+ * 直接报「未在解压目录找到 electron.exe」。上游 0.4.4 一直只在 Windows 上跑，
+ * 这个缺口此前没暴露过。
+ */
+const BIN = electronArtifact({ platform: 'win32' }).binary
 
 /** Minimal web ReadableStream carrying one chunk of payload. */
 function streamOf(chunk) {
@@ -85,7 +92,9 @@ function fakeSpawn(platform = 'win32') {
         writeFileSync(join(app, 'Info.plist'), 'fake')
         writeFileSync(join(dest, 'LICENSE'), 'fake')
       } else {
-        writeFileSync(join(dest, BIN), 'FAKE_ELECTRON')
+        // 按本解压器被要求的 platform 落可执行名，而不是全局的 BIN：fakeSpawn 是个
+        // 接受 platform 的通用夹具，将来若有用例走 linux，得落无后缀的 electron。
+        writeFileSync(join(dest, electronArtifact({ platform }).binary), 'FAKE_ELECTRON')
         mkdirSync(join(dest, 'resources'), { recursive: true })
         writeFileSync(join(dest, 'resources', 'default_app.asar'), 'FAKE_ASAR')
         writeFileSync(join(dest, 'resources.pak'), 'fake')
