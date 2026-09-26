@@ -61,7 +61,11 @@ test('legal holidays are off-peak on weekdays too', () => {
   assert.equal(isPeakMoment(bj(2026, 12, 24, 10), holidays), true)
 })
 
-test('builtin calendar covers the known holiday blocks', () => {
+test('the builtin fallback table is not silently corrupted', () => {
+  // 这不是「数据 == 数据」的同义反复：源码里那张表是**手抄**的国务院放假安排，
+  // 抄错一个日期不会让任何东西报错，只会让那一天的峰谷计费判定悄悄判错。
+  // 节假日数据要等每年 11 月官方发布才能补下一年，因此这里只钉各年最不可省的
+  // 几天（元旦 / 劳动节 / 国庆），不穷举——穷举会让这张表每次更新都要改测试。
   for (const year of [2025, 2026]) {
     const set = new Set(BUILTIN_HOLIDAYS[year])
     for (const md of ['01-01', '05-01', '10-01', '10-02']) {

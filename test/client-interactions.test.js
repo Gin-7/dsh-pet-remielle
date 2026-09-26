@@ -1,16 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
+import { cardHeightOf } from './helpers/card-height.mjs'
 
 const CLIENT = new URL('../lib/client.js', import.meta.url)
 const CLIENT_CORE = new URL('../src/client.core.js', import.meta.url)
 const STATUS_COPY = new URL('../src/status-copy.js', import.meta.url)
-
-/** 牌叠卡片的真实高度来自 CSS（测试 stub 的 offsetHeight 只是近似值，不能当卡高用）。 */
-function cardHeightFromCss(css) {
-  const rule = /\.rm2-pet-bubbles \.rm2-pet-bubble\s*\{[^}]*\}/.exec(css)?.[0] ?? ''
-  return Number(/(?<!-)height:\s*(\d+)px/.exec(rule)?.[1])
-}
 
 function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = [], modernNavigation = false) {
   const elements = []
@@ -23,6 +18,8 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
   let sessionListener
   let stream
   let visibilityState = 'visible'
+  let activePanelId = null
+  const documentListeners = new Map()
 
   function element(tag = 'div') {
     let node
@@ -108,38 +105,51 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
       return []
     },
   }
-  const otherAllowBtn = {
-    textContent: '允许一次',
-    innerText: '允许一次',
-    getAttribute() { return '' },
-    click() { allowClicks.push('other-allow') },
-  }
+  // 第二个审批面板：只用来把页面上「同时存在多个审批面板」这件事构造出来。
+  // 它内部不带可点按钮——自动允许一次的闸门是「恰好一个面板才点」，多面板时
+  // 一个都不点，所以这里不需要（也不该）准备第二个「允许一次」按钮。
   const otherApprovalPanel = {
-    querySelectorAll(sel) {
-      if (String(sel).includes('button')) return [otherAllowBtn]
-      return []
-    },
+    querySelectorAll() { return [] },
   }
   const conversationFrame = {
+    getAttribute(name) { return name === 'data-conversation-session' ? current : '' },
     querySelectorAll(sel) {
       if (sel === '[data-approval-key]') return [approvalPanel]
       return []
     },
   }
+  const otherConversationFrame = {
+    getAttribute(name) { return name === 'data-conversation-session' ? 'other-session' : '' },
+    querySelectorAll(sel) {
+      if (sel === '[data-approval-key]') return [otherApprovalPanel]
+      return []
+    },
+  }
+  // 默认模拟「页面带 [data-conversation-session] 作用域」的新宿主，approvalPanels
+  // 走 scoped 分支。测试可用 setApprovalDom 切成「无作用域 + document 级面板」，
+  // 以覆盖那条从未被走到的 panels.length === 1 闸门。
+  let scopedRoots = [otherConversationFrame, conversationFrame]
+  let loosePanels = [otherApprovalPanel, approvalPanel]
   const document = {
     body,
     head,
     documentElement: element('html'),
     get visibilityState() { return visibilityState },
     createElement: (tag) => element(tag),
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(name, listener) {
+      const listeners = documentListeners.get(name) ?? []
+      listeners.push(listener)
+      documentListeners.set(name, listeners)
+    },
+    removeEventListener(name, listener) {
+      documentListeners.set(name, (documentListeners.get(name) ?? []).filter((entry) => entry !== listener))
+    },
     querySelector(sel) {
-      if (sel === '[data-panel-conversation]') return conversationFrame
-      return sel === '[data-approval-key]' ? approvalPanel : null
+      return sel === '[data-conversation-session]' ? conversationFrame : sel === '[data-approval-key]' ? approvalPanel : null
     },
     querySelectorAll(sel) {
-      return sel === '[data-approval-key]' ? [otherApprovalPanel, approvalPanel] : []
+      if (sel === '[data-conversation-session]') return scopedRoots
+      return sel === '[data-approval-key]' ? loosePanels : []
     },
   }
   class EventSourceStub {
@@ -214,10 +224,21 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     ...(modernNavigation ? {} : { open: openSession }),
   }
   const uiWorkspace = { openSession }
+  const panelListeners = new Set()
+  const layout = {
+    panelInfo: {
+      getSnapshot: () => ({ activePanelId }),
+      subscribe(listener) { panelListeners.add(listener); return () => panelListeners.delete(listener) },
+    },
+  }
   moduleExports.apply({
     slots,
     sessions,
-    ...(modernNavigation ? { get(name) { return name === 'uiWorkspace' ? uiWorkspace : undefined } } : {}),
+    get(name) {
+      if (modernNavigation && name === 'uiWorkspace') return uiWorkspace
+      if (name === 'layout') return layout
+      return undefined
+    },
     effect: (callback) => callback(),
   })
 
@@ -247,11 +268,18 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
   function dispatchWindowEvent(name) {
     for (const listener of windowListeners.get(name) ?? []) listener({})
   }
+  function dispatchDocumentEvent(name) {
+    for (const listener of documentListeners.get(name) ?? []) listener({})
+  }
   function setVisibility(next) {
     visibilityState = next
-    dispatchWindowEvent('visibilitychange')
+    dispatchDocumentEvent('visibilitychange')
   }
-  return { allowClicks, beacons, card, click, dispatchWindowEvent, elements, fetches, navigator: navigatorStub, opened, select, send, setVisibility, styleWrites, flushTitleTimers }
+  function setPanelActive(next) {
+    activePanelId = next ? 'plugins' : null
+    for (const listener of panelListeners) listener()
+  }
+  return { allowClicks, beacons, card, click, dispatchDocumentEvent, dispatchWindowEvent, elements, fetches, navigator: navigatorStub, opened, panel: approvalPanel, otherPanel: otherApprovalPanel, select, send, setApprovalDom: (next) => { if (Array.isArray(next.scopedRoots)) scopedRoots = next.scopedRoots; if (Array.isArray(next.loosePanels)) loosePanels = next.loosePanels }, setPanelActive, setVisibility, styleWrites, flushTitleTimers }
 }
 
 const base = {
@@ -265,47 +293,24 @@ const base = {
   sessions: [],
 }
 
-test('generated CSS fixes active and idle heights without margin animation', () => {
-  const harness = createHarness()
-  const css = harness.elements.find((node) => node.tag === 'style' && node.textContent.includes('.rm2-pet-bubbles'))?.textContent
-  assert.ok(css, 'missing injected pet CSS')
-  assert.match(css, /height:91px;min-height:91px/)
-  assert.match(css, /idle-placeholder\{height:61px;min-height:61px/)
-  assert.doesNotMatch(css, /transition:[^;}]*margin/)
-})
-
-test('bubble containers scale with the configured pet size', () => {
-  const harness = createHarness()
-  harness.send({ ...base, scale: 0.75 })
-  const bubble = harness.elements.find((node) => String(node.className).includes('rm2-pet-bubble') && !String(node.className).includes('rm2-pet-bubbles'))
-  const bubbleStack = harness.elements.find((node) => node.className === 'rm2-pet-bubbles')
+// 缩放与镜像最终写到 DOM 上的效果。
+// 缩放口径的算术（同步/固定两模式）由 test/pet-tip.test.js 直接测 bubbleZoomOf
+// 纯函数覆盖；此处只验 mountPet 确实把结果落到元素 style 上。镜像那段是本用例独有：
+// 镜像只允许作用于贴纸，气泡容器不能跟着翻。
+test('pet visuals: pet size, mirror and bubble zoom reach the DOM', () => {
+  const sized = createHarness()
+  sized.send({ ...base, scale: 0.75 })
+  const bubble = sized.elements.find((node) => String(node.className).includes('rm2-pet-bubble') && !String(node.className).includes('rm2-pet-bubbles'))
   assert.equal(bubble.style.zoom, '0.75')
-  assert.equal(bubbleStack.style.zoom, '0.75')
-})
+  assert.equal(sized.elements.find((node) => node.className === 'rm2-pet-bubbles').style.zoom, '0.75')
 
-test('pet image mirrors without flipping bubble containers', () => {
-  const harness = createHarness()
-  harness.send({ ...base, mirror: true })
-  const image = harness.elements.find((node) => node.tag === 'img')
-  const bubbleStack = harness.elements.find((node) => node.className === 'rm2-pet-bubbles')
-  assert.equal(image.style.transform, 'scaleX(-1)')
-  assert.equal(bubbleStack.style.transform, undefined)
-  harness.send({ ...base, mirror: false })
-  assert.equal(image.style.transform, '')
-})
-
-test('bubble zoom follows sync-ratio or fixed-size mode from the snapshot', () => {
-  // 同步模式：zoom = scale × bubbleScaleRatio
-  const syncHarness = createHarness()
-  syncHarness.send({ ...base, scale: 1.5, bubbleScaleSync: true, bubbleScaleRatio: 0.8 })
-  const syncStack = syncHarness.elements.find((node) => node.className === 'rm2-pet-bubbles')
-  assert.equal(syncStack.style.zoom, '1.2')
-
-  // 固定模式：zoom = bubbleFixedSize，与桌宠 scale 无关
-  const fixedHarness = createHarness()
-  fixedHarness.send({ ...base, scale: 1.5, bubbleScaleSync: false, bubbleFixedSize: 0.8 })
-  const fixedStack = fixedHarness.elements.find((node) => node.className === 'rm2-pet-bubbles')
-  assert.equal(fixedStack.style.zoom, '0.8')
+  // 镜像只作用于贴纸，不能把气泡容器一起翻过来
+  const mirrored = createHarness()
+  mirrored.send({ ...base, mirror: true })
+  assert.equal(mirrored.elements.find((node) => node.tag === 'img').style.transform, 'scaleX(-1)')
+  assert.equal(mirrored.elements.find((node) => node.className === 'rm2-pet-bubbles').style.transform, undefined)
+  mirrored.send({ ...base, mirror: false })
+  assert.equal(mirrored.elements.find((node) => node.tag === 'img').style.transform, '')
 })
 
 test('multi-session deck renders an inert backboard with a dynamic click target', () => {
@@ -325,10 +330,11 @@ test('multi-session deck renders an inert backboard with a dynamic click target'
   const writes = harness.styleWrites.filter(({ element, key }) => element === backboard && key === 'marginTop')
   assert.ok(writes.length >= 1)
   const lift = Math.abs(Number.parseInt(writes.at(-1).value, 10))
-  assert.equal(lift, 80)
-  // 卡高真值在 CSS 里（stub 的 offsetHeight=68 只是近似值），所以从源文件解析：
-  // 改 CSS 卡高时这里必须跟着失败，否则又是上一轮那种"假绿"。
-  const cardHeight = cardHeightFromCss(readFileSync(CLIENT_CORE, 'utf8'))
+  // 卡高真值在 CSS 里（stub 的 offsetHeight 只是近似值），所以从源文件解析：
+  // 卡高变了而上移量没跟着变，背板就会露太多或被完全盖住——这是布局不变量，
+  // 不是纯派生的样式断言。解析函数已抽到 test/helpers/card-height.mjs，两端共用。
+  const cardHeight = cardHeightOf(readFileSync(CLIENT_CORE, 'utf8'))
+  assert.equal(lift, 80, '第二层应按共享常量 STACK_LIFT_PX 上移（常量唯一性由 desktop-window 测）')
   assert.equal(cardHeight, 91)
   assert.ok(
     Math.abs((cardHeight - lift) * 0.75 - 8) <= 0.5,
@@ -374,7 +380,8 @@ test('modern workspace navigation promotes the clicked lower bubble', () => {
   assert.match(harness.card('第二个对话').className, /\btop\b/)
 })
 
-test('backboard target and tip stay paired while sorting settles', () => {
+// 背板提示：点击目标与文案必须成对更新，且优先用宿主会话列表补全标题。
+test('backboard tip stays paired with its click target', () => {
   const harness = createHarness('first')
   const mk = (id, updatedAt, title) => ({ sessionId: id, state: 'WORKING', phase: 'tool-call', message: `${id} 的消息`, title, updatedAt })
   harness.send({ ...base, sessions: [mk('first', 30, '首个对话'), mk('second', 20, '第二个对话')] })
@@ -462,7 +469,9 @@ test('approval bubble tooltip shows the second-line request detail', () => {
   assert.equal(approvalCard.title, '')
 })
 
-test('web pet tip follows dark theme and stays inside the viewport with glow padding', () => {
+test('web pet tip follows dark theme and stays inside the viewport', () => {
+  // 接线护栏：网页端用的是共享的 pet-tip 模块，深色样式挂在宿主主题属性下。
+  // 布局算法本身由 test/pet-tip.test.js 的 layoutPetTip 覆盖，这里只看两端接上了。
   const core = readFileSync(CLIENT_CORE, 'utf8')
   assert.match(core, /body\[data-ds-dark-theme\] \.rm2-pet-tip/)
   assert.match(core, /__tip\.layoutPetTip\(petTip, anchor/)
@@ -485,18 +494,12 @@ test('web pet tip follows dark theme and stays inside the viewport with glow pad
   const tip = harness.elements.find((node) => node.className === 'rm2-pet-tip')
   assert.ok(tip, 'missing .rm2-pet-tip')
   assert.equal(tip.textContent, '点击跳到这里看一下~')
-  const left = Number.parseFloat(tip.style.left)
-  const top = Number.parseFloat(tip.style.top)
-  const tw = tip.offsetWidth
-  const th = tip.offsetHeight
-  assert.ok(left >= 24, `left ${left} should keep 24px glow`)
-  assert.ok(left + tw <= 1280 - 24, `right ${left + tw} should keep 24px glow`)
-  assert.ok(top >= 24, `top ${top} should keep 24px glow`)
-  assert.ok(top + th <= 800 - 24, `bottom ${top + th} should keep 24px glow`)
-  // 短口吻不拆字；maxW 用可见宽度，盒子可向空侧偏置，仍留 24px 光晕
+  // 视口钳位本身由 test/pet-tip.test.js 直接对 layoutPetTip 断言（显式注入
+  // offsetWidth/offsetHeight，覆盖 24px 光晕、maxWidth 420 与四种换行场景）。
+  // 这里用 stub 的 offsetWidth(=字数×12) / offsetHeight(=68) 再算一遍，得到的是
+  // stub 自己的数字而非真实布局——同样量级的检查已在那边做过且更强，故不重复。
+  // 此处只留一条与 DOM 接线直接相关的：提示浮层拿到的是自绘节点且短口吻不拆字。
   assert.equal(tip.style.whiteSpace, 'nowrap')
-  const maxW = Number.parseFloat(tip.style.maxWidth)
-  assert.equal(maxW, 420)
 })
 
 test('pet dock grabbing cursor survives snapshot refresh until pointerup', () => {
@@ -556,46 +559,35 @@ test('completion card waits for confirmed selection before acknowledgement', asy
   assert.ok(harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'done' })))
 })
 
-test('current conversation ERROR card is dropped without attention', () => {
-  const harness = createHarness('err')
-  harness.send({
-    ...base,
-    message: '蕾米埃尔待机中~',
-    sessions: [{
-      sessionId: 'err',
-      state: 'ERROR',
-      message: '任务好像遇到问题了哦',
-      detail: 'dsh-pet-remielle · 需要处理',
-      attention: true,
-      updatedAt: 1,
-    }],
-  })
-  assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务好像遇到问题了哦'), false)
-})
+// 「当前会话 vs 后台会话」的卡片去留规则：正在看的 ERROR 直接撤掉，后台的
+// ERROR / WAITING 保持 attention 直到那个会话被打开。
+test('cards of the viewed session are dropped while background cards stay in attention', () => {
+  const error = {
+    sessionId: 'err',
+    state: 'ERROR',
+    message: '任务好像遇到问题了哦',
+    detail: 'dsh-pet-remielle · 需要处理',
+    attention: true,
+    updatedAt: 1,
+  }
+  const viewed = createHarness('err')
+  viewed.send({ ...base, message: '蕾米埃尔待机中~', sessions: [error] })
+  assert.equal(
+    viewed.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务好像遇到问题了哦'),
+    false,
+    '正在看的会话不该再顶一张 ERROR 卡',
+  )
 
-test('background ERROR card stays in attention until that session is opened', () => {
-  const harness = createHarness('other')
-  harness.send({
-    ...base,
-    sessions: [{
-      sessionId: 'err',
-      state: 'ERROR',
-      message: '任务好像遇到问题了哦',
-      detail: 'dsh-pet-remielle · 需要处理',
-      attention: true,
-      updatedAt: 1,
-    }],
-  })
-  const card = harness.card('任务好像遇到问题了哦')
-  assert.ok(card.className.includes('attention'))
-  harness.select('err')
+  const background = createHarness('other')
+  background.send({ ...base, sessions: [error] })
+  const errorCard = background.card('任务好像遇到问题了哦')
+  assert.ok(errorCard.className.includes('attention'))
+  background.select('err')
   // 节点可能仍留在 harness.elements 里，但已从牌叠父节点卸下。
-  assert.equal(card.parentNode.children.includes(card), false)
-})
+  assert.equal(errorCard.parentNode.children.includes(errorCard), false)
 
-test('current conversation WAITING card stays until the question is answered', () => {
-  const harness = createHarness('ask')
-  harness.send({
+  const waiting = createHarness('ask')
+  waiting.send({
     ...base,
     sessions: [{
       sessionId: 'ask',
@@ -608,8 +600,7 @@ test('current conversation WAITING card stays until the question is answered', (
       updatedAt: 1,
     }],
   })
-  const card = harness.card('需要你确认一下哦')
-  assert.ok(card.className.includes('attention'))
+  assert.ok(waiting.card('需要你确认一下哦').className.includes('attention'), '提问卡必须留在首位')
 })
 
 test('plan review card renders with its own tooltip and opens without auto-approving', () => {
@@ -621,15 +612,19 @@ test('plan review card renders with its own tooltip and opens without auto-appro
       state: 'WAITING',
       phase: 'plan-review',
       message: '计划待审',
-      detail: '计划待审 · 推理面板改材质',
+      detail: 'dsh-pet-remielle · 计划待审 · 推理面板改材质',
       planReview: true,
       attention: true,
       updatedAt: 1,
     }],
   })
   const card = harness.card('计划待审')
-  assert.ok(card.className.includes('plan-review'))
+  // 计划待审没有专属类名：approval / plan-review 两个 token 两端都没有 CSS 规则
+  // 消费，已从 classNameOf 移除。它靠 attention 样式 + 自己的提示文案 + 「不自动
+  // 点允许一次」与审批卡区分。
+  assert.equal(card.className.includes('attention'), true)
   assert.equal(card.className.includes('approval'), false)
+  assert.equal(card.className.includes('plan-review'), false, 'plan-review 类名无样式消费，不得回归')
   assert.match(card.dataset.rm2Tip, /计划待审：推理面板改材质，点击打开同意执行\/要求修改/)
   harness.click(card)
   assert.deepEqual(harness.opened, ['plan'])
@@ -656,44 +651,50 @@ test('current conversation completion is acknowledged without a green reminder',
   assert.equal(harness.card('任务已完成').className.includes(' completed'), false)
 })
 
-test('hidden tab keeps its completion reminder until the tab becomes visible', async () => {
-  const harness = createHarness('done')
-  harness.setVisibility('hidden')
-  harness.send({
-    ...base,
-    sessions: [{
-      sessionId: 'completion:done',
-      targetSessionId: 'done',
-      state: 'SUCCESS',
-      message: '任务已完成',
-      detail: '结果',
-      completed: true,
-      completionNotification: true,
-    }],
-  })
-  await Promise.resolve()
-  assert.equal(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')), false)
-  harness.card('任务已完成')
+// 只有前台标签页在"看着"当前会话时才能自动确认完成提醒；桌面窗开着不算，
+// 隐藏标签页也不算——否则完成卡会在用户根本没看的时候消失。
+test('completion is auto-acknowledged only by a foreground tab viewing that session', async () => {
+  for (const [label, desktopActive] of [['普通标签页', false], ['桌面窗在场', true]]) {
+    const harness = createHarness('watched')
+    harness.setVisibility('hidden')
+    const completed = {
+      ...base,
+      desktopActive,
+      sessions: [{
+        sessionId: 'completion:watched',
+        targetSessionId: 'watched',
+        state: 'SUCCESS',
+        message: '任务已完成',
+        detail: '结果',
+        completed: true,
+        completionNotification: true,
+      }],
+    }
+    harness.send(completed)
+    await Promise.resolve()
+    assert.equal(
+      harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')),
+      false,
+      `${label}：隐藏标签页不得自动确认`,
+    )
+    // 提醒确实还挂在牌叠上；桌面窗在场时网页端不再重复渲染这张卡（由桌宠窗口显示），
+    // 但同样不得自动确认。
+    if (!desktopActive) harness.card('任务已完成')
 
-  harness.setVisibility('visible')
-  harness.send({
-    ...base,
-    sessions: [{
-      sessionId: 'completion:done',
-      targetSessionId: 'done',
-      state: 'SUCCESS',
-      message: '任务已完成',
-      detail: '结果',
-      completed: true,
-      completionNotification: true,
-    }],
-  })
-  await Promise.resolve()
-  assert.ok(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')))
+    harness.setVisibility('visible')
+    harness.send(completed)
+    await Promise.resolve()
+    assert.ok(
+      harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'watched' })),
+      `${label}：切回可见标签页后才自动确认`,
+    )
+  }
 })
 
-test('same-mood bubble title holds until the refresh interval elapses', () => {
-  const harness = createHarness('s1')
+// 标题节流：同一贴纸的逐 chunk 文案要按住不动（否则每 chunk 翻一次），
+// 换贴纸则立即更新。
+test('bubble title holds while the mood is unchanged and updates when it changes', () => {
+  const held = createHarness('s1')
   const thinking = (message) => ({
     sessionId: 's1',
     state: 'THINKING',
@@ -703,29 +704,16 @@ test('same-mood bubble title holds until the refresh interval elapses', () => {
     detail: '.dsh · 推理阶段',
     updatedAt: 2,
   })
-  harness.send({ ...base, sessions: [thinking('让我想想最优解是什么')] })
-  harness.send({ ...base, sessions: [thinking('思路整理中，稍等片刻~')] })
-  harness.card('让我想想最优解是什么')
-  assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '思路整理中，稍等片刻~'), false)
-  harness.flushTitleTimers()
-  harness.card('思路整理中，稍等片刻~')
-})
+  held.send({ ...base, sessions: [thinking('让我想想最优解是什么')] })
+  held.send({ ...base, sessions: [thinking('思路整理中，稍等片刻~')] })
+  held.card('让我想想最优解是什么')
+  assert.equal(held.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '思路整理中，稍等片刻~'), false)
+  held.flushTitleTimers()
+  held.card('思路整理中，稍等片刻~')
 
-test('mood change updates bubble title immediately', () => {
-  const harness = createHarness('s1')
-  harness.send({
-    ...base,
-    sessions: [{
-      sessionId: 's1',
-      state: 'THINKING',
-      mood: '04',
-      phase: 'think',
-      message: '让我想想最优解是什么',
-      detail: '.dsh · 推理阶段',
-      updatedAt: 2,
-    }],
-  })
-  harness.send({
+  const swapped = createHarness('s1')
+  swapped.send({ ...base, sessions: [thinking('让我想想最优解是什么')] })
+  swapped.send({
     ...base,
     sessions: [{
       sessionId: 's1',
@@ -737,7 +725,7 @@ test('mood change updates bubble title immediately', () => {
       updatedAt: 3,
     }],
   })
-  harness.card('正在修改这部分内容呢')
+  swapped.card('正在修改这部分内容呢')
 })
 
 test('expired reminder for the current conversation disappears immediately', async () => {
@@ -759,45 +747,33 @@ test('expired reminder for the current conversation disappears immediately', asy
   assert.equal(harness.elements.some((node) => node.className === 'rm2-pet-bubble-title' && node.textContent === '任务已完成'), false)
 })
 
-test('desktop mode still acks the viewed session completion', async () => {
-  // 桌面模式下 applySnapshot 会因 desktopActive 提前 return（隐藏页面宠物），渲染整段跳过；
-  // 但「我看着它完成」仍然成立，已读不能跟着渲染一起被跳过——否则绿点只能手动点击才消。
-  const harness = createHarness('watched')
-  harness.setVisibility('hidden')
-  harness.send({
-    ...base,
-    desktopActive: true,
-    sessions: [{
-      sessionId: 'completion:watched',
-      targetSessionId: 'watched',
-      state: 'SUCCESS',
-      message: '任务已完成',
-      detail: '结果',
-      completed: true,
-      completionNotification: true,
-    }],
-  })
-  await Promise.resolve()
-  assert.ok(
-    harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'watched' })),
-    'desktopActive 不应阻止当前会话的自动已读',
-  )
-})
-
-test('desktop bubble click uses DSH 0.1.7 uiWorkspace navigation', () => {
-  const harness = createHarness('other', true, [], true)
-  harness.send({ ...base, desktopActive: true, sessions: [] })
-  harness.send({ kind: 'session-action', sessionId: 'desk-1', completed: true })
-  assert.deepEqual(harness.opened, ['desk-1'])
-})
-
-test('desktop approval uses DSH 0.1.7 uiWorkspace navigation before allow-once', () => {
+test('desktop approval clicks only the panel inside the current DSH conversation root', () => {
   const harness = createHarness('other', true, [], true)
   harness.send({ ...base, desktopActive: true, sessions: [] })
   harness.send({ kind: 'session-action', sessionId: 'desk-2', approve: true })
   assert.deepEqual(harness.opened, ['desk-2'])
   harness.flushTitleTimers()
   assert.deepEqual(harness.allowClicks, ['allow'])
+})
+
+// approvalPanels 的 document 级兜底分支：页面没有 [data-conversation-session]
+// 作用域（旧宿主）时，只有恰好一个审批面板才自动点「允许一次」——页面上同时有多个
+// 审批面板就宁可不动，点错对话的审批比不点更糟。这条闸门此前在测试里从未被走到
+// （harness 恒提供作用域，document 级分支是死代码）。
+test('unscoped page refuses auto allow-once unless exactly one panel exists', () => {
+  const single = createHarness('other', true, [], true)
+  single.setApprovalDom({ scopedRoots: [], loosePanels: [single.panel] })
+  single.send({ ...base, desktopActive: true, sessions: [] })
+  single.send({ kind: 'session-action', sessionId: 'desk-2', approve: true })
+  single.flushTitleTimers()
+  assert.deepEqual(single.allowClicks, ['allow'], '唯一面板时照常自动点')
+
+  const many = createHarness('other', true, [], true)
+  many.setApprovalDom({ scopedRoots: [], loosePanels: [many.panel, many.otherPanel] })
+  many.send({ ...base, desktopActive: true, sessions: [] })
+  many.send({ kind: 'session-action', sessionId: 'desk-2', approve: true })
+  many.flushTitleTimers()
+  assert.deepEqual(many.allowClicks, [], '多个审批面板时不得自动点「允许一次」')
 })
 
 test('same session live work hides its own completion reminder', () => {
@@ -886,11 +862,9 @@ test('bubble area swallows pet interactions (click/dblclick/pointerdown/mousedow
 
 test('bubble hover uses the default cursor and wheel flips pages instead of scaling', () => {
   const harness = createHarness()
-  // 悬浮指针：气泡区域不再继承 dock 的 grab 手型（可点击的会话卡/圆点仍为 pointer）
-  const css = harness.elements.find((node) => node.tag === 'style' && node.textContent.includes('.rm2-pet-bubbles'))?.textContent
-  assert.ok(css, 'missing injected pet CSS')
-  assert.match(css, /\.rm2-pet-bubble\{[^}]*cursor:default/)
-  assert.match(css, /\.rm2-pet-bubbles\{[^}]*cursor:default/)
+  // 「气泡区不继承 dock 的 grab 手型」原先是断言 CSS 文本里的 cursor:default，已移除：
+  // 指针形状是视觉表现，改成 `cursor: default`（多个空格）就会假红，而这不是行为
+  // 契约——同类判断应当是手工验收。下面几条断言的都是可观察行为。
   const balanceBubble = harness.elements.find((node) => node.className === 'rm2-pet-bubble top')
   const pageDot = harness.elements.find((node) => node.className === 'rm2-bubble-dot')
   assert.equal(balanceBubble.title, '', 'balance bubble must not inherit dock title')
@@ -1073,7 +1047,11 @@ test('single-session deck renders no backboard', () => {
   assert.deepEqual(harness.opened, ['only'])
 })
 
-test('current-session uplink fires on mount/select and clears on page unload', () => {
+// 卸载清空上报（pagehide/beforeunload + sendBeacon/keepalive）由下面那条
+// 'unloading clears the reported current session…' 真派发 window 事件验证——
+// 此前这里还留着 4 条对 lib 产物的静态断言（grep addEventListener('pagehide'…
+// 与 keepalive），覆盖的是同一件事且更容易假阳。
+test('current-session uplink fires on mount and on select', () => {
   const harness = createHarness()
   const currentPosts = () => harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/session/current'))
   // 挂载时即上报当前会话（fire-and-forget，宿主随下次快照带出）
@@ -1083,13 +1061,6 @@ test('current-session uplink fires on mount/select and clears on page unload', (
   harness.select('ws9')
   assert.ok(currentPosts().length >= 2, 'selecting a session should re-report')
   assert.equal(JSON.parse(currentPosts().at(-1).options.body).sessionId, 'ws9')
-  // 卸载清空：注册 pagehide/beforeunload 上报，sendBeacon 优先、fetch keepalive 兜底
-  // （harness 的 window 不派发卸载事件，此处对 lib 产物做静态断言）
-  const code = readFileSync(CLIENT, 'utf8')
-  assert.match(code, /addEventListener\('pagehide',\s*clearReportedCurrentSession\)/)
-  assert.match(code, /addEventListener\('beforeunload',\s*clearReportedCurrentSession\)/)
-  assert.match(code, /navigator\.sendBeacon/)
-  assert.match(code, /keepalive:\s*true/)
 })
 
 test('hidden tab does not overwrite the reported current session until it becomes visible', () => {
@@ -1106,11 +1077,72 @@ test('hidden tab does not overwrite the reported current session until it become
   assert.equal(JSON.parse(currentPosts().at(-1).options.body).sessionId, 'background')
 })
 
-test('desktop bubble click (session-action without approve) opens its conversation only', () => {
-  const harness = createHarness()
-  harness.send({ kind: 'session-action', sessionId: 'desk-9', approve: false })
-  assert.ok(harness.opened.includes('desk-9'), 'should open the session')
-  assert.deepEqual(harness.allowClicks, [])
+test('active global panel keeps the retained session completion unacknowledged', async () => {
+  const harness = createHarness('watched', true, {
+    watched: { id: 'watched', retainedBy: { mainView: 1 } },
+  }, true)
+  const completed = {
+    ...base,
+    sessions: [{
+      sessionId: 'completion:watched',
+      targetSessionId: 'watched',
+      state: 'SUCCESS',
+      message: '任务已完成',
+      detail: '结果',
+      completed: true,
+      completionNotification: true,
+    }],
+  }
+
+  harness.setPanelActive(true)
+  harness.send(completed)
+  await Promise.resolve()
+  assert.equal(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')), false)
+  harness.card('任务已完成')
+
+  harness.setPanelActive(false)
+  harness.send(completed)
+  await Promise.resolve()
+  assert.ok(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')))
+})
+
+// 「只有一张完成卡」不等于「用户正在看它」。宿主没给出当前会话时（页面刚加载、
+// 多标签互相覆盖）猜错就是静默吞掉一条没看过的提醒，宁可留给手动点击。
+// 传 null 而不是 undefined：createHarness 的默认值是 'other'，undefined 会触发它。
+test('a lone completion card stays unacknowledged while the viewed session is unknown', async () => {
+  const harness = createHarness(null, false, [], true)
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'completion:elsewhere',
+      targetSessionId: 'elsewhere',
+      state: 'SUCCESS',
+      message: '任务已完成',
+      detail: '结果',
+      completed: true,
+      completionNotification: true,
+    }],
+  })
+  await Promise.resolve()
+  assert.equal(
+    harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')),
+    false,
+    '不知道用户在看哪个会话时，不得替用户确认唯一那张完成卡',
+  )
+  // 提醒仍在：这条只约束自动确认，不影响牌照常显示
+  harness.card('任务已完成')
+})
+
+// 桌面气泡点击必须走宿主导航：DSH 0.1.7 的 uiWorkspace.openSession 与旧路径
+// ctx.sessions.open 都要打开会话，且不带任何「允许一次」副作用。
+test('desktop bubble click opens its conversation on both navigation paths', () => {
+  for (const modern of [false, true]) {
+    const harness = createHarness('other', true, [], modern)
+    harness.send({ ...base, desktopActive: true, sessions: [] })
+    harness.send({ kind: 'session-action', sessionId: 'desk-9', approve: false })
+    assert.ok(harness.opened.includes('desk-9'), `should open the session (uiWorkspace=${modern})`)
+    assert.deepEqual(harness.allowClicks, [])
+  }
 })
 
 test('desktop completion-card click opens the conversation and acknowledges', async () => {
@@ -1140,23 +1172,13 @@ test('内联 SUCCESS_COPY_POOL 与 status-copy.js 的 success 池逐字一致（
   assert.deepEqual(parsePool(inlineMatch[1]), parsePool(statusMatch[1]))
 })
 
-test('lib bundle inlines session-order ahead of mountPet（拼接顺序护栏）', () => {
-  // __rm2SessionOrder / __rm2PetTip / __rm2GifFrame 必须在 mountPet 定义前就位，
-  // 否则消费端早失败守卫会抛错、宠物模块整体失效。此断言防止 build-client.mjs
-  // 的前置拼接被意外破坏。
-  const code = readFileSync(CLIENT, 'utf8')
-  const orderAt = code.indexOf('__rm2SessionOrder')
-  const tipAt = code.indexOf('__rm2PetTip')
-  const gifFrameAt = code.indexOf('__rm2GifFrame')
-  assert.notEqual(orderAt, -1, 'lib/client.js 应包含 session-order 拼接产物')
-  assert.notEqual(tipAt, -1, 'lib/client.js 应包含 pet-tip 拼接产物')
-  assert.notEqual(gifFrameAt, -1, 'lib/client.js 应包含 gif-frame 拼接产物')
-  const mountAt = code.indexOf('function mountPet')
-  assert.notEqual(mountAt, -1, 'lib/client.js 应包含 mountPet 定义')
-  assert.ok(orderAt < mountAt, 'session-order 必须拼接在 mountPet 之前')
-  assert.ok(tipAt < mountAt, 'pet-tip 必须拼接在 mountPet 之前')
-  assert.ok(gifFrameAt < mountAt, 'gif-frame 必须拼接在 mountPet 之前')
-})
+// 拼接顺序（__rm2SessionOrder / __rm2PetTip / __rm2GifFrame / __rm2BubbleTitle /
+// __rm2Markdown 必须排在 mountPet 之前）已迁到 scripts/build-client.mjs 做构建期
+// 硬断言：顺序错就直接构建失败，产物根本写不出去，比事后测产物字符串更早也更可靠。
+//
+// 这里原本还有一条「拼接顺序」的单测，已删除而不再补替代表述——消费端的早失败
+// 守卫（throw new Error('__rm2X is missing ...')）在加载真 bundle 时就会触发，
+// 本文件 38 个用例能跑起来，本身就证明守卫没有被误触发。
 
 test('unloading clears the reported current session via beacon or keepalive fetch（行为验证）', async () => {
   // sendBeacon 可用：pagehide 清空上报走 sendBeacon

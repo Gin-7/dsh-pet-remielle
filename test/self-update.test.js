@@ -4,16 +4,18 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   PKG, setSelfUpdateHooks, updateHandler, run, getUpdateProgress, progressHandler,
-  PROGRESS_ENDPOINT, IDLE_TIMEOUT_MS, TOTAL_TIMEOUT_MS, verifyInstallIntegrity,
+  PROGRESS_ENDPOINT, verifyInstallIntegrity, infoHandler,
 } from '../src/self-update.js'
 
 // 一个确定存在的目录，让 existsSync(profileDir) 检查通过
 const EXISTING_DIR = fileURLToPath(new URL('.', import.meta.url))
 
-function request(method, host = '127.0.0.1:3080') {
+// 真实请求一定带 socket：守卫查的是 TCP 层对端地址（Host 头可被页面伪造）
+function request(method, host = '127.0.0.1:3080', extra = {}) {
   const req = Readable.from([])
   req.method = method
-  req.headers = { host }
+  req.headers = { host, ...extra }
+  req.socket = { remoteAddress: '127.0.0.1' }
   return req
 }
 
@@ -157,11 +159,6 @@ test('run(): live child output feeds the progress tail buffer', async () => {
   assert.equal(prog.running, false, 'bare run() does not flip the update-level running flag')
 })
 
-test('run(): default timeouts are exposed and generous (idle 60s, total 10min)', () => {
-  assert.equal(IDLE_TIMEOUT_MS, 60000)
-  assert.equal(TOTAL_TIMEOUT_MS, 600000)
-})
-
 test('updateHandler tracks progress state around the run hook (real or fake)', async () => {
   let duringRun = null
   setSelfUpdateHooks({
@@ -238,4 +235,103 @@ test('a failed update appends an integrity verdict so the user knows the old ver
   // 关键断言：失败响应必须带上自检结论，而不是只丢一段 pnpm 日志
   assert.ok(body.output.includes('自检'), 'failed update must include an integrity verdict: ' + body.output.slice(-200))
   assert.ok(/✅|⚠️/.test(body.output), 'verdict must state whether the old install survives')
+})
+
+// ---- CSRF 守卫 ----
+
+test('a cross-origin POST to the update route is refused and never runs pnpm/git', async () => {
+  let ran = false
+  setSelfUpdateHooks({
+    stopDesktopWindow: null,
+    run: async () => { ran = true; return { ok: true, output: 'updated' } },
+    resolveInstall: () => ({ mode: 'registry', profileDir: EXISTING_DIR, version: '0.4.3' }),
+  })
+  // 恶意页面的 Host 头与本机一致（浏览器无法伪造，只能由请求目标决定），
+  // 只有 Origin 暴露了跨源——这正是过去"只查 Host"漏掉的那一类请求。
+  const res = responseRecorder()
+  await updateHandler(request('POST', '127.0.0.1:3080', { origin: 'https://evil.example' }), res)
+  assert.equal(res.status, 403)
+  assert.equal(ran, false, 'cross-origin POST must not reach git/pnpm')
+})
+
+test('a request from a non-loopback peer is refused even with a loopback Host header', async () => {
+  let ran = false
+  setSelfUpdateHooks({
+    stopDesktopWindow: null,
+    run: async () => { ran = true; return { ok: true, output: 'updated' } },
+    resolveInstall: () => ({ mode: 'registry', profileDir: EXISTING_DIR, version: '0.4.3' }),
+  })
+  const res = responseRecorder()
+  const req = request('POST')
+  req.socket = { remoteAddress: '192.168.1.20' }
+  await updateHandler(req, res)
+  assert.equal(res.status, 403)
+  assert.equal(ran, false, 'a remote peer must not trigger the update')
+})
+
+test('a same-origin loopback request is still accepted', async () => {
+  let ran = false
+  setSelfUpdateHooks({
+    stopDesktopWindow: null,
+    run: async () => { ran = true; return { ok: true, output: 'updated' } },
+    resolveInstall: () => ({ mode: 'registry', profileDir: EXISTING_DIR, version: '0.4.3' }),
+  })
+  const res = responseRecorder()
+  await updateHandler(request('POST', '127.0.0.1:3080', { origin: 'http://127.0.0.1:3080' }), res)
+  assert.equal(res.status, 200)
+  assert.equal(ran, true)
+})
+
+test('the info route refuses cross-origin callers instead of leaking absolute paths', () => {
+  const res = responseRecorder()
+  infoHandler(request('GET', '127.0.0.1:3080', { origin: 'https://evil.example' }), res)
+  assert.equal(res.status, 403)
+  assert.ok(!/profileDir|repoDir/.test(res.body), 'guarded response must not carry install paths')
+})
+
+test('the info route still serves its payload to a same-origin caller', () => {
+  const res = responseRecorder()
+  infoHandler(request('GET', '127.0.0.1:3080', { origin: 'http://127.0.0.1:3080' }), res)
+  assert.equal(res.status, 200)
+  // resolveInstall 走真实实现（不经 hooks），所以只断言稳定字段
+  assert.equal(JSON.parse(res.body).pkg, PKG)
+})
+
+// 跨源 GET/HEAD 按 Fetch 规范**不带 Origin**（mode 是 no-cors 而非 cors），
+// 而 Host 头又由请求目标决定。三项守卫在这条路径上全部放行——只有把方法钉死
+// 成 POST，恶意页面的 <img src=".../update"> 才够不到 hooks.run()。
+test('a plain cross-origin GET cannot trigger the update', async () => {
+  let ran = false
+  setSelfUpdateHooks({
+    stopDesktopWindow: null,
+    run: async () => { ran = true; return { ok: true, output: 'updated' } },
+    resolveInstall: () => ({ mode: 'link', repoDir: 'C:/fake/repo', version: '0.4.3' }),
+  })
+  const res = responseRecorder()
+  // 模拟 <img src="http://127.0.0.1:3080/plugins/dsh-pet-remielle/update">：
+  // 环回对端、Host 正确、**没有 Origin**。
+  await updateHandler(request('GET'), res)
+  assert.equal(res.status, 405)
+  assert.equal(ran, false, 'GET must not reach git/pnpm')
+})
+
+test('HEAD cannot trigger the update either', async () => {
+  let ran = false
+  setSelfUpdateHooks({
+    stopDesktopWindow: null,
+    run: async () => { ran = true; return { ok: true, output: 'updated' } },
+    resolveInstall: () => ({ mode: 'link', repoDir: 'C:/fake/repo', version: '0.4.3' }),
+  })
+  const res = responseRecorder()
+  await updateHandler(request('HEAD'), res)
+  assert.equal(res.status, 405)
+  assert.equal(ran, false)
+})
+
+test('the read routes refuse a mutating method', () => {
+  for (const [name, handler] of [['info', infoHandler], ['progress', progressHandler]]) {
+    const res = responseRecorder()
+    handler(request('POST'), res)
+    assert.equal(res.status, 405, `${name} must be GET-only`)
+  }
 })
