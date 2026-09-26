@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname } from 'node:path'
 import { EventEmitter } from 'node:events'
-import { downloadMirrors, ensureElectronRuntime, electronArtifact, runtimeTarget, electronBinaryIn, requiredRuntimeFiles, missingRuntimeFiles } from '../src/electron-fetch.mjs'
+import { downloadMirrors, ensureElectronRuntime, electronArtifact, runtimeTarget, electronBinaryIn, requiredRuntimeFiles, missingRuntimeFiles, ELECTRON_VERSION } from '../src/electron-fetch.mjs'
 
 /** The platform-specific executable name (electron.exe on Windows, electron elsewhere). */
 const BIN = electronArtifact().binary
@@ -24,6 +24,23 @@ function streamOf(chunk) {
     start(controller) {
       controller.enqueue(enc.encode(chunk))
       controller.close()
+    },
+  })
+}
+
+/**
+ * A stream that dies *after* handing over a first chunk — the shape a flaky CDN
+ * actually produces (200 OK + Content-Length, then the connection resets).
+ * The existing fall-through test only covers a mirror that fails at the HTTP
+ * status level, so this one covers the mid-transfer case.
+ */
+function brokenStream() {
+  const enc = new TextEncoder()
+  let sent = false
+  return new ReadableStream({
+    pull(controller) {
+      if (!sent) { sent = true; controller.enqueue(enc.encode('hel')); return }
+      controller.error(new Error('connection reset by peer'))
     },
   })
 }
@@ -112,41 +129,49 @@ test('missingRuntimeFiles lists exactly the absent required files (residue diagn
   }
 })
 
-test('downloadMirrors: npmmirror first, then github, same artifact name', () => {
-  const mirrors = downloadMirrors('33.0.0', 'win32', 'x64')
-  const name = 'electron-v33.0.0-win32-x64.zip'
-  assert.equal(mirrors.length, 2)
-  assert.ok(mirrors[0].startsWith('https://registry.npmmirror.com/-/binary/electron/v33.0.0/'))
-  assert.ok(mirrors[0].endsWith(`/${name}`))
-  assert.ok(mirrors[1].startsWith('https://github.com/electron/electron/releases/download/v33.0.0/'))
-  assert.ok(mirrors[1].endsWith(`/${name}`))
-})
-
-test('downloadMirrors: platform-specific names (win32 -> .exe, others -> electron)', () => {
-  const win = downloadMirrors('33.0.0', 'win32', 'x64')
-  assert.ok(win[0].includes('electron-v33.0.0-win32-x64.zip'))
-  const linux = downloadMirrors('33.0.0', 'linux', 'x64')
-  assert.ok(linux[0].includes('electron-v33.0.0-linux-x64.zip'))
-  const linuxArm = downloadMirrors('33.0.0', 'linux', 'arm64')
-  assert.ok(linuxArm[0].includes('electron-v33.0.0-linux-arm64.zip'))
+/**
+ * 镜像与文件名断言一律从 ELECTRON_VERSION 派生，并且**不**显式传版本号——
+ * 生产代码走的就是 `downloadMirrors()` 的默认参数路径，测试传字面量 '33.0.0'
+ * 既覆盖不到那条路径，升 Electron 时还要同步改一堆魔法字符串。
+ *
+ * 原来这里是三条：镜像顺序、win32/linux 文件名、darwin-arm64。第三条是前两条的
+ * 子集，且三者断言的是同一样东西（zip 名由 platform+arch 决定），已合为这一张
+ * 表。可执行文件名（electron.exe / electron）是 electronArtifact 的事，另有一条。
+ */
+test('downloadMirrors: npmmirror first then github, artifact name per platform/arch', () => {
+  const cases = [
+    ['win32', 'x64'], ['win32', 'arm64'],
+    ['linux', 'x64'], ['linux', 'arm64'],
+    ['darwin', 'x64'], ['darwin', 'arm64'],
+  ]
+  for (const [platform, arch] of cases) {
+    const name = `electron-v${ELECTRON_VERSION}-${platform}-${arch}.zip`
+    const mirrors = downloadMirrors(undefined, platform, arch)
+    assert.equal(mirrors.length, 2, `${platform}/${arch} 应有两个镜像`)
+    assert.ok(
+      mirrors[0].startsWith(`https://registry.npmmirror.com/-/binary/electron/v${ELECTRON_VERSION}/`),
+      `${platform}/${arch} 首选镜像应是 npmmirror`,
+    )
+    assert.ok(
+      mirrors[1].startsWith(`https://github.com/electron/electron/releases/download/`),
+      `${platform}/${arch} 备选镜像应是 GitHub releases`,
+    )
+    // 两端文件名必须逐字一致，否则第一个镜像挂掉后回退会去拉一个不存在的产物
+    assert.ok(mirrors[0].endsWith(`/${name}`), `${platform}/${arch} npmmirror 文件名应为 ${name}`)
+    assert.ok(mirrors[1].endsWith(`/${name}`), `${platform}/${arch} GitHub 文件名应为 ${name}`)
+  }
 })
 
 test('electronArtifact: binary name and vendor dir are platform-specific', () => {
   const win = electronArtifact({ platform: 'win32', arch: 'x64' })
   assert.equal(win.binary, 'electron.exe')
   assert.ok(win.vendorDir.includes('electron-win32-x64'))
-  assert.equal(win.zipName, 'electron-v33.0.0-win32-x64.zip')
+  assert.equal(win.zipName, `electron-v${ELECTRON_VERSION}-win32-x64.zip`)
 
   const linux = electronArtifact({ platform: 'linux', arch: 'x64' })
   assert.equal(linux.binary, 'electron')
   assert.ok(linux.vendorDir.includes('electron-linux-x64'))
-  assert.equal(linux.zipName, 'electron-v33.0.0-linux-x64.zip')
-})
-
-test('downloadMirrors targets darwin-arm64 on Apple Silicon', () => {
-  const [m0, m1] = downloadMirrors('33.0.0', 'darwin', 'arm64')
-  assert.match(m0, /electron-v33\.0\.0-darwin-arm64\.zip$/)
-  assert.match(m1, /electron-v33\.0\.0-darwin-arm64\.zip$/)
+  assert.equal(linux.zipName, `electron-v${ELECTRON_VERSION}-linux-x64.zip`)
 })
 
 test('runtimeTarget/electronBinaryIn map the launchable binary per platform', () => {
@@ -313,6 +338,39 @@ test('ensureElectronRuntime falls through to the second mirror after the first f
       spawnImpl: fakeSpawn('win32'),
     })
     assert.equal(tried.length, 2, 'should have tried both mirrors')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ensureElectronRuntime falls through when a mirror answers 200 but dies mid-transfer', async () => {
+  const { dir, vendor } = tempVendor()
+  const tried = []
+  try {
+    await ensureElectronRuntime({
+      mirrors: ['https://mirror-1.test/a.zip', 'https://mirror-2.test/b.zip'],
+      vendorDir: vendor,
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: async (url) => {
+        tried.push(url)
+        // 头部声明 5 字节、实际只吐 3 字节就断——这正是 CDN 抽风时的形状，
+        // 只测「首个字节就 404」会漏掉它，而截断的 zip 喂给解压步骤必然失败。
+        if (url.includes('mirror-1')) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            headers: { get: (k) => (k === 'content-length' ? '5' : null) },
+            body: brokenStream(),
+          }
+        }
+        return { ok: true, status: 200, statusText: 'OK', headers: { get: (k) => (k === 'content-length' ? '5' : null) }, body: streamOf('hello') }
+      },
+      spawnImpl: fakeSpawn('win32'),
+    })
+    assert.equal(tried.length, 2, '中途断开的镜像应被跳过并回退到下一个')
+    assert.ok(tried[0].includes('mirror-1') && tried[1].includes('mirror-2'))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
