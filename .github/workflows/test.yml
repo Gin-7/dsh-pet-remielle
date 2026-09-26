@@ -1,0 +1,40 @@
+name: 测试
+
+# 本仓库的测试全部是 node --test + node:assert，无外部测试框架。
+# 依赖只有 @deepseek-ai/schemastery（src/index.js 的 Config schema 用）；
+# @deepseek-ai/cordis 是 peerDependency，测试不需要，用 --omit=peer 跳过，
+# 免得为一个宿主 SDK 拉整棵依赖树。
+
+on:
+  push:
+    # '**'：本 fork 的开发直接推分支（见 AGENTS.md），只盯 main 会让日常推送
+    # 完全不触发 CI。目前只有一个几秒的 job，不值得为省这几秒放弃门禁。
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装依赖
+        run: npm install --omit=peer --no-package-lock --no-audit --no-fund
+
+      - name: 语法检查
+        run: npm run check
+
+      # pretest 会先跑 build:client，保证 client-interactions 测的是当前
+      # src/client.core.js 而不是过期的 lib/client.js。
+      - name: 测试
+        run: npm test
+
+      # lib/client.js 是提交进版本库的构建产物，但上面的语法检查与测试跑的都是
+      # pretest 重建之后的那份——没有任何一步比对「提交进仓库的那份」是否就是
+      # 「当前 src/ 的产物」。提交一份过期产物时前两步照样全绿，故在这里显式比对。
+      - name: 构建产物与源码同步
+        run: git diff --exit-code lib/client.js
