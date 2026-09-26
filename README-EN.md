@@ -216,16 +216,37 @@ src/
 ├── protocol.js       # Typed protocol: PetState / PetMood / PetMessageKind
 ├── pets.js           # Pet registry: directory discovery/merge/validation (unit-tested)
 ├── status-copy.js    # Remielle-flavored status copy (replaceable)
+├── turn-watchdog.js  # Turn-hang watchdog: recovers a session stuck in THINKING after a forced kill
 ├── desktop-window.js # Desktop mode: Electron discovery + window process management (unit-tested)
 ├── pet-window.cjs    # Desktop mode: Electron main (transparent window + top-right artwork window)
+├── pet-window-paths.cjs # Pet-window userData directory policy (isolated from the host's Electron)
+├── pet-preload.cjs   # Pet-window preload: page ↔ main bridge (click-through, drag, hit rects, menu expand)
 ├── pet-view.html     # Desktop mode: pet window page (GIF + bubble + SSE + drawing + balance bubble)
 ├── balance-widget.js # Balance controller (client): fetch/rolling animation, rendered into the pet's own bubble
 └── client.core.js    # Browser side: pet UI + settings (wrapped at build time)
+
+# Shared between both ends. The `.cjs` suffix is what lets the host ESM pick the
+# exports up through createRequire; the served URL keeps the `.js` extension
+# because a browser <script> doesn't treat `.cjs` specially. One implementation for
+# both ends, so copy and geometry can't drift apart.
+├── session-order.cjs # Deck ordering (approval > plan review > ask > completion > attention …)
+├── pet-tip.cjs       # Page-switch-dot hover copy, tip viewport clamp, bubble zoom resolution
+├── gif-frame.cjs     # The GIF frame currently on screen (right-click pause; canvas only ever paints frame 0)
+├── bubble-title.cjs  # Session-card presentation: title throttle, width measurement, approval/review/done copy & classes
+└── markdown.cjs      # Markdown rendering for release notes (escape first, then transform; only http(s)/mailto links)
+
 lib/client.js         # Build artifact (version injected, ready to use)
 assets/pets/remielle/ # Remielle assets (GIFs + artwork)
 scripts/build-client.mjs
 test/                 # node --test
 ```
+
+> When you add a shared module, wire it into **both** `scripts/build-client.mjs`
+> (web bundle) and the host's route registration (desktop window), and pin
+> **both sides** in `test/desktop-window.test.js` — the consumer (`pet-view.html`'s
+> script src) *and* the supplier (`index.js`'s registered path). Asserting only the
+> consumer lets a broken host route pass the whole suite green, while the pet
+> window then throws in its fail-fast guard and renders nothing at all.
 
 ### Publishing to npm
 

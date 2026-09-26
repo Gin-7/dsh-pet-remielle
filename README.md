@@ -217,16 +217,36 @@ src/
 ├── protocol.js       # 类型化协议：PetState / PetMood / PetMessageKind
 ├── pets.js           # 宠物注册表：目录发现/合并/校验（可单测）
 ├── status-copy.js    # 蕾米埃尔风格状态文案（可整体替换）
+├── turn-watchdog.js  # 回合挂起看门狗：兜底「强杀会话后卡在分析阶段」
 ├── desktop-window.js # 桌面模式：Electron 发现 + 窗口进程管理（可单测）
 ├── pet-window.cjs    # 桌面模式：Electron main（透明置顶窗口 + 屏幕右上角作品窗）
+├── pet-window-paths.cjs # 桌宠窗 userData 目录决策（与宿主 Electron 隔离）
+├── pet-preload.cjs   # 桌宠窗 preload：页面 ↔ 主进程桥（点击穿透、拖拽、命中矩形、菜单展开）
 ├── pet-view.html     # 桌面模式：宠物窗口页面（GIF + 气泡 + SSE + 画画 + 余额气泡）
 ├── balance-widget.js # 余额控制器（客户端）：取数/滚动动画，渲染进宠物自带气泡
 └── client.core.js    # 浏览器端：宠物 UI + 设置（构建时包装）
+
+# 两端共用的 .cjs（包是 "type":"module"，宿主经 createRequire 取导出）。
+# 网页端由 scripts/build-client.mjs 拼在 client.core.js 之前，桌面端由宿主注册
+# 路由提供 <script src>——同一份实现，避免两端文案/几何漂移。
+├── session-order.cjs # 牌叠排序（审批 > 计划待审 > 等待回答 > 完成卡 > attention …）
+├── pet-tip.cjs       # 翻页圆点悬停文案、tip 视口钳位、气泡缩放口径
+├── gif-frame.cjs     # 取动图「此刻那一帧」（右键暂停用，canvas 只画首帧）
+├── bubble-title.cjs  # 气泡会话卡呈现层：标题节流、宽度测量、审批/待审/完成的文案与类名
+└── markdown.cjs      # release 说明的 markdown 渲染（先转义再变换，链接只放行 http(s)/mailto）
+
 lib/client.js         # 构建产物（版本号注入，安装即用）
 assets/pets/remielle/ # 蕾米埃尔素材（GIF + 作品图）
 scripts/build-client.mjs
 test/                 # node --test
 ```
+
+> `.cjs` 后缀是为了让宿主 ESM 能 `createRequire` 拿到导出；对外 URL 仍是 `.js`
+> （浏览器 script 不认 `.cjs` 扩展语义）。新增两端共用模块时记得同时补进
+> `scripts/build-client.mjs` 的拼接列表**和**宿主的路由注册，并在
+> `test/desktop-window.test.js` 里钉住供给端（`index.js` 的 path）与消费端
+> （`pet-view.html` 的 script src）两侧——只钉消费端的话，宿主把路由 path 改坏
+> 整套测试仍全绿，而桌宠窗会在早失败守卫处抛错、整窗白屏。
 
 ### 发布到 npm
 
