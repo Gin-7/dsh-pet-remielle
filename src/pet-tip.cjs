@@ -79,7 +79,6 @@
       update: update,
       target: function () { return currentTarget },
       tip: function () { return currentTip },
-      clear: clearTimer,
     }
   }
 
