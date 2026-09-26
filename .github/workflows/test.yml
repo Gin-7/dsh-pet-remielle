@@ -14,7 +14,16 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    # package.json 声明 os: [win32, darwin, linux]，只验一个平台等于让声明落空。
+    # 尤其本分支动了 .gitattributes 的行尾策略：lib/client.js 是否真的逐字节稳定，
+    # 只有在 core.autocrlf 不生效的 runner 上才算验过——最后那一步
+    # `git diff --exit-code lib/client.js` 在 Linux 上正是这条断言。
+    # 不加 fail-fast：两个平台的结果都要看到。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,3 +47,9 @@ jobs:
       # 「当前 src/ 的产物」。提交一份过期产物时前两步照样全绿，故在这里显式比对。
       - name: 构建产物与源码同步
         run: git diff --exit-code lib/client.js
+
+      # 产物必须是单一 LF：mixed 或 CRLF 会让 diff 被行尾噪声淹没，且在 Windows
+      # 上表现为「每构建一次就永久显示为已修改」。用 node 判而不用 grep —— run 的
+      # 默认 shell 在 Windows 上是 pwsh、在 Linux 上是 bash，$'\r' 那类写法两边不通用。
+      - name: 构建产物行尾
+        run: node -e "const b=require('fs').readFileSync('lib/client.js');if(b.includes(13)){console.error('lib/client.js 含 CR，产物必须是单一 LF');process.exit(1)}"

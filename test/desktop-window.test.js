@@ -321,7 +321,14 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   // （早前这里还有两条 match(shared, /PLAN_MARKER…/) / match(shared, /…点击打开…/) 的
   // 字面量断言，与那份行为断言重复，改名即报红，已删。）
   const shared = readFileSync(new URL('../src/bubble-title.cjs', import.meta.url), 'utf8')
+  // 供给端与消费端都要钉。只钉消费端（html 里的 script src）时，把宿主注册的
+  // 路由 path 改坏整套测试照样全绿——而桌面窗拿不到 __bubbleTitle 会在
+  // pet-view.html 的早失败守卫处抛错，整个桌宠模块死掉。gif-frame 那条测试
+  // 有对称的两行（html 的 src + index 的 path），这里照抄。
   assert.match(html, /\/plugins\/dsh-pet-remielle\/bubble-title\.js/)
+  const hostIndex = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
+  assert.match(hostIndex, /'\/plugins\/dsh-pet-remielle\/bubble-title\.js'/, '宿主必须注册这条脚本路由，否则桌宠窗拿不到共享实现')
+  assert.match(hostIndex, /new URL\('\.\.\/src\/bubble-title\.cjs'/, '宿主应从 src/bubble-title.cjs 读这份共享实现')
   for (const [name, src] of [['pet-view.html', html], ['client.core.js', readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')]]) {
     assert.match(src, /__bubbleTitle\.applyCardChrome\(/, `${name} 应调用共享的 applyCardChrome`)
     assert.match(src, /__bubbleTitle\.applyBackboardChrome\(/, `${name} 应调用共享的 applyBackboardChrome`)

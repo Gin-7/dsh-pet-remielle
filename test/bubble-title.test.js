@@ -36,3 +36,36 @@ test('card class list and row width stay inside the deck limits', () => {
   assert.equal(card.bubbleRowWidth(10), 277, '窄文案回落到最小宽度')
   assert.equal(card.bubbleRowWidth(3000), 440, '超宽文案收敛到上限')
 })
+
+// 测量节点在 body 还不存在时被创建过之后，body 出现时必须补挂载。
+// 否则元素被缓存住、offsetWidth 恒为 0，所有卡片宽度静默塌到 BUBBLE_MIN_W。
+test('the measure node attaches once the body exists, and only once', () => {
+  const appended = []
+  const body = {
+    appendChild(node) {
+      appended.push(node)
+      node.parentNode = body
+      return node
+    },
+  }
+  const withBody = globalThis.document
+  let current = null
+  globalThis.document = {
+    get body() { return current },
+    createElement: () => ({ style: {}, parentNode: null }),
+  }
+  try {
+    current = null
+    assert.equal(card.ensureMeasureEl().parentNode, null, 'body 缺失时不挂载，也不抛错')
+
+    current = body
+    const el = card.ensureMeasureEl()
+    assert.equal(el.parentNode, body, 'body 出现后必须补挂载，否则 offsetWidth 恒为 0')
+
+    card.ensureMeasureEl()
+    card.ensureMeasureEl()
+    assert.equal(appended.length, 1, `重复挂载会累积游离节点（实际 ${appended.length} 次）`)
+  } finally {
+    globalThis.document = withBody
+  }
+})
