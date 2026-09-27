@@ -146,7 +146,7 @@ export function resolveBackend(options) {
  * Manages the spawned pet window process. `start()` is a no-op when the
  * window already runs or when no backend was found (the browser pet stays
  * as the fallback). `stop()` tears the process down; `running` reflects whether
- * a window process is alive; `onExit` fires when the window dies.
+ * a window process is alive; `onExit` fires when the window dies and receives this instance.
  */
 export class DesktopWindow {
   constructor({
@@ -241,7 +241,7 @@ export class DesktopWindow {
       const code = child.exitCode
       const signal = child.signalCode
       this.logger.info?.(`dsh-pet-remielle: pet window exited (code=${code === null ? 'signal:' + String(signal) : code}${superseded ? ', superseded by a newer window' : ''})`)
-      if (!superseded) this.onExit?.()
+      if (!superseded) this.onExit?.(this)
     }
     const forward = (stream, dest) => {
       if (!stream || typeof stream.on !== 'function' || !dest || typeof dest.write !== 'function') return

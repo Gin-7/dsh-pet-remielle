@@ -2,7 +2,7 @@ import { Readable } from 'node:stream'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
+import { apply, applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID, PET_ID_RE } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -45,6 +45,45 @@ function stubStreamRes() {
     on() { return res },
   }
   return res
+}
+
+function routeHarness() {
+  const routes = new Map()
+  const cleanups = []
+  const webServer = {
+    port: 3080,
+    register(route) {
+      routes.set(route.path, route.handler)
+      return () => routes.delete(route.path)
+    },
+  }
+  const httpCtx = {
+    webServer,
+    get() { return undefined },
+    effect(callback) {
+      const cleanup = callback()
+      if (typeof cleanup === 'function') cleanups.push(cleanup)
+      return cleanup
+    },
+  }
+  const ctx = {
+    logger: { error() {}, warn() {} },
+    inject(names, callback) {
+      if (names.length === 1 && names[0] === 'settings') callback(ctx)
+      else if (names.length === 1 && names[0] === 'webServer') callback(httpCtx)
+    },
+    on() { return () => {} },
+    effect(callback) {
+      const cleanup = callback()
+      if (typeof cleanup === 'function') cleanups.push(cleanup)
+      return cleanup
+    },
+  }
+  apply(ctx)
+  return {
+    routes,
+    close() { for (const cleanup of cleanups.reverse()) cleanup() },
+  }
 }
 
 const idle = createMessage(PetMessageKind.STATE, {
@@ -522,6 +561,21 @@ test('session current uplink tracks changes per browser tab and expires stale re
   assert.equal(store.current(), '', '过期 tab 不得继续作为当前会话')
 })
 
+test('bubble-title route serves the real shared script handler', async () => {
+  const harness = routeHarness()
+  try {
+    const handler = harness.routes.get('/plugins/dsh-pet-remielle/bubble-title.js')
+    assert.equal(typeof handler, 'function')
+    const res = responseRecorder()
+    await handler(request('GET'), res)
+    assert.equal(res.status, 200)
+    assert.match(res.headers['content-type'], /^application\/javascript/)
+    assert.match(res.body, /__rm2BubbleTitle/)
+  } finally {
+    harness.close()
+  }
+})
+
 // 桌面悬浮窗是独立窗口，读不到宿主页面的 body[data-ds-dark-theme]——它的深色开关
 // 完全依赖网页端上报的 hostTheme。归一函数是这条链路唯一的入口：'Dark' 这类大小写
 // 笔误必须在这里报错，否则会安静地让两端配色不一致（不逐屏对比几乎看不出来）。
@@ -802,10 +856,16 @@ test('config field lists and DSH 0.1.7 schema boundaries stay in sync', () => {
 // 钉的是依赖**清单**这个配置事实：把 'connection' 加回列表就报红。这里仍用源码
 // 匹配而非真的 mount 一遍——mount 会读宠物注册表并起一堆异步，mock 成本高且脆；
 // 而这条断言要防的正是「有人顺手把可选服务写进 inject 列表」这一种改动。
-test('route registration does not depend on the optional connection service', () => {
-  const index = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
-  const match = index.match(/ctx\.inject\(\[([^\]]*)\]/)
-  assert.ok(match, 'mount() 应有一个 ctx.inject 依赖列表')
-  const deps = match[1].split(',').map((name) => name.trim().replace(/^'|'$/g, ''))
-  assert.deepEqual(deps, ['webServer'], '路由注册只应依赖 webServer；connection 由 httpCtx.get() 按需取')
+test('route registration does not depend on the optional connection service', async () => {
+  const harness = routeHarness()
+  try {
+    assert.ok(harness.routes.size >= 10, '缺少可选 connection 时仍应完成整张路由表注册')
+    assert.ok(harness.routes.has('/plugins/dsh-pet-remielle/state'))
+    assert.ok(harness.routes.has('/plugins/dsh-pet-remielle/session/current'))
+    const state = responseRecorder()
+    await harness.routes.get('/plugins/dsh-pet-remielle/state')(request('GET'), state)
+    assert.equal(state.status, 200)
+  } finally {
+    harness.close()
+  }
 })

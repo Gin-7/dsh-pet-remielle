@@ -261,6 +261,27 @@ test('a superseded window exiting late never clears the newer window', () => {
   assert.equal(window.running, true, '新进程应仍在运行')
 })
 
+test('onExit identifies the owning DesktopWindow instance', () => {
+  let owner
+  let child
+  const window = new DesktopWindow({
+    url: 'http://127.0.0.1:1/x',
+    backend: { kind: 'electron', command: 'E:/electron.exe', args: [] },
+    onExit: (instance) => { owner = instance },
+    spawnImpl: () => {
+      child = new EventEmitter()
+      child.exitCode = null
+      child.killed = false
+      child.kill = () => { child.killed = true }
+      return child
+    },
+  })
+  window.start()
+  child.exitCode = 0
+  child.emit('exit')
+  assert.equal(owner, window)
+})
+
 test('DesktopWindow reports asynchronous spawn failures through onExit once', () => {
   let exited = 0
   let childRef

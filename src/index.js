@@ -1231,7 +1231,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           desktopRendererHeader = { name: access.rendererHeader.name, value: access.rendererHeader.value }
         }
       } catch { /* 无此服务（普通 web 宿主） */ }
-      const onDesktopExit = () => {
+      const onDesktopExit = (owner) => {
+        // stop() 先清空旧实例的 child，但旧 Electron 的 exit 事件可能迟到；
+        // 只有仍然挂在宿主 desktop 引用上的实例才能清理当前窗口。
+        if (desktop !== owner) return
         desktop = undefined
         if (desktopActive) { desktopActive = false; hub.broadcast() }
       }
