@@ -134,16 +134,17 @@ dsh plugin --profile web add dsh-pet-remielle
 - Closing/switching returns to the in-page pet automatically; the window closes when the DSH host exits (within 1 second).
 - The desktop window's Electron data dir is pinned under the system application-data directory (`%APPDATA%\dsh-pet-remielle` on Windows) instead of a temp dir, which disk-cleanup tools would wipe along with its cache. Only one desktop window may hold it at a time: on detecting another live instance (host restarted while the old window is still exiting) it falls back to a pid-suffixed sibling directory, so the two never share one Chromium cache.
 
-**Electron runtime sources (probed in order):** `DSH_PET_ELECTRON` env var → `vendor/electron-win32-x64/` (not in Git) → system-installed Electron → none → in-page only.
+**Electron runtime sources (probed in order):** `DSH_PET_ELECTRON` → `vendor/electron-<platform>-<arch>/` (not in Git; downloaded for the current system) → system-installed Electron → none → in-page only.
 
-> **First run**: if desktop mode is enabled but no Electron runtime is found locally, a **prompt will offer to download and install it** (requires confirmation, ~200 MB). Download failure falls back to in-page display automatically. You can also manually extract an Electron win32-x64 release to `vendor/electron-win32-x64/` or set `DSH_PET_ELECTRON` to an existing `electron.exe`.
+> **First run**: if desktop mode is enabled but no Electron runtime is found locally, a **prompt will offer to download and install it** (requires confirmation, about 100–220 MB). Download failure falls back to in-page display automatically. You can also manually extract the matching Electron release to `vendor/electron-<platform>-<arch>/` or set `DSH_PET_ELECTRON` to an existing executable (`electron.exe` on Windows, `Electron.app/Contents/MacOS/Electron` on macOS, `electron` on Linux).
 
 ### Platform support
 
 | Platform | Desktop float | In-page pet |
 |---|---|---|
-| Windows x64 (Fairy desktop / pure DSH) | ✓ (Electron transparent window) | Hidden when desktop mode is on |
-| macOS / Linux | ✗ | ✓ (falls back to in-page automatically) |
+| Windows x64 | ✓ (Electron transparent window) | Hidden when desktop mode is on |
+| macOS (arm64 / x64) | ✓ (matching darwin runtime) | Hidden when desktop mode is on |
+| Linux x64 | ✓ (matching linux runtime) | Hidden when desktop mode is on |
 
 ---
 
@@ -218,6 +219,7 @@ src/
 ├── status-copy.js    # Remielle-flavored status copy (replaceable)
 ├── turn-watchdog.js  # Turn-hang watchdog: recovers a session stuck in THINKING after a forced kill
 ├── desktop-window.js # Desktop mode: Electron discovery + window process management (unit-tested)
+├── electron-fetch.mjs # On-demand cross-platform Electron runtime download and extraction
 ├── pet-window.cjs    # Desktop mode: Electron main (transparent window + top-right artwork window)
 ├── pet-window-paths.cjs # Pet-window userData directory policy (isolated from the host's Electron)
 ├── pet-preload.cjs   # Pet-window preload: page ↔ main bridge (click-through, drag, hit rects, menu expand)

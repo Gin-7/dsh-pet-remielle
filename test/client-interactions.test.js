@@ -127,7 +127,6 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
       return []
     },
   }
-  const documentListeners = new Map()
   const conversationFrame = {
     getAttribute(name) { return name === 'data-conversation-session' ? current : '' },
     querySelectorAll(sel) {
@@ -634,15 +633,9 @@ test('a visible but unfocused window waits to acknowledge until focus returns', 
 })
 
 
-  background.send({ ...base, sessions: [error] })
-  const errorCard = background.card('任务好像遇到问题了哦')
-  assert.ok(errorCard.className.includes('attention'))
-  background.select('err')
-  // 节点可能仍留在 harness.elements 里，但已从牌叠父节点卸下。
-  assert.equal(errorCard.parentNode.children.includes(errorCard), false)
-
-  const waiting = createHarness('ask')
-  waiting.send({
+test('background waiting card stays in attention', () => {
+  const harness = createHarness('ask')
+  harness.send({
     ...base,
     sessions: [{
       sessionId: 'ask',
@@ -655,7 +648,7 @@ test('a visible but unfocused window waits to acknowledge until focus returns', 
       updatedAt: 1,
     }],
   })
-  assert.ok(waiting.card('需要你确认一下哦').className.includes('attention'), '提问卡必须留在首位')
+  assert.ok(harness.card('需要你确认一下哦').className.includes('attention'), '提问卡必须留在首位')
 })
 
 test('plan review card renders with its own tooltip and opens without auto-approving', () => {

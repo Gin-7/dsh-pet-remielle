@@ -13,6 +13,8 @@
 - `test/pet-window-paths.test.js` 的 10 个用例此前没有进 `npm test`，实际从未执行；已接入测试脚本。
 - **`.gitattributes` 补上 `lib/client.js text eol=lf`**：该文件是提交进版本库的构建产物，此前在 Windows 上检出为 CRLF、构建写出 LF，导致每跑一次 `npm test` 它就永久显示为已修改（`git status` 撒谎而 `git diff` 空白）。CI 另加一步比对提交的 `lib/client.js` 与当前源码是否一致。
 - **CI 的测试步骤此前带 `continue-on-error: true`**，测试红绿在 checks 上完全不可见；现改为阻断，触发分支也从只盯 `main` 放开到 `'**'`。
+- **路由注册不再依赖可选的 `connection` 服务**：桌面 URL 按需取认证地址，缺少该服务或取值异常时回落本机 origin，避免整张路由表静默不注册。
+- **桌面窗口退出按实例归属收尾**：旧 Electron 进程迟到退出时不再清空新窗口引用；待机气泡在网页端已在线时也会显示明确提示，不再静默吞掉点击。
 
 ## [0.4.4] — 2026-09-26
 

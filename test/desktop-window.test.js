@@ -679,14 +679,25 @@ test('bubble geometry (page dots / backboard count) matches across both ends', (
   const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
   const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
   const flat = (s) => s.replace(/\s+/g, '')
+  // 网页端写成 '.sel{…}'，桌面端写成 '.sel { … }'，\s* 兼容两者；取最后一条，
+  // 因为浏览器按 CSS 源码顺序让后面的同选择器覆盖前面的规则。边界要求选择器
+  // 从一行开头开始，避免把组合选择器里的同名后缀误当成独立规则。
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // 网页端写成 '.sel{…}'，桌面端写成 '.sel { … }'，\s* 兼容两者
-  const ruleOf = (src, sel) => flat((src.match(new RegExp(esc(sel) + '\\s*\\{[^}]*\\}')) || [''])[0])
+  const ruleOf = (src, sel) => {
+    const matches = [...src.matchAll(new RegExp(esc(sel) + '\\s*\\{([^}]*)\\}', 'g'))]
+      .filter((match) => {
+        const prefix = src.slice(src.lastIndexOf('\n', match.index) + 1, match.index)
+        return src[match.index - 1] === '}' || /^[ \t]*['"]?$/.test(prefix)
+      })
+    const last = matches.at(-1)
+    return last ? flat(`${sel}{${last[1]}}`) : ''
+  }
+  assert.equal(ruleOf('.x{color:red}.x{color:blue}', '.x'), '.x{color:blue}')
   for (const [sel, token] of [
-    ['.rm2-bubble-dots', 'left:10px'],
-    ['.rm2-bubble-dot', 'width:10px'],
-    ['.rm2-bubble-dot', 'height:10px'],
-    ['.rm2-bubble-dot', 'box-shadow:0 0 0 2px rgba(255,255,255,.65)'],
+    ['.rm2-bubble-dots', 'left:13px'],
+    ['.rm2-bubble-dot', 'width:13px'],
+    ['.rm2-bubble-dot', 'height:13px'],
+    ['.rm2-bubble-dot', 'box-shadow:0 0 0 3px rgba(255,255,255,.65)'],
     ['.rm2-pet-bubble-stack-count', 'right:16px'],
     ['.rm2-pet-bubble-stack-count', 'height:8px'],
     ['.rm2-pet-bubble-stack-count', 'font-size:9px'],
@@ -696,9 +707,9 @@ test('bubble geometry (page dots / backboard count) matches across both ends', (
     assert.ok(ruleOf(core, sel).includes(want), `网页端 ${sel} 缺少几何参数 ${token}`)
     assert.ok(ruleOf(html, sel).includes(want), `桌面端 ${sel} 缺少几何参数 ${token}`)
   }
-  // 气泡本体宽度上限两端也要一致（此前网页端写 453px、桌面端写 min(440px,…)）
-  assert.ok(ruleOf(core, '.rm2-pet-bubble').includes(flat('max-width:min(440px,calc(100vw - 24px))')))
-  assert.ok(ruleOf(html, '.rm2-pet-bubble').includes(flat('max-width: min(440px, calc(100vw - 24px))')))
+  // 气泡本体宽度上限两端也要一致。
+  assert.ok(ruleOf(core, '.rm2-pet-bubble').includes(flat('max-width:453px')))
+  assert.ok(ruleOf(html, '.rm2-pet-bubble').includes(flat('max-width:453px')))
 })
 
 // 暂停必须停在「当前帧」。canvas.drawImage(动态 GIF) 在 Chromium 里永远只画首帧

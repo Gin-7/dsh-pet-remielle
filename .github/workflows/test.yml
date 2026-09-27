@@ -14,7 +14,12 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    # 不加 fail-fast：三个代表性平台的结果都要看到；这不等于覆盖每个架构。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-13]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,3 +43,6 @@ jobs:
       # 「当前 src/ 的产物」。提交一份过期产物时前两步照样全绿，故在这里显式比对。
       - name: 构建产物与源码同步
         run: git diff --exit-code lib/client.js
+
+      - name: 构建产物行尾
+        run: node -e "const b=require('fs').readFileSync('lib/client.js');if(b.includes(13)){console.error('lib/client.js 含 CR，产物必须是单一 LF');process.exit(1)}"

@@ -40,7 +40,7 @@
     position: relative;
     margin-bottom: 16px;
     width: fit-content;
-    max-width: min(440px, calc(100vw - 24px));
+    max-width: 453px;
     display: none;
     flex-direction: column;
     align-items: center;
@@ -53,7 +53,7 @@
     margin-bottom: 13px;
     box-sizing: border-box;
     min-width: 200px;
-    max-width: min(440px, calc(100vw - 24px));
+    max-width: 453px;
     padding: 16px 27px 16px 40px;
     border-radius: 29px;
     background: #fff0f5;
@@ -115,8 +115,8 @@
   .rm2-pet-bubble.top { border-color: #b03a60; box-shadow: var(--rm2-glow-top); }
   .rm2-pet-bubble.attention { border-color: #e8508a; animation: rm2-pet-attention 1.6s ease-in-out infinite; }
   @keyframes rm2-pet-attention { 0%,100% { box-shadow: 0 0 0 0 rgba(232,80,138,.35); } 50% { box-shadow: 0 0 0 6px rgba(232,80,138,0); } }
-  .rm2-bubble-dots { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 120; }
-  .rm2-bubble-dot { width: 10px; height: 10px; border-radius: 50%; background: #e8508a; cursor: pointer; box-shadow: 0 0 0 2px rgba(255,255,255,.65); transition: transform .18s, background .18s; }
+  .rm2-bubble-dots { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 120; }
+  .rm2-bubble-dot { width: 13px; height: 13px; border-radius: 50%; background: #e8508a; cursor: pointer; box-shadow: 0 0 0 3px rgba(255,255,255,.65); transition: transform .18s, background .18s; }
   .rm2-bubble-dot:hover { transform: scale(1.25); }
   .rm2-bubble-balance { box-sizing: border-box; height: 91px; min-height: 91px; max-width: 440px; }
   .rm2-bubble-balance .rm2-pet-bubble-title { line-height: 29px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

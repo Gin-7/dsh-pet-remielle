@@ -219,6 +219,7 @@ src/
 ├── status-copy.js    # 蕾米埃尔风格状态文案（可整体替换）
 ├── turn-watchdog.js  # 回合挂起看门狗：兜底「强杀会话后卡在分析阶段」
 ├── desktop-window.js # 桌面模式：Electron 发现 + 窗口进程管理（可单测）
+├── electron-fetch.mjs # 按当前平台/架构下载并解压 Electron 运行时
 ├── pet-window.cjs    # 桌面模式：Electron main（透明置顶窗口 + 屏幕右上角作品窗）
 ├── pet-window-paths.cjs # 桌宠窗 userData 目录决策（与宿主 Electron 隔离）
 ├── pet-preload.cjs   # 桌宠窗 preload：页面 ↔ 主进程桥（点击穿透、拖拽、命中矩形、菜单展开）
