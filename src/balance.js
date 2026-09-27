@@ -66,7 +66,7 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
   const logger = log || (() => {})
   // 峰谷时段判定（issue #25）：周末/法定节假日全天空闲，其余按 9–12、14–18
   // 判高峰。节假日日历以内置表兜底、后台静默刷新远程数据。
-  const holidays = createHolidayStore({ dshHome: DSH_HOME, log: logger, fetchImpl })
+  const holidays = createHolidayStore({ dshHome: DSH_HOME, log: logger, fetchImpl, now })
 
   const USAGE_FILE_CANDIDATES = [
     path.join(DSH_HOME, '.dshp-usage.json'),
@@ -120,7 +120,7 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
         ok: true,
         totalBalance: Number(info.total_balance),
         currency: String(info.currency || 'CNY'),
-        updatedAt: new Date().toISOString(),
+        updatedAt: new Date(now()).toISOString(),
       }
     }
     const transient = !(lastErr && /^HTTP 4\d\d/.test(lastErr.message))
@@ -147,9 +147,9 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
       token = String(cred.value).replace(/^Bearer\s+/i, '')
     }
     try {
-      const now = new Date()
-      const tz = -now.getTimezoneOffset() * 60
-      const start = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000)
+      const current = new Date(now())
+      const tz = -current.getTimezoneOffset() * 60
+      const start = Math.floor(new Date(current.getFullYear(), current.getMonth(), current.getDate()).getTime() / 1000)
       const end = start + 86400
       const url = `${USAGE_URL}?start=${start}&end=${end}&tz=${tz}`
       const res = await fetchImpl(url, {
@@ -167,7 +167,7 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
   }
 
   function todayKey() {
-    const d = new Date()
+    const d = new Date(now())
     const p = (n) => String(n).padStart(2, '0')
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
   }

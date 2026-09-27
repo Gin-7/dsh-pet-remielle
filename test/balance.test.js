@@ -291,3 +291,30 @@ test('a platform cost payload is adopted as today usage in token mode', async ()
   assert.equal(result.usageMode, 'token')
   assert.equal(result.todayUsage, 3.25)
 })
+
+test('the injected clock controls ledger date and token usage window', async () => {
+  const home = tempHome()
+  const clock = new Date('2026-02-03T16:30:00.000Z').getTime()
+  const urls = []
+  const fetchImpl = async (url) => {
+    const href = String(url)
+    urls.push(href)
+    if (href.includes('/user/balance')) return okBody(20)
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { biz_data: { data: [{ series: [{ buckets: [{ cost: '1' }] }] }] } } }),
+    }
+  }
+  const svc = service(fetchImpl, { dshHome: home, getPlatformToken: () => 'tok', now: () => clock })
+
+  const result = await svc.getBalance('token')
+  const local = new Date(clock)
+  const p = (n) => String(n).padStart(2, '0')
+  const expectedDate = `${local.getFullYear()}-${p(local.getMonth() + 1)}-${p(local.getDate())}`
+  const expectedStart = Math.floor(new Date(local.getFullYear(), local.getMonth(), local.getDate()).getTime() / 1000)
+  assert.equal(result.updatedAt, new Date(clock).toISOString())
+  assert.equal(JSON.parse(readFileSync(join(home, LEDGER), 'utf8')).date, expectedDate)
+  const usageUrl = urls.find((url) => url.includes('/api/v0/usage/by_api_key/cost'))
+  assert.ok(usageUrl.includes(`start=${expectedStart}`), `usage window must use injected date: ${usageUrl}`)
+})

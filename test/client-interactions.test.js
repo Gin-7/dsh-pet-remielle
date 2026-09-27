@@ -1125,6 +1125,21 @@ test('hidden tab does not overwrite the reported current session until it become
   assert.equal(JSON.parse(currentPosts().at(-1).options.body).sessionId, 'background')
 })
 
+test('a focus event while hidden does not restore the current-session report', () => {
+  const harness = createHarness('other')
+  const currentPosts = () => harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/session/current'))
+  const initialCount = currentPosts().length
+
+  harness.setVisibility('hidden')
+  harness.setFocus(false)
+  harness.select('background')
+  harness.setFocus(true)
+
+  assert.equal(currentPosts().length, initialCount, 'hidden focus must not report a session')
+  harness.setVisibility('visible')
+  assert.equal(currentPosts().length, initialCount + 1, 'the visible transition reports the local session')
+})
+
 test('active global panel keeps the retained session completion unacknowledged', async () => {
   const harness = createHarness('watched', true, {
     watched: { id: 'watched', retainedBy: { mainView: 1 } },

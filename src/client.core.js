@@ -1428,8 +1428,8 @@ function mountPet(ctx) {
   function isViewingConversation() {
     return isForegroundSurface() && !activeGlobalPanel()
   }
-  function reportCurrentSession(id, force) {
-    if (!force && !isViewingConversation()) return
+  function reportCurrentSession(id) {
+    if (!isViewingConversation()) return
     fetch(SESSION_CURRENT_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1458,12 +1458,12 @@ function mountPet(ctx) {
   window.addEventListener('beforeunload', clearReportedCurrentSession)
   window.addEventListener('blur', clearReportedCurrentSession)
   window.addEventListener('focus', function () {
-    if (currentSessionId) reportCurrentSession(currentSessionId, true)
+    if (currentSessionId) reportCurrentSession(currentSessionId)
     if (lastSnapshot) ackCurrentSessionCompletion(lastSnapshot)
   })
   document.addEventListener('visibilitychange', function () {
     if (isViewingConversation()) {
-      if (currentSessionId) reportCurrentSession(currentSessionId, true)
+      if (currentSessionId) reportCurrentSession(currentSessionId)
       if (lastSnapshot) ackCurrentSessionCompletion(lastSnapshot)
     } else {
       clearReportedCurrentSession()
