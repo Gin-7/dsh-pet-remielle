@@ -370,14 +370,51 @@ export function createSessionOpenHandler({ notify, onUndelivered }) {
 }
 
 /**
- * Web-client current-session uplink: POST { sessionId } (empty string clears).
+ * Per-browser-tab current-session state. A single global lastReported value lets a
+ * hidden tab clear the visible tab's selection; keeping one short-lived record per
+ * client avoids that cross-tab race while retaining the existing TTL fallback.
+ */
+export function createCurrentSessionStore({ ttlMs = 10 * 60 * 1000, now = () => Date.now() } = {}) {
+  const reports = new Map()
+  const keyOf = (clientId) => typeof clientId === 'string' && clientId.length > 0 && clientId.length <= 128
+    ? clientId
+    : 'legacy'
+  const prune = (timestamp) => {
+    for (const [key, report] of reports) {
+      if (timestamp - report.at >= ttlMs) reports.delete(key)
+    }
+  }
+  return {
+    accept(clientId, sessionId) {
+      const timestamp = now()
+      prune(timestamp)
+      const key = keyOf(clientId)
+      const previous = reports.get(key)
+      reports.set(key, { sessionId, at: timestamp })
+      return { changed: !previous || previous.sessionId !== sessionId }
+    },
+    current() {
+      const timestamp = now()
+      prune(timestamp)
+      let latest = null
+      for (const report of reports.values()) {
+        if (!report.sessionId || (latest && latest.at > report.at)) continue
+        latest = report
+      }
+      return latest?.sessionId || ''
+    },
+  }
+}
+
+/**
+ * Web-client current-session uplink: POST { sessionId, clientId } (empty string clears).
  * Fire-and-forget，但值真的变化时通过 `accept` 的第二个参数把 changed 交给调用方：
  * 桌面窗的「当前会话已读」完全依赖宿主快照里的 `currentSessionId`，这里不主动广播的话
  * 它只能等下一次任意广播、或自己 5 秒轮询，完成卡绿点因此比网页端慢半拍。
- * @param accept - (sessionId, { changed }) => void；changed = 与上一次上报值不同。
+ * @param accept - (sessionId, { changed, clientId }) => void；changed = 该标签页上报值不同。
+ * @param store - 可注入的按标签页状态存储；省略时为该 handler 独立创建。
  */
-export function createSessionCurrentHandler({ accept }) {
-  let lastReported = null
+export function createSessionCurrentHandler({ accept, store = createCurrentSessionStore() }) {
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method !== 'POST') {
@@ -387,9 +424,9 @@ export function createSessionCurrentHandler({ accept }) {
     try {
       const body = await readJsonBody(req)
       if (typeof body.sessionId !== 'string') throw new Error('sessionId must be a string')
-      const changed = body.sessionId !== lastReported
-      lastReported = body.sessionId
-      accept(body.sessionId, { changed })
+      const clientId = typeof body.clientId === 'string' ? body.clientId : ''
+      const { changed } = store.accept(clientId, body.sessionId)
+      accept(body.sessionId, { changed, clientId })
       jsonResponse(res, 200, { ok: true })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -908,14 +945,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     detail: 'DSH · 等待下一次任务',
   })
   let pulse = null
-  // 网页端上报的当前会话 id（空串=清除）：只存内存，随下次快照/SSE 自然带出，
-  // 上报本身 fire-and-forget，不触发 broadcast。附带 TTL：页面崩溃/被杀时
-  // pagehide 清空上报不会执行，陈旧的 currentSessionId 会让桌面端持续误置顶、
-  // 并对用户没看过的完成卡误自动 ack——超过时效后回落为「无当前会话」，
-  // 用户下次任意操作即重新上报恢复。TTL 取 10 分钟，远大于正常浏览间隔。
+  // 网页端按标签页上报当前会话（空串=清除）：只存内存，随下次快照/SSE 自然带出，
+  // 上报本身 fire-and-forget，不触发 broadcast。每个标签页独立保存，避免隐藏页的
+  // 清除请求抹掉可见页；页面崩溃/被杀时仍以 TTL 兜底，防止陈旧 currentSessionId
+  // 持续误置顶或误自动 ack。TTL 取 10 分钟，远大于正常浏览间隔。
   const CURRENT_SESSION_TTL_MS = 10 * 60 * 1000
-  let reportedCurrentSessionId = ''
-  let reportedCurrentSessionAt = 0
+  const currentSessionStore = createCurrentSessionStore({ ttlMs: CURRENT_SESSION_TTL_MS })
   // 网页端上报的宿主主题（'dark' / 'light'，空串=清除/未上报）：桌面悬浮窗是独立
   // 窗口，拿不到宿主页面的 body[data-ds-dark-theme]，只能靠这条上报与网页端同色。
   // 与 currentSessionId 同理带 TTL：页面被杀时 pagehide 的清除上报不会执行，没有
@@ -1011,11 +1046,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
 
   // webClients 要在快照里读 hub，而 hub 又要靠这份快照做 serve —— 用延迟绑定打破这个环。
   let hubRef = null
-  // 网页端上报的当前会话：TTL 内才认（宿主退出/页面崩溃后不残留僵尸 id）。
+  // 网页端上报的当前会话：按标签页独立 TTL，宿主退出/页面崩溃后不残留僵尸 id。
   // 快照与「当前会话失败即已读」判定共用这一个口径。
-  const currentSessionNow = () => (
-    Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''
-  )
+  const currentSessionNow = () => currentSessionStore.current()
   const serveState = createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
@@ -1380,10 +1413,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           kind: 'exact',
           path: SESSION_CURRENT_ENDPOINT,
           handler: createSessionCurrentHandler({
+            store: currentSessionStore,
             accept: (sessionId, { changed }) => {
-              reportedCurrentSessionId = sessionId
-              // 空串（清除上报）同样刷新时间戳：清除态本身也是一种有效状态
-              reportedCurrentSessionAt = Date.now()
               dismissErrorIfNeeded(sessionId)
               // 值变了就广播：桌面窗要靠快照里的 currentSessionId 才知道你在看哪个会话，
               // 不广播它就得等下一次任意广播或自己的 5 秒轮询（绿点消失比网页端慢半拍）。

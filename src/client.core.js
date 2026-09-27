@@ -1390,6 +1390,8 @@ function mountPet(ctx) {
     function (timer) { window.clearTimeout(timer) },
   )
   var currentSessionId = undefined
+  // 每个网页标签页独立的上报身份：隐藏页清除当前会话时不能抹掉另一页的选择。
+  var currentSessionClientId = 'pet-tab-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
   var bubbleEls = new Map() // sessionId -> { node, title, detail }
   // 排序逻辑与桌面悬浮窗共用 src/session-order.cjs（构建时由 scripts/build-client.mjs
   // 拼接到本文件之前）：审批 > 计划审核 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
@@ -1406,10 +1408,11 @@ function mountPet(ctx) {
   function orderSessions(sessions) {
     return __order.orderSessions(sessions, currentSessionId)
   }
-  // 当前会话上报：fire-and-forget，宿主只存内存并随下次快照带出（空串=清除）
+  // 当前会话上报：fire-and-forget，宿主按标签页存内存并随下次快照带出（空串=清除）。
   function isForegroundSurface() {
     if (typeof document === 'undefined') return true
-    return document.visibilityState !== 'hidden'
+    if (document.visibilityState === 'hidden') return false
+    return typeof document.hasFocus !== 'function' || document.hasFocus()
   }
   function activeGlobalPanel() {
     var layout = optionalService('layout')
@@ -1425,35 +1428,46 @@ function mountPet(ctx) {
   function isViewingConversation() {
     return isForegroundSurface() && !activeGlobalPanel()
   }
-  function reportCurrentSession(id) {
-    if (!isViewingConversation()) return
+  function reportCurrentSession(id, force) {
+    if (!force && !isViewingConversation()) return
     fetch(SESSION_CURRENT_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId: id || '' }),
+      body: JSON.stringify({ sessionId: id || '', clientId: currentSessionClientId }),
+      keepalive: true,
     }).catch(function () {})
   }
-  // 页面卸载时清空宿主记忆的当前会话：否则直接关闭页面后桌面端残留陈旧的
-  // currentSessionId，排序置顶与自动 ack 都会误判。sendBeacon（Blob 指定
-  // application/json）/fetch keepalive 保证卸载过程中请求仍能发出，两者都
-  // 不可用时静默放弃；pagehide 与 beforeunload 双保险，重复清空无副作用。
-  var CURRENT_CLEAR_BODY = JSON.stringify({ sessionId: '' })
+  // 页面卸载、失焦或隐藏时清空**本标签页**的当前会话：否则直接关闭页面后桌面端
+  // 残留陈旧的 currentSessionId，排序置顶与自动 ack 都会误判。sendBeacon（Blob
+  // 指定 application/json）/fetch keepalive 保证卸载过程中请求仍能发出，两者都不可用
+  // 时静默放弃；按 clientId 清除不会抹掉另一可见标签页的状态。
   function clearReportedCurrentSession() {
+    var body = JSON.stringify({ sessionId: '', clientId: currentSessionClientId })
     if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-      navigator.sendBeacon(SESSION_CURRENT_ENDPOINT, new Blob([CURRENT_CLEAR_BODY], { type: 'application/json' }))
+      navigator.sendBeacon(SESSION_CURRENT_ENDPOINT, new Blob([body], { type: 'application/json' }))
       return
     }
     fetch(SESSION_CURRENT_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: CURRENT_CLEAR_BODY,
+      body: body,
       keepalive: true,
     }).catch(function () {})
   }
   window.addEventListener('pagehide', clearReportedCurrentSession)
   window.addEventListener('beforeunload', clearReportedCurrentSession)
+  window.addEventListener('blur', clearReportedCurrentSession)
+  window.addEventListener('focus', function () {
+    if (currentSessionId) reportCurrentSession(currentSessionId, true)
+    if (lastSnapshot) ackCurrentSessionCompletion(lastSnapshot)
+  })
   document.addEventListener('visibilitychange', function () {
-    if (currentSessionId) reportCurrentSession(currentSessionId)
+    if (isViewingConversation()) {
+      if (currentSessionId) reportCurrentSession(currentSessionId, true)
+      if (lastSnapshot) ackCurrentSessionCompletion(lastSnapshot)
+    } else {
+      clearReportedCurrentSession()
+    }
   })
   // 宿主主题上报：桌面悬浮窗是独立 Electron 窗口，读不到这里的
   // body[data-ds-dark-theme]——它的菜单/气泡配色只能靠这条上报同步。不报的话它
@@ -1978,7 +1992,10 @@ function mountPet(ctx) {
   // Follow the user's current conversation so its bubble ranks on top of
   // same-priority peers (the "which dialog is on top" rule).
   function syncCurrentSession(force) {
-    if (activeGlobalPanel()) return
+    if (activeGlobalPanel()) {
+      clearReportedCurrentSession()
+      return
+    }
     var next = currentSessionIdOf()
     if (!force && next === currentSessionId) return
     currentSessionId = next

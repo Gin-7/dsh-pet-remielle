@@ -2,7 +2,7 @@ import { Readable } from 'node:stream'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
+import { applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID, PET_ID_RE } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -491,27 +491,35 @@ test('pet-window subscribers never count as delivered web clients', async () => 
   petOnly.close()
 })
 
-// 桌面窗要靠宿主快照里的 currentSessionId 才知道「你在看哪个会话」，所以上报值
-// 真变化时宿主必须广播一次（否则它的完成卡绿点消失比网页端慢半拍）；重复上报
-// 同一个值不该广播。
-test('session current uplink stores, clears and reports only real changes', async () => {
+// 桌面窗要靠宿主快照里的 currentSessionId 才知道「你在看哪个会话」。同一标签页的
+// 重复上报不广播；不同标签页独立保存，隐藏页清除不能抹掉可见页，过期状态也要失效。
+test('session current uplink tracks changes per browser tab and expires stale reports', async () => {
+  let now = 1000
   let stored = ''
   const seen = []
-  const handler = createSessionCurrentHandler({ accept: (id, meta) => { stored = id; seen.push([id, meta.changed]) } })
-  for (const sessionId of ['s1', 's1', 's2', '', '']) {
+  const store = createCurrentSessionStore({ ttlMs: 100, now: () => now })
+  const handler = createSessionCurrentHandler({
+    store,
+    accept: (id, meta) => { stored = id; seen.push([id, meta.clientId, meta.changed]) },
+  })
+  for (const [sessionId, clientId] of [['s1', 'tab-a'], ['s1', 'tab-a'], ['s2', 'tab-b']]) {
     const res = responseRecorder()
-    await handler(request('POST', { sessionId }), res)
+    await handler(request('POST', { sessionId, clientId }), res)
     assert.equal(res.status, 200)
     assert.equal(JSON.parse(res.body).ok, true)
   }
+  now += 50
+  await handler(request('POST', { sessionId: '', clientId: 'tab-a' }), responseRecorder())
   assert.equal(stored, '')
+  assert.equal(store.current(), 's2', '隐藏 tab 的清除不得抹掉可见 tab')
   assert.deepEqual(seen, [
-    ['s1', true],  // 首次上报：从「不知道」到「s1」也算变化
-    ['s1', false], // 同一个值重复上报
-    ['s2', true],
-    ['', true],    // 清除同样是一次变化（用户关掉所有对话/页面卸载）
-    ['', false],
+    ['s1', 'tab-a', true],
+    ['s1', 'tab-a', false],
+    ['s2', 'tab-b', true],
+    ['', 'tab-a', true],
   ])
+  now += 51
+  assert.equal(store.current(), '', '过期 tab 不得继续作为当前会话')
 })
 
 // 桌面悬浮窗是独立窗口，读不到宿主页面的 body[data-ds-dark-theme]——它的深色开关

@@ -18,6 +18,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
   let sessionListener
   let stream
   let visibilityState = 'visible'
+  let focused = true
   let activePanelId = null
   const documentListeners = new Map()
 
@@ -126,6 +127,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
       return []
     },
   }
+  const documentListeners = new Map()
   const conversationFrame = {
     getAttribute(name) { return name === 'data-conversation-session' ? current : '' },
     querySelectorAll(sel) {
@@ -150,6 +152,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     head,
     documentElement: element('html'),
     get visibilityState() { return visibilityState },
+    hasFocus: () => focused,
     createElement: (tag) => element(tag),
     addEventListener(name, listener) {
       const listeners = documentListeners.get(name) ?? []
@@ -294,7 +297,11 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     activePanelId = next ? 'plugins' : null
     for (const listener of panelListeners) listener()
   }
-  return { allowClicks, beacons, card, click, dispatchDocumentEvent, dispatchWindowEvent, elements, fetches, navigator: navigatorStub, opened, panel: approvalPanel, otherPanel: otherApprovalPanel, select, send, setApprovalDom: (next) => { if (Array.isArray(next.scopedRoots)) scopedRoots = next.scopedRoots; if (Array.isArray(next.loosePanels)) loosePanels = next.loosePanels }, setPanelActive, setVisibility, styleWrites, flushTitleTimers }
+  function setFocus(next) {
+    focused = next
+    dispatchWindowEvent(next ? 'focus' : 'blur')
+  }
+  return { allowClicks, beacons, card, click, dispatchDocumentEvent, dispatchWindowEvent, elements, fetches, navigator: navigatorStub, opened, panel: approvalPanel, otherPanel: otherApprovalPanel, select, send, setApprovalDom: (next) => { if (Array.isArray(next.scopedRoots)) scopedRoots = next.scopedRoots; if (Array.isArray(next.loosePanels)) loosePanels = next.loosePanels }, setFocus, setPanelActive, setVisibility, styleWrites, flushTitleTimers }
 }
 
 const base = {
@@ -594,6 +601,39 @@ test('cards of the viewed session are dropped while background cards stay in att
   )
 
   const background = createHarness('other')
+  background.send({ ...base, sessions: [error] })
+  const errorCard = background.card('任务好像遇到问题了哦')
+  assert.ok(errorCard.className.includes('attention'))
+  background.select('err')
+  // 节点可能仍留在 harness.elements 里，但已从牌叠父节点卸下。
+  assert.equal(errorCard.parentNode.children.includes(errorCard), false)
+})
+
+test('a visible but unfocused window waits to acknowledge until focus returns', async () => {
+  const harness = createHarness('watched')
+  const completed = {
+    ...base,
+    sessions: [{
+      sessionId: 'completion:watched',
+      targetSessionId: 'watched',
+      state: 'SUCCESS',
+      message: '任务已完成',
+      detail: '结果',
+      completed: true,
+      completionNotification: true,
+    }],
+  }
+  harness.setFocus(false)
+  harness.send(completed)
+  await Promise.resolve()
+  assert.equal(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')), false)
+
+  harness.setFocus(true)
+  await Promise.resolve()
+  assert.ok(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')))
+})
+
+
   background.send({ ...base, sessions: [error] })
   const errorCard = background.card('任务好像遇到问题了哦')
   assert.ok(errorCard.className.includes('attention'))
