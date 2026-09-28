@@ -1,7 +1,6 @@
 /**
- * Desktop UI tests: cross-end wiring, geometry and theme contracts.
- * Platform-only Electron backend and process lifecycle tests live in
- * test/platform/desktop-window.test.js.
+ * 桌面 UI 的跨端接线、几何和主题检查，在普通单测中运行一次。
+ * Electron 后端及进程生命周期由 test/platform/desktop-window.test.js 验证。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -149,7 +148,7 @@ test('pet window position persistence is wired across main, preload and renderer
 // 系统磁盘清理整目录删掉（Electron 缓存 + 渲染层 localStorage 位置兜底一起丢）；
 // 直接与宿主共用默认的 %APPDATA%/Electron 又会锁住磁盘缓存、服务到陈旧响应。
 // 现改用稳定目录 + 占用标记，稳定目录被活跃实例占用时退避到带 pid 的兄弟目录。
-// 决策细节由平台测试覆盖（test/platform/pet-window-paths.test.js），这里钉住主进程真的把这条
+// 决策细节由 test/pet-window-paths.test.js 覆盖，这里钉住主进程真的把这条
 // 链路接上了 —— 也钉住「宿主看门狗」的判据与间隔，它是重叠窗口的另一半。
 test('pet window userData is stable, host-isolated and held by one instance at a time', () => {
   const main = readFileSync(new URL('../src/pet-window.cjs', import.meta.url), 'utf8')
@@ -440,7 +439,7 @@ test('desktop pet view takes dark from the host report and falls back to the sys
   assert.equal(desktopThemeOf('Dark', true), 'dark', '非法值视为未上报')
 })
 
-// 宿主侧的存储 / 清理 / TTL / 拒绝坏值已由 test/host-snapshot.test.js 的
+// 宿主侧的存储 / 清理 / TTL / 拒绝坏值已由 test/host-transport.test.js 的
 // 「theme uplink」与「snapshot carries reported host theme」以行为方式覆盖，
 // 这里只钉住网页端独有的三件事。
 test('host theme uplink is wired end to end between web client and host', () => {
