@@ -18,7 +18,7 @@
  *
  * Every route requires a loopback peer, a pinned HTTP method (POST for
  * `update`, GET for the reads), *and*, when the browser sends one, a
- * same-origin Origin — see `localHostOk` below. Host-header checking alone is
+ * same-origin Origin — see the shared `localHostOk` helper. Host-header checking alone is
  * not a CSRF guard, and neither is the Origin check on its own: browsers omit
  * `Origin` on cross-origin GET/HEAD, so the method pin is what makes the
  * missing header unreachable for a hostile page.
@@ -31,6 +31,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
 import tls from 'node:tls'
+import { localHostOk } from './local-access.js'
+
+// Keep the previous named export for internal consumers while sharing the implementation.
+export { localHostOk }
 
 export const REPO = 'Gin-7/dsh-pet-remielle'
 export const PKG = 'dsh-pet-remielle'
@@ -294,10 +298,10 @@ export function progressHandler(req, res) {
 }
 
 /** Windows 上 shell:true 包了层 cmd.exe，taskkill /T 连树一起杀，避免 pnpm.exe 孤儿。 */
-function killChildTree(child) {
+function killChildTree(child, spawnImpl = spawn) {
   try {
     if (isWin && child.pid) {
-      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+      const killer = spawnImpl('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
       killer.on?.('error', () => { try { child.kill() } catch { /* ignore */ } })
     } else {
       child.kill()
@@ -310,6 +314,10 @@ function killChildTree(child) {
 export function run(cmd, args, cwd, opts) {
   const idleTimeoutMs = (opts && opts.idleTimeoutMs) || IDLE_TIMEOUT_MS
   const totalTimeoutMs = (opts && opts.totalTimeoutMs) || TOTAL_TIMEOUT_MS
+  const spawnImpl = opts?.spawnImpl || spawn
+  const setTimeoutImpl = opts?.setTimeoutImpl || setTimeout
+  const clearTimeoutImpl = opts?.clearTimeoutImpl || clearTimeout
+  const killChildTreeImpl = opts?.killChildTreeImpl || ((child) => killChildTree(child, spawnImpl))
   return new Promise((resolvePromise) => {
     let settled = false
     let idleTimer = null
@@ -317,15 +325,15 @@ export function run(cmd, args, cwd, opts) {
     const finish = (ok, output) => {
       if (settled) return
       settled = true
-      if (idleTimer) clearTimeout(idleTimer)
-      if (totalTimer) clearTimeout(totalTimer)
+      if (idleTimer) clearTimeoutImpl(idleTimer)
+      if (totalTimer) clearTimeoutImpl(totalTimer)
       if (activeChild === child) activeChild = null
       resolvePromise({ ok, output })
     }
     // 超时终止：先杀进程树再落结论——挂死的 pnpm 若继续活着改写 node_modules，
     // 用户重试更新就是在半成品上叠半成品
     const finishTimedOut = (output) => {
-      killChildTree(child)
+      killChildTreeImpl(child)
       finish(false, output)
     }
     let child
@@ -333,9 +341,9 @@ export function run(cmd, args, cwd, opts) {
       if (isWin) {
         // .cmd shims (pnpm, git may resolve through PATHEXT) need cmd.exe.
         const quoted = [cmd, ...args].map((a) => (/\s/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)).join(' ')
-        child = spawn(quoted, { cwd, windowsHide: true, shell: true })
+        child = spawnImpl(quoted, { cwd, windowsHide: true, shell: true })
       } else {
-        child = spawn(cmd, args, { cwd, windowsHide: true })
+        child = spawnImpl(cmd, args, { cwd, windowsHide: true })
       }
     } catch (err) {
       finish(false, String(err))
@@ -346,8 +354,8 @@ export function run(cmd, args, cwd, opts) {
     // 空闲超时：任何一段输出（stdout/stderr）都重置计时器。慢网下载期间 pnpm
     // 持续产出进度行，不会被误杀；真正挂死的进程 60s 内无输出、被终止。
     const armIdleTimer = () => {
-      if (idleTimer) clearTimeout(idleTimer)
-      idleTimer = setTimeout(
+      if (idleTimer) clearTimeoutImpl(idleTimer)
+      idleTimer = setTimeoutImpl(
         () => finishTimedOut(out + `\n[timeout: no output for ${Math.max(1, Math.round(idleTimeoutMs / 1000))}s — 更新进程疑似挂起]`),
         idleTimeoutMs,
       )
@@ -358,7 +366,7 @@ export function run(cmd, args, cwd, opts) {
     child.on('error', (err) => finish(false, out + '\n' + String(err.message)))
     child.on('close', (code) => finish(code === 0, out))
     // 总上限兜底：输出一直有但进程永不结束（如交互式提示卡住）也能退出
-    totalTimer = setTimeout(
+    totalTimer = setTimeoutImpl(
       () => finishTimedOut(out + `\n[timeout: exceeded total ${Math.max(1, Math.round(totalTimeoutMs / 1000))}s]`),
       totalTimeoutMs,
     )
@@ -412,20 +420,6 @@ export function verifyInstallIntegrity(pkgDir) {
  * passes everything below. That is why every handler here also pins its
  * method — see `updateHandler`, which is the one route with side effects.
  */
-export function localHostOk(req) {
-  const address = req.socket?.remoteAddress
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-  const host = req.headers?.host || ''
-  if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return false
-  const origin = req.headers?.origin
-  if (origin) {
-    let originHost
-    try { originHost = new URL(origin).host } catch { return false }
-    if (!originHost || originHost !== host) return false
-  }
-  return true
-}
-
 function json(res, code, payload) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(payload))

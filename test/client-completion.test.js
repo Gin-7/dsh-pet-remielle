@@ -75,6 +75,24 @@ test('a visible but unfocused window waits to acknowledge until focus returns', 
   assert.ok(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')))
 })
 
+test('an older host without layout still auto-acknowledges a foreground completion', async () => {
+  const harness = createHarness('watched', true, [], false, false)
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'completion:watched',
+      targetSessionId: 'watched',
+      state: 'SUCCESS',
+      message: '任务已完成',
+      detail: '结果',
+      completed: true,
+      completionNotification: true,
+    }],
+  })
+  await Promise.resolve()
+  assert.ok(harness.fetches.some(({ url, options }) => String(url).endsWith('/completion/ack') && options.body === JSON.stringify({ sessionId: 'watched' })))
+})
+
 
 test('background waiting card stays in attention', () => {
   const harness = createHarness('ask')

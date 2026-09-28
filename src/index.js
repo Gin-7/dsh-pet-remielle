@@ -43,6 +43,7 @@ import {
 } from './pets.js'
 import { createBalanceService, normalizeUsageMode } from './balance.js'
 import { statusCopy } from './status-copy.js'
+import { localHostOk } from './local-access.js'
 import { TURN_WATCHDOG_INTERVAL_MS, createTurnWatchdog } from './turn-watchdog.js'
 
 const { compareSessions } = createRequire(import.meta.url)('./session-order.cjs')
@@ -147,6 +148,16 @@ export function publicConfig(config = {}) {
   }
 }
 
+/** Configuration sent to browser settings pages; secret values are write-only. */
+export function clientConfig(config = {}) {
+  const value = publicConfig(config)
+  const { platformToken, ...safe } = value
+  return {
+    ...safe,
+    platformTokenConfigured: typeof platformToken === 'string' && platformToken.length > 0,
+  }
+}
+
 function localSettingsScope(value) {
   return {
     get: () => value,
@@ -210,26 +221,11 @@ function jsonResponse(res, status, body) {
   res.end(payload)
 }
 
-function isLoopback(address) {
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
-}
-
 /** Loopback + same-origin guard shared by every host endpoint. */
 function localOnly(req, res) {
-  if (!isLoopback(req.socket?.remoteAddress)) {
-    jsonResponse(res, 403, { error: 'local access only' })
-    return false
-  }
-  const origin = req.headers?.origin
-  if (origin) {
-    let originHost
-    try { originHost = new URL(origin).host } catch {}
-    if (!originHost || originHost !== req.headers.host) {
-      jsonResponse(res, 403, { error: 'origin mismatch' })
-      return false
-    }
-  }
-  return true
+  if (localHostOk(req)) return true
+  jsonResponse(res, 403, { error: 'local access only' })
+  return false
 }
 
 async function readJsonBody(req) {
@@ -262,7 +258,7 @@ export function createConfigHandler(settings) {
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method === 'GET') {
-      jsonResponse(res, 200, settings.get())
+      jsonResponse(res, 200, clientConfig(settings.get()))
       return
     }
     if (req.method !== 'PATCH') {
@@ -273,7 +269,7 @@ export function createConfigHandler(settings) {
       const value = await readJsonBody(req)
       if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error('patch contains an unknown setting')
       await settings.update(value)
-      jsonResponse(res, 200, settings.get())
+      jsonResponse(res, 200, clientConfig(settings.get()))
     } catch (error) {
       jsonResponse(res, 400, { error: error instanceof Error ? error.message : String(error) })
     }
@@ -774,10 +770,8 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       usageMode: config.usageMode ?? 'ledger',
       // platformToken 不进 /state 快照：快照经 SSE 广播给所有订阅者（任意网页标签
       // 页、桌面窗），明文带令牌等于把平台凭证散给每个连上快照的页面。
-      // 注意这只挡住了广播这一条路，**不是**把令牌从接口上摘掉了：/config 的 GET
-      // 返回的是 settings.get() 全量（不是 publicConfig），令牌仍在响应里，只是靠
-      // localOnly（回环 + Origin 同源）挡着。设置页从 /config 取，balance 服务直读
-      // settings.get()。若日后要给令牌做真正的 secret 处理，两处都要动。
+      // /config 也只返回 clientConfig：设置页知道令牌是否已配置，但不会收到令牌明文。
+      // balance 服务仍从 settings.get() 读取令牌；令牌写入只走 /config 的 PATCH。
       paused: config.paused === true,
       hidden: config.hidden === true,
       desktopActive: desktopActiveOf(),

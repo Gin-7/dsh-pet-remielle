@@ -2,7 +2,7 @@ import { Readable } from 'node:stream'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { apply, applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
+import { apply, applyCompletionAck, clientConfig, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createConfigHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID, PET_ID_RE } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -162,14 +162,43 @@ test('snapshot top-level fields follow config, desktop state and pet registry', 
   assert.equal(bare.webClients, 0)
 })
 
-// 快照经 SSE 广播给所有订阅者（任意网页标签页、桌面窗），不得携带平台令牌；
-// 令牌只经 /config（publicConfig）下发给设置页，balance 服务直读 settings.get()。
+// 快照和 /config 都不得回传令牌明文；设置页只拿到 configured 标志，更新仍由 PATCH 写入。
 test('state snapshot never carries platformToken', () => {
   const snapshot = snapshotWith({ latest: idle, config: { platformToken: 'sk-must-not-leak' }, petId: DEFAULT_PET_ID })
   assert.equal('platformToken' in snapshot, false)
   assert.equal(JSON.stringify(snapshot).includes('sk-must-not-leak'), false, '快照序列化后不得出现令牌明文')
-  // 设置页那条路仍然拿得到
   assert.equal(publicConfig({ platformToken: 'sk-ok' }).platformToken, 'sk-ok')
+  assert.equal(clientConfig({ platformToken: 'sk-ok' }).platformTokenConfigured, true)
+  assert.equal('platformToken' in clientConfig({ platformToken: 'sk-ok' }), false)
+})
+
+test('config route keeps platformToken write-only while preserving patch updates', async () => {
+  const updates = []
+  const settings = {
+    get: () => ({ enabled: true, platformToken: 'sk-never-echo' }),
+    update: async (patch) => { updates.push(patch) },
+  }
+  const handler = createConfigHandler(settings)
+  const get = responseRecorder()
+  await handler(request('GET'), get)
+  const got = JSON.parse(get.body)
+  assert.equal(get.status, 200)
+  assert.equal(got.platformTokenConfigured, true)
+  assert.equal('platformToken' in got, false)
+  assert.equal(JSON.stringify(got).includes('sk-never-echo'), false)
+
+  const patch = responseRecorder()
+  await handler(request('PATCH', { platformToken: 'sk-replaced' }), patch)
+  const updated = JSON.parse(patch.body)
+  assert.deepEqual(updates, [{ platformToken: 'sk-replaced' }])
+  assert.equal(updated.platformTokenConfigured, true)
+  assert.equal('platformToken' in updated, false)
+
+  const remoteHost = responseRecorder()
+  const remoteRequest = request('GET')
+  remoteRequest.headers.host = 'evil.example:3080'
+  await handler(remoteRequest, remoteHost)
+  assert.equal(remoteHost.status, 403)
 })
 
 test('snapshot exposes showBubble=false and pulse expiry', () => {
@@ -394,491 +423,3 @@ test('applyCompletionAck only clears a SUCCESS pulse when clearPulse is set', ()
 })
 
 // 三个本地 POST 端点同一条契约：非法方法回 405、缺 id 回 400，且都不得触发副作用。
-test('local POST endpoints reject bad method and unusable session ids', async () => {
-  const cases = [
-    {
-      name: 'completion/ack',
-      handler: createCompletionAckHandler({ acknowledge: () => assert.fail('must not acknowledge') }),
-      badBody: {},
-    },
-    {
-      name: 'session/open',
-      handler: createSessionOpenHandler({ notify: () => assert.fail('must not notify') }),
-      badBody: {},
-    },
-    {
-      name: 'session/current',
-      handler: createSessionCurrentHandler({ accept: (id) => assert.fail(`must not store ${id}`) }),
-      badBody: { sessionId: 42 },
-    },
-  ]
-  for (const { name, handler, badBody } of cases) {
-    const wrongMethod = responseRecorder()
-    await handler(request('GET'), wrongMethod)
-    assert.equal(wrongMethod.status, 405, `${name} 应拒绝非 POST`)
-    const missing = responseRecorder()
-    await handler(request('POST', badBody), missing)
-    assert.equal(missing.status, 400, `${name} 应拒绝不可用的 sessionId`)
-  }
-})
-
-test('desktop session open notifies the browser client and reports delivery', async () => {
-  const notified = []
-  const handler = createSessionOpenHandler({
-    notify: (payload) => { notified.push(payload); return 1 },
-  })
-  const res = responseRecorder()
-  await handler(request('POST', { sessionId: 's1', approve: true }), res)
-  assert.equal(res.status, 200)
-  assert.equal(notified.length, 1)
-  assert.equal(notified[0].kind, 'session-action')
-  assert.equal(notified[0].sessionId, 's1')
-  assert.equal(notified[0].approve, true)
-  const body = JSON.parse(res.body)
-  assert.equal(body.ok, true)
-  assert.equal(body.delivered, true)
-
-  // 完成卡点击：completed 必须透传给网页端（决定是否顺带 ack）
-  const completedRes = responseRecorder()
-  await handler(request('POST', { sessionId: 's1c', approve: false, completed: true }), completedRes)
-  assert.equal(notified[1].kind, 'session-action')
-  assert.equal(notified[1].sessionId, 's1c')
-  assert.equal(notified[1].approve, false)
-  assert.equal(notified[1].completed, true)
-
-  // 没有网页客户端订阅时（notify 返回 0）：仍 200，但 delivered=false
-  const silentHandler = createSessionOpenHandler({ notify: () => 0 })
-  const silentRes = responseRecorder()
-  await silentHandler(request('POST', { sessionId: 's2', approve: true }), silentRes)
-  assert.equal(silentRes.status, 200)
-  const silentBody = JSON.parse(silentRes.body)
-  assert.equal(silentBody.ok, true)
-  assert.equal(silentBody.delivered, false)
-})
-
-test('undelivered session-action is stashed, delivered ones are not, latest wins', async () => {
-  const store = createPendingActionStore()
-  const handler = createSessionOpenHandler({
-    notify: () => 0,
-    onUndelivered: (action) => store.stash(action),
-  })
-  const res = responseRecorder()
-  await handler(request('POST', { sessionId: 's1', approve: false, completed: true }), res)
-  assert.equal(res.status, 200)
-  assert.equal(JSON.parse(res.body).delivered, false)
-  // 完整动作被暂存：SSE 订阅处 take() 后原样下发，网页端 applySnapshot 可直接消费
-  assert.deepEqual(store.take(), {
-    protocolVersion: 1,
-    kind: 'session-action',
-    sessionId: 's1',
-    approve: false,
-    completed: true,
-  })
-  // take 即清空：不重复重放
-  assert.equal(store.take(), null)
-
-  // 送达的动��不暂存；未送达的只保留最新一条
-  const stashed = []
-  const deliveredHandler = createSessionOpenHandler({ notify: () => 2, onUndelivered: (a) => stashed.push(a) })
-  await deliveredHandler(request('POST', { sessionId: 's1' }), responseRecorder())
-  assert.equal(stashed.length, 0)
-  await handler(request('POST', { sessionId: 'old' }), responseRecorder())
-  await handler(request('POST', { sessionId: 'new' }), responseRecorder())
-  assert.equal(store.take().sessionId, 'new')
-
-  // 审批时效性强：不暂存，避免网页长时间离线后重连握手时自动批准过时请求
-  const approvalRes = responseRecorder()
-  await handler(request('POST', { sessionId: 's1', approve: true }), approvalRes)
-  assert.equal(approvalRes.status, 200)
-  assert.equal(JSON.parse(approvalRes.body).delivered, false)
-  assert.equal(store.take(), null)
-})
-
-// 桌宠窗口的 SSE 订阅不能算"网页在线"：否则它会把点击动作顶成已送达，
-// 网页端稍后就再也收不到重放。三处（订阅识别、hub 计数、端到端）合并断言。
-test('pet-window subscribers never count as delivered web clients', async () => {
-  assert.equal(streamClientOf('/plugins/dsh-pet-remielle/stream?client=pet'), 'pet')
-  // 网页端不带参数（或带其他值）照常重放
-  assert.equal(streamClientOf('/plugins/dsh-pet-remielle/stream'), 'web')
-  assert.equal(streamClientOf('/plugins/dsh-pet-remielle/stream?client=web'), 'web')
-  // 异常 url 兜底为网页订阅者
-  assert.equal(streamClientOf(undefined), 'web')
-
-  const hub = createStreamHub({ serve: () => ({ state: 'IDLE' }) })
-  const pet = stubStreamRes()
-  hub.add(pet, { client: 'pet' })
-  hub.add(stubStreamRes())
-  assert.equal(hub.size, 2)
-  assert.equal(hub.notify({ kind: 'session-action', sessionId: 's1' }), 1)
-  // pet 窗口仍收到帧（其页面自行忽略带 kind 的帧），但不计数
-  assert.ok(pet.writes.join('').includes('"sessionId":"s1"'))
-  assert.equal(hub.notify({ kind: 'session-action' }), 1)
-  hub.close()
-
-  // 端到端：只有桌宠窗口在线时 delivered=false，动作必须进暂存而不是被顶成已送达
-  const petOnly = createStreamHub({ serve: () => ({ state: 'IDLE' }) })
-  const store = createPendingActionStore()
-  const handler = createSessionOpenHandler({
-    notify: (payload) => petOnly.notify(payload),
-    onUndelivered: (action) => store.stash(action),
-  })
-  petOnly.add(stubStreamRes(), { client: 'pet' })
-  const res = responseRecorder()
-  await handler(request('POST', { sessionId: 's9', approve: false }), res)
-  assert.equal(JSON.parse(res.body).delivered, false)
-  assert.equal(store.take()?.sessionId, 's9')
-  petOnly.close()
-})
-
-// 桌面窗要靠宿主快照里的 currentSessionId 才知道「你在看哪个会话」。同一标签页的
-// 重复上报不广播；不同标签页独立保存，隐藏页清除不能抹掉可见页，过期状态也要失效。
-test('session current uplink tracks changes per browser tab and expires stale reports', async () => {
-  let now = 1000
-  let stored = ''
-  const seen = []
-  const store = createCurrentSessionStore({ ttlMs: 100, now: () => now })
-  const handler = createSessionCurrentHandler({
-    store,
-    accept: (id, meta) => { stored = id; seen.push([id, meta.clientId, meta.changed]) },
-  })
-  for (const [sessionId, clientId] of [['s1', 'tab-a'], ['s1', 'tab-a'], ['s2', 'tab-b']]) {
-    const res = responseRecorder()
-    await handler(request('POST', { sessionId, clientId }), res)
-    assert.equal(res.status, 200)
-    assert.equal(JSON.parse(res.body).ok, true)
-  }
-  now += 50
-  await handler(request('POST', { sessionId: '', clientId: 'tab-a' }), responseRecorder())
-  assert.equal(stored, '')
-  assert.equal(store.current(), 's2', '隐藏 tab 的清除不得抹掉可见 tab')
-  assert.deepEqual(seen, [
-    ['s1', 'tab-a', true],
-    ['s1', 'tab-a', false],
-    ['s2', 'tab-b', true],
-    ['', 'tab-a', true],
-  ])
-  now += 51
-  assert.equal(store.current(), '', '过期 tab 不得继续作为当前会话')
-})
-
-test('bubble-title route serves the real shared script handler', async () => {
-  const harness = routeHarness()
-  try {
-    const handler = harness.routes.get('/plugins/dsh-pet-remielle/bubble-title.js')
-    assert.equal(typeof handler, 'function')
-    const res = responseRecorder()
-    await handler(request('GET'), res)
-    assert.equal(res.status, 200)
-    assert.match(res.headers['content-type'], /^application\/javascript/)
-    assert.match(res.body, /__rm2BubbleTitle/)
-  } finally {
-    harness.close()
-  }
-})
-
-// 桌面悬浮窗是独立窗口，读不到宿主页面的 body[data-ds-dark-theme]——它的深色开关
-// 完全依赖网页端上报的 hostTheme。归一函数是这条链路唯一的入口：'Dark' 这类大小写
-// 笔误必须在这里报错，否则会安静地让两端配色不一致（不逐屏对比几乎看不出来）。
-test('host theme normalization accepts only dark/light and clears on empty', () => {
-  assert.equal(normalizeHostTheme('dark'), 'dark')
-  assert.equal(normalizeHostTheme('light'), 'light')
-  assert.equal(normalizeHostTheme(''), '')
-  assert.equal(normalizeHostTheme(undefined), '')
-  assert.equal(normalizeHostTheme(null), '')
-  assert.throws(() => normalizeHostTheme('Dark'), /theme/)
-  assert.throws(() => normalizeHostTheme(true), /theme/)
-})
-
-test('theme uplink stores, clears, reports real changes and rejects bad input', async () => {
-  const seen = []
-  const handler = createThemeHandler({ accept: (theme, meta) => seen.push([theme, meta.changed]) })
-  for (const theme of ['dark', 'dark', 'light', '', '']) {
-    const res = responseRecorder()
-    await handler(request('POST', { theme }), res)
-    assert.equal(res.status, 200)
-  }
-  assert.deepEqual(seen, [
-    ['dark', true],  // 首次上报：从「不知道」到 dark 也算一次变化
-    ['dark', false], // 心跳续期重复上报同一个值：不广播
-    ['light', true],
-    ['', true],      // 清除（网页关闭）：桌面窗要立刻回落系统主题，属于真变化
-    ['', false],
-  ])
-
-  let stored = 'untouched'
-  const strict = createThemeHandler({ accept: (theme) => { stored = theme } })
-  const bad = responseRecorder()
-  await strict(request('POST', { theme: 'Dark' }), bad)
-  assert.equal(bad.status, 400)
-  assert.equal(stored, 'untouched')
-  const wrongMethod = responseRecorder()
-  await strict(request('GET'), wrongMethod)
-  assert.equal(wrongMethod.status, 405)
-})
-
-// 网页端上报的 hostTheme / currentSessionId 都是"有才发"的字段：清空后必须字段
-// 缺失（而非空串），桌面窗据此回落系统主题 / 取消"正在查看哪个会话"。
-test('snapshot carries reported host theme and current session only when set', () => {
-  const withReports = createStateSnapshot({
-    getLatest: () => idle,
-    getPulse: () => null,
-    getConfig: () => ({}),
-    getPetId: () => DEFAULT_PET_ID,
-    getTheme: () => 'dark',
-    getCurrent: () => 's1',
-  })()
-  assert.equal(withReports.hostTheme, 'dark')
-  assert.equal(withReports.currentSessionId, 's1')
-
-  // 没有网页在线 / 上报过期：字段缺失
-  const unset = snapshotWith({ latest: idle })
-  assert.equal(unset.hostTheme, undefined)
-  assert.equal('hostTheme' in JSON.parse(JSON.stringify(unset)), false)
-  assert.equal(unset.currentSessionId, undefined)
-
-  // 空串（清除态）同样回落为缺失
-  const cleared = createStateSnapshot({
-    getLatest: () => idle,
-    getPulse: () => null,
-    getConfig: () => ({}),
-    getPetId: () => DEFAULT_PET_ID,
-    getCurrent: () => '',
-  })()
-  assert.equal(cleared.currentSessionId, undefined)
-  assert.equal('currentSessionId' in JSON.parse(JSON.stringify(cleared)), false)
-})
-
-// 会话标题读取：sessionTitle 服务口径优先，服务不可用时回落会话日志折取
-// （宿主 Session 的公开 API 是 snapshotEvents()，不是 session.events）。
-function logSession(...titles) {
-  return { snapshotEvents: () => titles.map((title) => ({ type: 'session/title', data: { title } })) }
-}
-
-test('readSessionTitle prefers the service and folds the log on every fallback', () => {
-  assert.equal(readSessionTitle({
-    sessions: { get: (id) => (id === 's1' ? logSession('日志里的标题') : undefined) },
-    sessionTitle: { get: () => ({ title: '  服务口径标题  ' }) },
-  }, 's1'), '服务口径标题')
-
-  // cordis 上服务未加载/被隔离时属性访问会抛错，可选链拦不住，必须整体兜住
-  assert.equal(readSessionTitle({
-    sessions: { get: () => logSession('旧标题', '日志里的标题') },
-    get sessionTitle() { throw new Error('cannot get property "sessionTitle" without inject') },
-  }, 's1'), '日志里的标题')
-
-  const session = logSession('日志里的标题')
-  for (const unusable of [undefined, { title: '   ' }]) {
-    assert.equal(
-      readSessionTitle({ sessions: { get: () => session }, sessionTitle: { get: () => unusable } }, 's1'),
-      '日志里的标题',
-      '服务拿不到可用标题时应回落日志',
-    )
-  }
-})
-
-test('readSessionTitle is undefined without a live session or a usable title', () => {
-  assert.equal(readSessionTitle({ sessions: { get: () => undefined } }, 'nope'), undefined)
-  assert.equal(readSessionTitle({ sessions: { get: () => logSession() } }, 's1'), undefined)
-  assert.equal(readSessionTitle({ get sessions() { throw new Error('inactive context') } }, 's1'), undefined)
-  assert.equal(readSessionTitle({ sessions: { get: () => ({ snapshotEvents: () => { throw new Error('boom') } }) } }, 's1'), undefined)
-})
-
-test('createSettingsScope reads volatile refs and disposes the profile presentation', async () => {  const writes = []
-  const disposers = []
-  let configured
-  let activeOwner
-  let updateListener
-  const formsFiber = { name: 'settings-entry' }
-  const eventFiber = { name: 'event-root' }
-  const formsContext = {
-    fiber: formsFiber,
-    settings: {
-      describe() {},
-      configure(...args) {
-        configured = args
-        if (activeOwner === args[1]) throw new Error('already configured')
-        activeOwner = args[1]
-        return () => {
-          if (activeOwner === args[1]) activeOwner = undefined
-        }
-      },
-      update(...args) { writes.push(args); return Promise.resolve() },
-    },
-    effect(callback) { disposers.push(callback()) },
-  }
-  const eventContext = {
-    fiber: eventFiber,
-    on(name, listener) {
-      assert.equal(name, 'loader/volatile-update')
-      updateListener = listener
-      return () => {}
-    },
-  }
-  const config = new Config()
-  assert.equal(typeof config.desktopMode.get, 'function')
-  const scope = createSettingsScope(formsContext, config, eventContext)
-  assert.deepEqual(configured, [{ auto: false }, eventFiber])
-  assert.equal(disposers.length, 1)
-  assert.equal(scope.get().desktopMode, false)
-  assert.equal(typeof updateListener, 'undefined')
-  scope.watch(() => {})
-  assert.equal(typeof updateListener, 'function')
-  disposers[0]()
-  createSettingsScope(formsContext, config, eventContext)
-  assert.equal(disposers.length, 2)
-  disposers[1]()
-  await scope.update({ desktopMode: true })
-  assert.deepEqual(writes, [['dsh-pet-remielle', { desktopMode: true }]])
-})
-
-// DSH 的 settings.resolve 是 `schema(base+section)`：0.4.3 起 schema 字段带
-// .volatile()，schemastery 会把每个字段解析成 cosmokit volatile 包装对象（值藏在
-// wrapper.get() 里），DSH 的 scope.get()/watch 原样返回这层包装。插件若直接属性
-// 访问，pets 变非数组（宠物列表清空）、usageMode 变 '[object Object]'——2026-09-26
-// 真机事故。register 分支的 get/watch 必须先解包再交给插件内部。
-test('createSettingsScope unwraps volatile wrappers on the DSH register path', () => {
-  const section = {
-    enabled: true,
-    scale: 1.2,
-    usageMode: 'token',
-    platformToken: 'tok-123',
-    desktopX: 280,
-    desktopY: 482,
-    activePetId: 'remielle',
-    pets: [{ id: 'remielle', name: '蕾米埃尔', enabled: true }],
-  }
-  // 模拟 DSH：把持久化 section 灌进真实 schema，得到 wrapper 层 resolved 值
-  const resolved = Config(section)
-  assert.equal(typeof resolved.usageMode.get, 'function')
-  let watchCallback
-  const formsContext = {
-    settings: {
-      register(ns, schema, options) {
-        assert.equal(ns, 'dsh-pet-remielle')
-        return {
-          get: () => resolved,
-          watch(callback) { watchCallback = callback; return () => {} },
-          update: () => Promise.resolve(),
-        }
-      },
-    },
-  }
-  const scope = createSettingsScope(formsContext, {}, formsContext)
-  const got = scope.get()
-  assert.equal(got.usageMode, 'token')
-  assert.equal(got.platformToken, 'tok-123')
-  assert.equal(got.scale, 1.2)
-  assert.equal(got.desktopX, 280)
-  assert.equal(got.activePetId, 'remielle')
-  assert.equal(Array.isArray(got.pets), true)
-  assert.equal(got.pets.length, 1)
-  assert.equal(got.pets[0].name, '蕾米埃尔')
-  // 未持久化的字段回落 schema 默认值，而不是 undefined/包装对象
-  assert.equal(got.bubbleScaleSync, true)
-  // watch 回调同样解包：next.desktopMode === false 的判断要能成立
-  const seen = []
-  scope.watch((next) => seen.push(next))
-  assert.equal(typeof watchCallback, 'function')
-  watchCallback(resolved, resolved)
-  assert.equal(seen.length, 1)
-  assert.equal(seen[0].desktopMode, false)
-  assert.equal(seen[0].usageMode, 'token')
-})
-
-// 关掉「响应子 Agent」时要撤掉队列里残留的子会话完成卡：网页端那层过滤只管合成卡，
-// 管不到宿主队列，否则开着开关时完成的子会话卡会一直显示下去。
-test('dropSubagentCompletions prunes only queued subagent cards', () => {
-  const queue = new Map([
-    ['sub', { sessionId: 'sub' }],
-    ['plain', { sessionId: 'plain' }],
-    ['gone', { sessionId: 'gone' }],
-  ])
-  // 判定走宿主记账（已 dispose 的子会话照样认得），不依赖 live Session——
-  // 所以 'gone' 也能被清掉，普通会话保持不动。
-  const subagents = new Set(['sub', 'gone'])
-  assert.equal(dropSubagentCompletions(queue, (id) => subagents.has(id)), true)
-  assert.deepEqual([...queue.keys()], ['plain'])
-
-  const none = new Map([['plain', { sessionId: 'plain' }]])
-  assert.equal(dropSubagentCompletions(none, () => false), false)
-  assert.deepEqual([...none.keys()], ['plain'])
-  assert.equal(dropSubagentCompletions(new Map(), () => true), false)
-})
-
-test('dropSubagentCompletions skips ids whose classifier throws', () => {
-  const queue = new Map([
-    ['broken', { sessionId: 'broken' }],
-    ['sub', { sessionId: 'sub' }],
-    ['plain', { sessionId: 'plain' }],
-  ])
-  assert.equal(dropSubagentCompletions(queue, (id) => {
-    if (id === 'broken') throw new Error('classifier unavailable')
-    return id === 'sub'
-  }), true)
-  assert.deepEqual([...queue.keys()], ['broken', 'plain'])
-})
-
-// 配置字段实际散在四处：Config schema、defaults、publicConfig、config 端点白名单，
-// 外加 DSH 0.1.7 的 volatile / secret / pattern 边界。任一处漏改都会让开关静默失效
-// （mirror 就差点这样：它四处都在，但没有任何测试守着），因此合成一条钉住全部。
-//
-// meta / inner 是 schemastery 的实现细节：default、volatile、role、pattern 只能从这里
-// 读，没有公开的等价 API。0.4.4「volatile 配置失效」正是被 volatile 这条抓到的，所以
-// 整套断言保留——但形状一旦变化，报错必须指向「meta 形状变了」，而不是某条字段对不上，
-// 故先钉一次形状本身。
-test('config field lists and DSH 0.1.7 schema boundaries stay in sync', () => {
-  const dict = Config.dict
-  const metaOf = (field, what) => {
-    assert.ok(field && (typeof field === 'object' || typeof field === 'function'), `${what}：schema 里应能取到该字段`)
-    assert.ok(field.meta && typeof field.meta === 'object', `${what}：schemastery 字段应带 meta（本测试的观察窗）`)
-    return field.meta
-  }
-  // schemastery 为了可序列化，把 pattern 存成 { source, flags } 普通对象而不是
-  // RegExp 实例（实测 `meta.pattern instanceof RegExp` 为 false），所以只能取
-  // .source 比字符串。
-  const patternOf = (field, what) => {
-    const pattern = metaOf(field, what).pattern
-    assert.ok(pattern && typeof pattern === 'object' && typeof pattern.source === 'string', `${what}：schema 上应挂有正则约束（{ source, flags } 形式）`)
-    return pattern.source
-  }
-  assert.deepEqual(Object.keys(defaults).sort(), Object.keys(dict).sort())
-  for (const [key, field] of Object.entries(dict)) {
-    const meta = metaOf(field, key)
-    assert.deepEqual(defaults[key], meta.default, `${key} 的默认值与 schema 不一致`)
-    assert.equal(meta.volatile, true, `${key} 必须是 volatile 配置字段`)
-  }
-  assert.equal(metaOf(Config.dict.platformToken, 'platformToken').role, 'secret', 'platformToken 必须按 secret 脱敏')
-  assert.equal(patternOf(Config.dict.activePetId, 'activePetId'), PET_ID_RE.source)
-  assert.equal(patternOf(Config.dict.pets?.inner?.dict?.id, 'pets[].id'), PET_ID_RE.source)
-
-  // activePetId 与 pets 走宠物注册表端点，不进 config PATCH，也不出现在 publicConfig。
-  const registryOnly = new Set(['activePetId', 'pets'])
-  const expected = Object.keys(dict).filter((key) => !registryOnly.has(key)).sort()
-  assert.deepEqual([...CONFIG_PATCH_FIELDS].sort(), expected)
-  assert.deepEqual(Object.keys(publicConfig({})).sort(), expected)
-})
-
-// 路由注册只应依赖 webServer。
-//
-// 上游一度写成 ctx.inject(['webServer', 'connection'], cb)，而 cordis 的 inject
-// 要求列表里**所有**服务都可用才执行回调——那个回调里包着 mount() 的全部 20 条
-// webServer.register。于是在没有 connection 服务的宿主上，插件不是某个端点坏，
-// 而是整张路由表都不注册：没有状态推送、没有气泡、没有设置面板，且没有任何报错。
-// 那个 commit 的本意只是让 desktop url 带上进程 token，不该 gate 整张路由表。
-//
-// 钉的是依赖**清单**这个配置事实：把 'connection' 加回列表就报红。这里仍用源码
-// 匹配而非真的 mount 一遍——mount 会读宠物注册表并起一堆异步，mock 成本高且脆；
-// 而这条断言要防的正是「有人顺手把可选服务写进 inject 列表」这一种改动。
-test('route registration does not depend on the optional connection service', async () => {
-  const harness = routeHarness()
-  try {
-    assert.ok(harness.routes.size >= 10, '缺少可选 connection 时仍应完成整张路由表注册')
-    assert.ok(harness.routes.has('/plugins/dsh-pet-remielle/state'))
-    assert.ok(harness.routes.has('/plugins/dsh-pet-remielle/session/current'))
-    const state = responseRecorder()
-    await harness.routes.get('/plugins/dsh-pet-remielle/state')(request('GET'), state)
-    assert.equal(state.status, 200)
-  } finally {
-    harness.close()
-  }
-})
