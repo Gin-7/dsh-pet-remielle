@@ -270,34 +270,22 @@ test('the info route still serves its payload to a same-origin caller', () => {
 })
 
 // 跨源 GET/HEAD 按 Fetch 规范**不带 Origin**（mode 是 no-cors 而非 cors），
-// 而 Host 头又由请求目标决定。三项守卫在这条路径上全部放行——只有把方法钉死
-// 成 POST，恶意页面的 <img src=".../update"> 才够不到 hooks.run()。
-test('a plain cross-origin GET cannot trigger the update', async () => {
-  let ran = false
-  setSelfUpdateHooks({
-    stopDesktopWindow: null,
-    run: async () => { ran = true; return { ok: true, output: 'updated' } },
-    resolveInstall: () => ({ mode: 'link', repoDir: 'C:/fake/repo', version: '0.4.3' }),
-  })
-  const res = responseRecorder()
-  // 模拟 <img src="http://127.0.0.1:3080/plugins/dsh-pet-remielle/update">：
-  // 环回对端、Host 正确、**没有 Origin**。
-  await updateHandler(request('GET'), res)
-  assert.equal(res.status, 405)
-  assert.equal(ran, false, 'GET must not reach git/pnpm')
-})
-
-test('HEAD cannot trigger the update either', async () => {
-  let ran = false
-  setSelfUpdateHooks({
-    stopDesktopWindow: null,
-    run: async () => { ran = true; return { ok: true, output: 'updated' } },
-    resolveInstall: () => ({ mode: 'link', repoDir: 'C:/fake/repo', version: '0.4.3' }),
-  })
-  const res = responseRecorder()
-  await updateHandler(request('HEAD'), res)
-  assert.equal(res.status, 405)
-  assert.equal(ran, false)
+// 而 Host 头又由请求目标决定。方法必须钉死成 POST，恶意页面的
+// <img src=".../update"> 才够不到 hooks.run()。
+test('plain cross-origin GET and HEAD cannot trigger the update', async () => {
+  for (const method of ['GET', 'HEAD']) {
+    let ran = false
+    setSelfUpdateHooks({
+      stopDesktopWindow: null,
+      run: async () => { ran = true; return { ok: true, output: 'updated' } },
+      resolveInstall: () => ({ mode: 'link', repoDir: 'C:/fake/repo', version: '0.4.3' }),
+    })
+    const res = responseRecorder()
+    // 模拟没有 Origin 的跨源资源请求：环回对端、Host 正确。
+    await updateHandler(request(method), res)
+    assert.equal(res.status, 405, `${method} must be rejected`)
+    assert.equal(ran, false, `${method} must not reach git/pnpm`)
+  }
 })
 
 test('the read routes refuse a mutating method', () => {

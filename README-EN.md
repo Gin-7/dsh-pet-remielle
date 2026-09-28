@@ -245,7 +245,7 @@ test/                 # node --test
 
 > When you add a shared module, wire it into **both** `scripts/build-client.mjs`
 > (web bundle) and the host's route registration (desktop window), and pin
-> **both sides** in `test/platform/desktop-window-ui.test.js` — the consumer (`pet-view.html`'s
+> **both sides** in `test/desktop-window-ui.test.js` — the consumer (`pet-view.html`'s
 > script src) *and* the supplier (`index.js`'s registered path). Asserting only the
 > consumer lets a broken host route pass the whole suite green, while the pet
 > window then throws in its fail-fast guard and renders nothing at all.
