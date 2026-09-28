@@ -21,8 +21,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import vm from 'node:vm'
-import { backendCandidates, DesktopWindow, findRoot, findDshRoot } from '../src/desktop-window.js'
-import { cardHeightOf } from './helpers/card-height.mjs'
+import { backendCandidates, DesktopWindow, findRoot, findDshRoot } from '../../src/desktop-window.js'
+import { cardHeightOf } from '../helpers/card-height.mjs'
 
 /**
  * 候选发现的结构契约。
@@ -32,7 +32,7 @@ import { cardHeightOf } from './helpers/card-height.mjs'
  * 真的躺在磁盘上。干净 clone 与 CI 上它不存在，于是整条用例被 skip —— 看上去
  * 「跑过了」，实则零覆盖。
  *
- * 拆开看：候选**路径怎么算出来**由 test/electron-fetch.test.js 覆盖
+ * 拆开看：候选**路径怎么算出来**由 test/platform/electron-fetch.test.js 覆盖
  * （runtimeTarget / electronBinaryIn 按平台取正确文件名）；这里该管的是
  * 「凡是被选中的候选，形状是否合法」——这条不依赖本机装没装 Electron。
  */

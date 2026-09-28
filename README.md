@@ -245,7 +245,7 @@ test/                 # node --test
 > `.cjs` 后缀是为了让宿主 ESM 能 `createRequire` 拿到导出；对外 URL 仍是 `.js`
 > （浏览器 script 不认 `.cjs` 扩展语义）。新增两端共用模块时记得同时补进
 > `scripts/build-client.mjs` 的拼接列表**和**宿主的路由注册，并在
-> `test/desktop-window.test.js` 里钉住供给端（`index.js` 的 path）与消费端
+> `test/platform/desktop-window-ui.test.js` 里钉住供给端（`index.js` 的 path）与消费端
 > （`pet-view.html` 的 script src）两侧——只钉消费端的话，宿主把路由 path 改坏
 > 整套测试仍全绿，而桌宠窗会在早失败守卫处抛错、整窗白屏。
 

@@ -21,11 +21,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import vm from 'node:vm'
-import { backendCandidates, DesktopWindow, findRoot, findDshRoot } from '../src/desktop-window.js'
-import { cardHeightOf } from './helpers/card-height.mjs'
+import { backendCandidates, DesktopWindow, findRoot, findDshRoot } from '../../src/desktop-window.js'
+import { cardHeightOf } from '../helpers/card-height.mjs'
 
 test('pet-view ships the stacked bubble deck and a single page-switch dot', () => {
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
   // 气泡缩放走共享 bubbleZoomOf、planReviewOf 走共享 __order、tip 文案走共享
   // bubble-title.cjs —— 它们的算术与文案分别由 test/pet-tip.test.js、
   // test/session-order.test.js、test/bubble-title.test.js 覆盖，这里只留结构护栏。
@@ -36,16 +36,16 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   // tipTextOf），这里只钉结构——共享模块存在、两端确实调用、两端不留副本。
   // （早前这里还有两条 match(shared, /PLAN_MARKER…/) / match(shared, /…点击打开…/) 的
   // 字面量断言，与那份行为断言重复，改名即报红，已删。）
-  const shared = readFileSync(new URL('../src/bubble-title.cjs', import.meta.url), 'utf8')
+  const shared = readFileSync(new URL('../../src/bubble-title.cjs', import.meta.url), 'utf8')
   // 供给端与消费端都要钉。只钉消费端（html 里的 script src）时，把宿主注册的
   // 路由 path 改坏整套测试照样全绿——而桌面窗拿不到 __bubbleTitle 会在
   // pet-view.html 的早失败守卫处抛错，整个桌宠模块死掉。gif-frame 那条测试
   // 有对称的两行（html 的 src + index 的 path），这里照抄。
   assert.match(html, /\/plugins\/dsh-pet-remielle\/bubble-title\.js/)
-  const hostIndex = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
+  const hostIndex = readFileSync(new URL('../../src/index.js', import.meta.url), 'utf8')
   assert.match(hostIndex, /'\/plugins\/dsh-pet-remielle\/bubble-title\.js'/, '宿主必须注册这条脚本路由，否则桌宠窗拿不到共享实现')
   assert.match(hostIndex, /new URL\('\.\.\/src\/bubble-title\.cjs'/, '宿主应从 src/bubble-title.cjs 读这份共享实现')
-  for (const [name, src] of [['pet-view.html', html], ['client.core.js', readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')]]) {
+  for (const [name, src] of [['pet-view.html', html], ['client.core.js', readFileSync(new URL('../../src/client.core.js', import.meta.url), 'utf8')]]) {
     assert.match(src, /__bubbleTitle\.applyCardChrome\(/, `${name} 应调用共享的 applyCardChrome`)
     assert.match(src, /__bubbleTitle\.applyBackboardChrome\(/, `${name} 应调用共享的 applyBackboardChrome`)
     assert.doesNotMatch(src, /点击打开同意执行\/要求修改/, `${name} 不得自带计划待审提示副本`)
@@ -87,7 +87,7 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
   // 各自的 CSS 解析，而不是写死 91——写死的话改 CSS 后断言照绿，两端却已漂移。
   // 解析函数放在 test/helpers/card-height.mjs：两端各有一份 CSS 规则，各写一遍正则
   // 必然漂移。
-  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
+  const core = readFileSync(new URL('../../src/client.core.js', import.meta.url), 'utf8')
   const liftOf = (src) => Number(/STACK_LIFT_PX = (\d+)/.exec(src)?.[1])
   assert.equal(liftOf(shared), 80)
   assert.doesNotMatch(html, /STACK_LIFT_PX = \d+/, 'pet-view.html 不得再自带上移量常量')
@@ -104,7 +104,7 @@ test('pet-view ships the stacked bubble deck and a single page-switch dot', () =
 })
 
 test('desktop idle-bubble click defers to an open web client but says so', () => {
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
   // 有网页在线时不重复调 openExternal（浏览器不会复用已有标签，只会越堆越多）；
   // webClients 来自宿主快照的 SSE 订阅计数。
   assert.match(html, /if \(!\(lastSnapshot && lastSnapshot\.webClients > 0\)\) __tip\.openIdleDshPage\(window\.petBridge\)/)
@@ -125,7 +125,7 @@ test('pet-view menu expands to the work-area box and restores on close', () => {
   // 几何，随 Chromium 版与缩放口径变，不适合当断言对象。这里只钉住「主进程这一侧真的接得住」
   // ——渲染层与 preload 那一侧由 test/pet-preload.test.js 用 vm 注入假 electron 真调方法验证
   // （通道名 + 参数归一化 + promise 返回），比匹配源码字符串更强，故不再重复断言那三条。
-  const petWindow = readFileSync(new URL('../src/pet-window.cjs', import.meta.url), 'utf8')
+  const petWindow = readFileSync(new URL('../../src/pet-window.cjs', import.meta.url), 'utf8')
   assert.match(petWindow, /ipcMain\.handle\('get-work-area'/)
   assert.match(petWindow, /ipcMain\.handle\('menu-expand', async \(_event, cssLeft, cssTop, cssRight, cssBottom\)/)
   assert.match(petWindow, /ipcMain\.handle\('menu-restore'/)
@@ -139,9 +139,9 @@ test('pet-view menu expands to the work-area box and restores on close', () => {
 // 位置持久化链路（issue #21）：三段各自的钥匙必须同时在场——
 // 主进程建窗定位 + 渲染层拖动结束回写 + preload 通道；缺一段记忆就断。
 test('pet window position persistence is wired across main, preload and renderer', () => {
-  const main = readFileSync(new URL('../src/pet-window.cjs', import.meta.url), 'utf8')
-  const preload = readFileSync(new URL('../src/pet-preload.cjs', import.meta.url), 'utf8')
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  const main = readFileSync(new URL('../../src/pet-window.cjs', import.meta.url), 'utf8')
+  const preload = readFileSync(new URL('../../src/pet-preload.cjs', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
   // 恢复钳制必须是「虚拟桌面并集 + 最小可见边条」而不是单屏 workArea 整窗
   // 钳制：宠物图贴窗口底部，拖到屏幕顶缘时窗口必然部分伸出屏幕外（实测
   // y=-381），整窗钳制会把它拽回 y=0，表现为位置没记忆（issue #21 追加）。
@@ -173,7 +173,7 @@ test('pet window position persistence is wired across main, preload and renderer
 // 决策细节由平台测试覆盖（test/platform/pet-window-paths.test.js），这里钉住主进程真的把这条
 // 链路接上了 —— 也钉住「宿主看门狗」的判据与间隔，它是重叠窗口的另一半。
 test('pet window userData is stable, host-isolated and held by one instance at a time', () => {
-  const main = readFileSync(new URL('../src/pet-window.cjs', import.meta.url), 'utf8')
+  const main = readFileSync(new URL('../../src/pet-window.cjs', import.meta.url), 'utf8')
   assert.doesNotMatch(main, /getPath\('temp'\)/, 'userData 不得再落在 %TEMP%')
   assert.match(main, /require\('\.\/pet-window-paths\.cjs'\)/, '选目录逻辑必须走共享模块')
   assert.match(main, /app\.setPath\('userData', userData\.dir\)/, '主进程必须真的把选定的目录设成 userData')
@@ -193,8 +193,8 @@ test('pet window userData is stable, host-isolated and held by one instance at a
 //   ② 每项写回的配置键相同（同名条目改同一份配置，避免一端写 A 另一端写 B）
 //   ③ 关键项的写入目标逐个钉死（否则两端一起写错也算“一致”）
 test('in-page and desktop right-click menus keep the same rows, order and write targets', () => {
-  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  const core = readFileSync(new URL('../../src/client.core.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
 
   // 菜单是 IIFE 闭包，只能按相邻函数名切片取菜单构造函数体。边界失效会当场
   // 抛错（而不是静默返回空数组让后面的断言假通过）。
@@ -276,10 +276,10 @@ test('in-page and desktop right-click menus keep the same rows, order and write 
 // 「重置位置」必须同时覆盖页面内坐标与桌面窗坐标，并在桌面端清掉渲染层
 // localStorage 兜底存档——否则下次启动渲染层会拿旧存档 moveTo，把重置撤销。
 test('reset position covers both position stores and clears the localStorage fallback', () => {
-  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
-  const main = readFileSync(new URL('../src/pet-window.cjs', import.meta.url), 'utf8')
-  const preload = readFileSync(new URL('../src/pet-preload.cjs', import.meta.url), 'utf8')
+  const core = readFileSync(new URL('../../src/client.core.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
+  const main = readFileSync(new URL('../../src/pet-window.cjs', import.meta.url), 'utf8')
+  const preload = readFileSync(new URL('../../src/pet-preload.cjs', import.meta.url), 'utf8')
   const ALL_FOUR = /\{\s*posX: null,\s*posY: null,\s*desktopX: null,\s*desktopY: null\s*\}/
   assert.match(core, ALL_FOUR, '网页端「重置位置」应清空四个坐标')
   // 设置页那枚「重置位置」按钮曾经误打 /desktop/start，按下去反而拉起桌面窗
@@ -302,8 +302,8 @@ test('reset position covers both position stores and clears the localStorage fal
 //   ③ 名称列不许收缩（第一次收窄到 240 时把「角色大小」挤成了「角色大…」），
 //      并附一条按几何参数算出来的「名称列放得下最长标签」护栏
 test('menu geometry (width / row metrics / slider column) matches across both ends', () => {
-  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  const core = readFileSync(new URL('../../src/client.core.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
   const flat = (s) => s.replace(/\s+/g, '')
   // 两端的 CSS 类名前缀不同（网页端 rm2-pet-、桌面端无），归一化后即可用同一张表比对
   const unprefix = (s) => flat(s).replace(/\.rm2-pet-/g, '.')
@@ -360,8 +360,8 @@ test('menu geometry (width / row metrics / slider column) matches across both en
 // box-shadow 两端写法不同是有意的（桌面端走 --rm2-glow 主题变量，见深色配色测试），
 // 不在本测试范围内。
 test('bubble geometry (page dots / backboard count) matches across both ends', () => {
-  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  const core = readFileSync(new URL('../../src/client.core.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
   const flat = (s) => s.replace(/\s+/g, '')
   // 网页端写成 '.sel{…}'，桌面端写成 '.sel { … }'，\s* 兼容两者；取最后一条，
   // 因为浏览器按 CSS 源码顺序让后面的同选择器覆盖前面的规则。边界要求选择器
@@ -403,16 +403,16 @@ test('pause freezes on the current frame through the shared gif-frame helper', (
   // 取帧算术本身由 test/gif-frame.test.js 覆盖；这里只钉住「两端真的接上了
   // 这条链路」与「宿主把脚本发得出去」，不重复验证实现细节。
   for (const [name, file] of [
-    ['网页端', '../src/client.core.js'],
-    ['桌面端', '../src/pet-view.html'],
+    ['网页端', '../../src/client.core.js'],
+    ['桌面端', '../../src/pet-view.html'],
   ]) {
     const src = readFileSync(new URL(file, import.meta.url), 'utf8')
     assert.match(src, /__gifFrame\.isGif\(/, `${name}应只在 GIF 上走取帧链路`)
     assert.match(src, /__gifFrame\.freeze\(/, `${name}应调用 freeze 取当前帧`)
   }
   // 桌面端必须有脚本标签、宿主必须把这份脚本发出去，否则整条取帧链路静默失效
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
-  const index = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
+  const index = readFileSync(new URL('../../src/index.js', import.meta.url), 'utf8')
   assert.match(html, /\/plugins\/dsh-pet-remielle\/gif-frame\.js/)
   assert.match(index, /'\/plugins\/dsh-pet-remielle\/gif-frame\.js'/)
 })
@@ -423,7 +423,7 @@ test('pause freezes on the current frame through the shared gif-frame helper', (
  * 它跟系统主题走，「系统深色 + DSH 浅色主题」就成了两端菜单/气泡不同色的最常见场景。
  */
 function desktopThemeOf(theme, systemDark) {
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
   const block = html.match(/var systemDarkQuery = [\s\S]*?^\s*syncHostTheme\(''\)/m)
   assert.ok(block, 'missing syncHostTheme block in pet-view.html')
   const attrs = {}
@@ -435,7 +435,7 @@ function desktopThemeOf(theme, systemDark) {
 }
 
 test('desktop pet view takes dark from the host report and falls back to the system', () => {
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
   // 深色规则只认属性，不许再用 prefers-color-scheme 媒体查询：媒体查询与属性同时
   // 命中时谁赢取决于源顺序，两套规则同时存在就等于把配色交给规则顺序去掷骰子。
   assert.equal(
@@ -465,7 +465,7 @@ test('desktop pet view takes dark from the host report and falls back to the sys
 // 「theme uplink」与「snapshot carries reported host theme」以行为方式覆盖，
 // 这里只钉住网页端独有的三件事。
 test('host theme uplink is wired end to end between web client and host', () => {
-  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
+  const core = readFileSync(new URL('../../src/client.core.js', import.meta.url), 'utf8')
   // 端点必须与宿主导出的 THEME_ENDPOINT 同名
   assert.match(core, /var THEME_ENDPOINT = '\/plugins\/dsh-pet-remielle\/theme'/)
   // 宿主主题切换 = body 上 data-ds-dark-theme 的增删，必须监听属性变化而不是只在启动读一次
@@ -491,8 +491,8 @@ test('both ends paint identical dark colors for the widgets they share', () => {
     }
     return map
   }
-  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  const core = readFileSync(new URL('../../src/client.core.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
   const web = collect(core, 'body\\[data-ds-dark-theme\\]')
   const desktop = collect(html, 'html\\[data-host-theme="dark"\\]')
   const shared = [...web.keys()].filter((key) => desktop.has(key))
@@ -517,8 +517,8 @@ test('both ends paint identical dark colors for the widgets they share', () => {
  * 行高数字本身不再断言（那是 Chromium 字体度量、会随平台变），只钉住两条不变量。
  */
 test('the tick glyph does not change the row height on either end', () => {
-  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  const core = readFileSync(new URL('../../src/client.core.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../src/pet-view.html', import.meta.url), 'utf8')
   const flat = (s) => s.replace(/\s+/g, '')
   // 行首锚定是必需的：桌面端的深色规则 `html[data-host-theme="dark"] .menu-item .tick {...}`
   // 也以同名前缀结尾，不锚定就会先匹配到它（那条只在深色下生效，浅色下照旧抖）。

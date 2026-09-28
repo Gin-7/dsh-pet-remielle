@@ -3,7 +3,7 @@
  *
  * 这层是渲染页与主进程之间唯一的通道，也是安全边界：contextBridge 暴露什么、
  * 每个方法往哪个 IPC 通道发、参数怎么归一化，全都在这里。此前只有
- * test/desktop-window.test.js 里三处对源码做字符串匹配——既漏掉了参数归一化
+ * test/platform/desktop-window.test.js 里三处对源码做字符串匹配——既漏掉了参数归一化
  * （`Boolean(on)`、`Number(x) || 0`），也挡不住方法被误删或被改名。
  *
  * 源码只是 require('electron') 后调一次 exposeInMainWorld，所以用 vm 注入一个
