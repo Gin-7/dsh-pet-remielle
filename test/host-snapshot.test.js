@@ -805,6 +805,19 @@ test('dropSubagentCompletions prunes only queued subagent cards', () => {
   assert.equal(dropSubagentCompletions(new Map(), () => true), false)
 })
 
+test('dropSubagentCompletions skips ids whose classifier throws', () => {
+  const queue = new Map([
+    ['broken', { sessionId: 'broken' }],
+    ['sub', { sessionId: 'sub' }],
+    ['plain', { sessionId: 'plain' }],
+  ])
+  assert.equal(dropSubagentCompletions(queue, (id) => {
+    if (id === 'broken') throw new Error('classifier unavailable')
+    return id === 'sub'
+  }), true)
+  assert.deepEqual([...queue.keys()], ['broken', 'plain'])
+})
+
 // 配置字段实际散在四处：Config schema、defaults、publicConfig、config 端点白名单，
 // 外加 DSH 0.1.7 的 volatile / secret / pattern 边界。任一处漏改都会让开关静默失效
 // （mirror 就差点这样：它四处都在，但没有任何测试守着），因此合成一条钉住全部。

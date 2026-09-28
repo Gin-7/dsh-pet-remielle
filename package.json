@@ -32,6 +32,8 @@
     "version": "node scripts/build-client.mjs && git add lib/client.js",
     "pretest": "node scripts/build-client.mjs",
     "test": "node --test --test-timeout=10000 \"test/*.test.js\"",
+    "pretest:platform": "node scripts/build-client.mjs",
+    "test:platform": "node --test --test-timeout=10000 test/electron-fetch.test.js test/pet-window-paths.test.js test/self-update.test.js test/desktop-window.test.js",
     "check": "node --check lib/client.js && node --check src/index.js && node --check src/pet-reducer.js && node --check src/session-order.cjs && node --check src/gif-frame.cjs && node --check src/bubble-title.cjs && node --check src/markdown.cjs && node --check src/turn-watchdog.js && node --check src/protocol.js && node --check src/status-copy.js && node --check src/pets.js && node --check src/self-update.js && node --check src/desktop-window.js && node --check src/electron-fetch.mjs && node --check src/pet-window.cjs && node --check src/pet-preload.cjs && node --check src/pet-window-paths.cjs && node --check src/pet-tip.cjs && node --check src/balance.js && node --check src/balance-widget.js && node --check src/holidays.js && node --check scripts/build-client.mjs"
   },
   "dependencies": {

@@ -7,7 +7,7 @@ const CLIENT = new URL('../lib/client.js', import.meta.url)
 const CLIENT_CORE = new URL('../src/client.core.js', import.meta.url)
 const STATUS_COPY = new URL('../src/status-copy.js', import.meta.url)
 
-function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = [], modernNavigation = false) {
+function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItems = [], modernNavigation = false, withLayout = true) {
   const elements = []
   const fetches = []
   const opened = []
@@ -253,7 +253,7 @@ function createHarness(initialCurrent = 'other', autoSelect = true, snapshotItem
     sessions,
     get(name) {
       if (modernNavigation && name === 'uiWorkspace') return uiWorkspace
-      if (name === 'layout') return layout
+      if (name === 'layout') return withLayout ? layout : undefined
       return undefined
     },
     effect: (callback) => callback(),
@@ -1138,6 +1138,16 @@ test('a focus event while hidden does not restore the current-session report', (
   assert.equal(currentPosts().length, initialCount, 'hidden focus must not report a session')
   harness.setVisibility('visible')
   assert.equal(currentPosts().length, initialCount + 1, 'the visible transition reports the local session')
+})
+
+test('missing layout service keeps current-session reporting usable on older hosts', () => {
+  const harness = createHarness('other', true, [], false, false)
+  const currentPosts = () => harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/session/current'))
+  const initialCount = currentPosts().length
+
+  harness.select('background')
+  assert.equal(currentPosts().length, initialCount + 1, 'missing optional layout must not disable session reporting')
+  assert.equal(JSON.parse(currentPosts().at(-1).options.body).sessionId, 'background')
 })
 
 test('active global panel keeps the retained session completion unacknowledged', async () => {

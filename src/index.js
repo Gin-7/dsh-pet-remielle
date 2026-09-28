@@ -636,7 +636,13 @@ export function readSessionTitle(ctx, sessionId) {
 export function dropSubagentCompletions(completionQueue, isSubagentSession) {
   let dropped = false
   for (const sessionId of [...completionQueue.keys()]) {
-    if (isSubagentSession(sessionId) === true) {
+    let subagent = false
+    try {
+      subagent = isSubagentSession(sessionId) === true
+    } catch {
+      continue
+    }
+    if (subagent) {
       completionQueue.delete(sessionId)
       dropped = true
     }

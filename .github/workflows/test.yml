@@ -8,18 +8,23 @@ name: 测试
 on:
   push:
     # '**'：本 fork 的开发直接推分支（见 AGENTS.md），只盯 main 会让日常推送
-    # 完全不触发 CI。目前只有一个几秒的 job，不值得为省这几秒放弃门禁。
+    # 完全不触发 CI。并发组会自动取消同一分支的旧运行，避免重复占用矩阵 runner。
     branches: ['**']
   pull_request:
 
+concurrency:
+  # 同一分支只保留最新提交；push 与 pull_request 事件共用分支名，避免同一提交跑两套矩阵。
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  test:
-    # 不加 fail-fast：三个代表性平台的结果都要看到；这不等于覆盖每个架构。
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-13]
-    runs-on: ${{ matrix.os }}
+  unit:
+    name: unit (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -33,16 +38,38 @@ jobs:
       - name: 语法检查
         run: npm run check
 
-      # pretest 会先跑 build:client，保证 client-interactions 测的是当前
-      # src/client.core.js 而不是过期的 lib/client.js。
-      - name: 测试
+      # 完整行为套件只跑一次；Windows/macOS 只跑平台相关测试，避免重复消耗稀缺 runner。
+      - name: 完整测试
         run: npm test
 
-      # lib/client.js 是提交进版本库的构建产物，但上面的语法检查与测试跑的都是
-      # pretest 重建之后的那份——没有任何一步比对「提交进仓库的那份」是否就是
-      # 「当前 src/ 的产物」。提交一份过期产物时前两步照样全绿，故在这里显式比对。
       - name: 构建产物与源码同步
         run: git diff --exit-code lib/client.js
 
       - name: 构建产物行尾
         run: node -e "const b=require('fs').readFileSync('lib/client.js');if(b.includes(13)){console.error('lib/client.js 含 CR，产物必须是单一 LF');process.exit(1)}"
+
+  platform:
+    # 不加 fail-fast：两个平台的结果都要看到；这不等于覆盖每个架构。
+    name: platform (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装依赖
+        run: npm install --omit=peer --no-package-lock --no-audit --no-fund
+
+      - name: 语法检查
+        run: npm run check
+
+      # Electron/窗口/更新器测试依赖平台；完整行为套件由 unit job 覆盖。
+      - name: 平台测试
+        run: npm run test:platform
