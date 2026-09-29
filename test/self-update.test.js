@@ -112,18 +112,36 @@ test('a failed update does not run the onUpdateSuccess hook', async () => {
   assert.equal(called, 0)
 })
 
-test('an unexpected error inside the handler becomes a 500 instead of crashing', async () => {
-  setSelfUpdateHooks({
+test('failed or rejected updates release the lock so a later update can run', async (t) => {
+  t.after(() => setSelfUpdateHooks({ stopDesktopWindow: null, onUpdateSuccess: null, run: null, resolveInstall: null }))
+  const defaults = {
     stopDesktopWindow: null,
-    resolveInstall: () => ({ mode: 'registry', profileDir: EXISTING_DIR, version: '0.3.3' }),
-    run: async () => { throw new Error('pnpm vanished mid-flight') },
-  })
-  const res = responseRecorder()
-  await updateHandler(request('POST'), res)
-  assert.equal(res.status, 500)
-  const body = JSON.parse(res.body)
-  assert.equal(body.ok, false)
-  assert.ok(body.output.includes('pnpm vanished mid-flight'))
+    onUpdateSuccess: null,
+    resolveInstall: () => ({ mode: 'registry', profileDir: EXISTING_DIR, version: '0.4.4' }),
+    run: async () => ({ ok: true, output: 'done' }),
+  }
+  const failures = [
+    ['command failure', { run: async () => ({ ok: false, output: 'EPERM' }) }, /EPERM/],
+    ['command exception', { run: async () => { throw new Error('pnpm vanished mid-flight') } }, /pnpm vanished mid-flight/],
+    ['install exception', { resolveInstall: () => { throw new Error('install unavailable') } }, /install unavailable/],
+    ['unsupported version', { resolveInstall: () => ({ version: '0.2.0' }) }, /无法自动增量更新/],
+    ['unknown install', { resolveInstall: () => ({ version: '0.4.4' }) }, /unknown install shape/],
+  ]
+  for (const [name, hooks, message] of failures) {
+    setSelfUpdateHooks({ ...defaults, ...hooks })
+    const res = responseRecorder()
+    await updateHandler(request('POST'), res)
+    assert.equal(res.status, 500, name)
+    const body = JSON.parse(res.body)
+    assert.equal(body.ok, false, name)
+    assert.match(body.output, message, name)
+    assert.equal(getUpdateProgress().running, false, name)
+
+    setSelfUpdateHooks(defaults)
+    const retry = responseRecorder()
+    await updateHandler(request('POST'), retry)
+    assert.equal(retry.status, 200, name)
+  }
 })
 
 // ---- 0.4.4：空闲超时（替代固定 90s 硬超时）+ 实时进度 ----
@@ -131,23 +149,59 @@ test('an unexpected error inside the handler becomes a 500 instead of crashing',
 // > < & | 等 cmd 元字符（Windows 上 shell:true 会拼进 cmd.exe /c "..."）。
 
 
-test('updateHandler tracks progress state around the run hook (real or fake)', async () => {
-  let duringRun = null
+test('updateHandler rejects concurrent requests during preparation and execution without disturbing the active update', async (t) => {
+  t.after(() => setSelfUpdateHooks({ stopDesktopWindow: null, onUpdateSuccess: null, run: null, resolveInstall: null }))
+  const stopped = Promise.withResolvers()
+  const running = Promise.withResolvers()
+  const finished = Promise.withResolvers()
+  const calls = []
   setSelfUpdateHooks({
-    stopDesktopWindow: null,
+    stopDesktopWindow: async () => { calls.push('stop'); await stopped.promise },
     run: async () => {
-      duringRun = getUpdateProgress()
-      return { ok: true, output: 'done' }
+      calls.push('run')
+      running.resolve()
+      return finished.promise
     },
-    resolveInstall: () => ({ mode: 'registry', profileDir: EXISTING_DIR, version: '0.3.3' }),
+    onUpdateSuccess: () => {
+      assert.equal(getUpdateProgress().running, true, 'lock covers the success hook')
+      calls.push('success')
+    },
+    resolveInstall: () => {
+      calls.push('resolve')
+      return { mode: 'registry', profileDir: EXISTING_DIR, version: '0.4.4' }
+    },
   })
   const res = responseRecorder()
-  await updateHandler(request('POST'), res)
+  const pending = [updateHandler(request('POST'), res)]
+  try {
+    for (const phase of ['preparation', 'execution']) {
+      if (phase === 'execution') {
+        stopped.resolve()
+        await running.promise
+      }
+      const duplicate = responseRecorder()
+      pending.push(updateHandler(request('POST'), duplicate))
+      assert.equal(duplicate.status, 409, phase)
+      const body = JSON.parse(duplicate.body)
+      assert.equal(body.ok, false, phase)
+      assert.match(body.output, /更新正在进行/, phase)
+      assert.equal(getUpdateProgress().running, true, 'rejection must not clear the active update')
+      assert.deepEqual(calls, phase === 'preparation' ? ['resolve', 'stop'] : ['resolve', 'stop', 'run'])
+    }
+  } finally {
+    stopped.resolve()
+    finished.resolve({ ok: true, output: 'done' })
+    await Promise.all(pending)
+  }
   assert.equal(res.status, 200)
-  assert.ok(duringRun, 'progress captured during run')
-  assert.equal(duringRun.running, true, 'running flag set while the run hook is in flight')
-  assert.ok(typeof duringRun.elapsedMs === 'number')
-  assert.equal(getUpdateProgress().running, false, 'running flag cleared after the run finishes')
+  assert.equal(JSON.parse(res.body).output, 'done')
+  assert.deepEqual(calls, ['resolve', 'stop', 'run', 'success'])
+  assert.equal(getUpdateProgress().running, false)
+
+  const retry = responseRecorder()
+  await updateHandler(request('POST'), retry)
+  assert.equal(retry.status, 200, 'a completed update must not block a later request')
+  assert.equal(calls.filter((call) => call === 'run').length, 2)
 })
 
 test('progress endpoint serves live state locally and rejects remote hosts', () => {

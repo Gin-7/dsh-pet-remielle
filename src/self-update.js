@@ -539,6 +539,12 @@ export async function updateHandler(req, res) {
     json(res, 405, { ok: false, output: 'method not allowed (POST only)' })
     return
   }
+  if (updateProgress.running) {
+    json(res, 409, { ok: false, output: '更新正在进行，请等待当前更新完成后再试。' })
+    return
+  }
+  // 首次 await 前占用更新状态，覆盖停窗、执行和收尾；拒绝的请求不能重置进度。
+  beginUpdateProgress()
   // 全量兜底：更新链路上任何意外异常（如包目录正处于被替换的中间态）
   // 都必须落成 500 响应——异步路由抛未处理拒绝会直接拖垮宿主进程
   try {
@@ -557,22 +563,15 @@ export async function updateHandler(req, res) {
     // 否则 pnpm/git 替换包内容时报 EPERM（link 模式的 git pull 同理）
     await quiesceDesktopWindow()
     let result
-    // 进度跟踪围着 hooks.run 包一层（真/假 run 都被覆盖）：running 态期间
-    // 客户端看门狗会轮询 /update-progress 拿输出尾部实时展示。
-    beginUpdateProgress()
-    try {
-      if (info.mode === 'link' && info.repoDir) {
-        result = await hooks.run('git', ['-C', info.repoDir, 'pull'], info.repoDir)
-      } else if (info.profileDir && existsSync(info.profileDir)) {
-        // --latest：跨出 package.json 里可能被钉死的精确版本号（如 "0.3.3"）。
-        // 普通 pnpm update 只在声明范围内升级，精确锁会永远原地重装旧版却报成功。
-        result = await hooks.run('pnpm', ['update', '--latest', PKG], info.profileDir)
-      } else {
-        json(res, 500, { ok: false, output: 'unknown install shape' })
-        return
-      }
-    } finally {
-      endUpdateProgress()
+    if (info.mode === 'link' && info.repoDir) {
+      result = await hooks.run('git', ['-C', info.repoDir, 'pull'], info.repoDir)
+    } else if (info.profileDir && existsSync(info.profileDir)) {
+      // --latest：跨出 package.json 里可能被钉死的精确版本号（如 "0.3.3"）。
+      // 普通 pnpm update 只在声明范围内升级，精确锁会永远原地重装旧版却报成功。
+      result = await hooks.run('pnpm', ['update', '--latest', PKG], info.profileDir)
+    } else {
+      json(res, 500, { ok: false, output: 'unknown install shape' })
+      return
     }
     // 成功后置回调：宿主借此收尾（如关闭桌面模式——运行时已随更新被移除）。
     // 返回字符串则追加到输出里展示给用户。
@@ -602,5 +601,7 @@ export async function updateHandler(req, res) {
     json(res, result.ok ? 200 : 500, { ok: result.ok, output: result.output.slice(-6000) })
   } catch (err) {
     try { json(res, 500, { ok: false, output: 'update failed: ' + String(err && err.message ? err.message : err) }) } catch { /* response already sent */ }
+  } finally {
+    endUpdateProgress()
   }
 }
