@@ -317,6 +317,24 @@ test('theme uplink stores, clears, reports real changes and rejects bad input', 
   assert.equal(wrongMethod.status, 405)
 })
 
+test('theme uplink clears only the reporting browser tab', async () => {
+  const seen = []
+  const handler = createThemeHandler({ accept: (theme, meta) => seen.push([theme, meta.changed, meta.clientId]) })
+  const post = (clientId, theme) => handler(request('POST', { clientId, theme }), responseRecorder())
+
+  await post('tab-a', 'dark')
+  await post('tab-b', 'dark')
+  await post('tab-a', '')
+  await post('tab-b', '')
+
+  assert.deepEqual(seen, [
+    ['dark', true, 'tab-a'],
+    ['dark', false, 'tab-b'],
+    ['dark', false, 'tab-a'],
+    ['', true, 'tab-b'],
+  ])
+})
+
 // 网页端上报的 hostTheme / currentSessionId 都是"有才发"的字段：清空后必须字段
 // 缺失（而非空串），桌面窗据此回落系统主题 / 取消"正在查看哪个会话"。
 test('snapshot carries reported host theme and current session only when set', () => {

@@ -442,15 +442,29 @@ export function normalizeHostTheme(value) {
 }
 
 /**
- * Web-client host-theme uplink: POST { theme: 'dark' | 'light' | '' }（空串=清除）。
+ * Web-client host-theme uplink: POST { theme: 'dark' | 'light' | '', clientId }（空串=清除）。
  * 桌面悬浮窗是独立 Electron 窗口，读不到宿主页面的 body[data-ds-dark-theme]，
  * 主题只能由网页端上报：有网页在线时桌面窗跟随宿主主题，两端菜单/气泡同色；
  * 没有网页在线（或上报过期）时快照里不带 hostTheme，桌面窗回落系统主题。
  * fire-and-forget，值真变化时通过 `accept` 的第二个参数把 changed 交给调用方广播。
- * @param accept - (theme, { changed }) => void；changed = 与上一次上报值不同。
+ * @param accept - (theme, { changed, clientId }) => void；changed = 有效主题与上次不同。
  */
-export function createThemeHandler({ accept }) {
-  let lastReported = null
+export function createThemeHandler({ accept, ttlMs = 10 * 60 * 1000, now = () => Date.now() }) {
+  const reports = new Map()
+  const keyOf = (clientId) => typeof clientId === 'string' && clientId.length > 0 && clientId.length <= 128
+    ? clientId
+    : 'legacy'
+  const currentTheme = (timestamp) => {
+    for (const [key, report] of reports) {
+      if (timestamp - report.at >= ttlMs) reports.delete(key)
+    }
+    let latest = null
+    for (const report of reports.values()) {
+      if (!report.theme || (latest && latest.at > report.at)) continue
+      latest = report
+    }
+    return latest?.theme || ''
+  }
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method !== 'POST') {
@@ -460,9 +474,14 @@ export function createThemeHandler({ accept }) {
     try {
       const body = await readJsonBody(req)
       const theme = normalizeHostTheme(body.theme)
-      const changed = theme !== lastReported
-      lastReported = theme
-      accept(theme, { changed })
+      const clientId = typeof body.clientId === 'string' ? body.clientId : ''
+      const timestamp = now()
+      const previous = currentTheme(timestamp)
+      const key = keyOf(clientId)
+      if (theme) reports.set(key, { theme, at: timestamp })
+      else reports.delete(key)
+      const next = currentTheme(timestamp)
+      accept(next, { changed: next !== previous, clientId })
       jsonResponse(res, 200, { ok: true })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })

@@ -193,3 +193,33 @@ test('unloading clears the reported current session via beacon or keepalive fetc
   assert.ok(fallback, 'should fall back to keepalive fetch when sendBeacon is unavailable')
   assert.equal(JSON.parse(fallback.options.body).sessionId, '')
 })
+
+test('disposed client ignores later focus and visibility events', async () => {
+  const harness = createHarness('old-session')
+  harness.setFocus(false)
+  harness.send({
+    ...base,
+    sessions: [{
+      sessionId: 'completion:old-session',
+      targetSessionId: 'old-session',
+      state: 'SUCCESS',
+      message: '任务已完成',
+      completed: true,
+      completionNotification: true,
+    }],
+  })
+  assert.equal(harness.fetches.some(({ url }) => String(url).endsWith('/completion/ack')), false)
+
+  harness.dispose()
+  harness.select('new-session')
+  harness.fetches.length = 0
+  harness.setFocus(true)
+  harness.setVisibility('visible')
+  await Promise.resolve()
+
+  const staleRequests = harness.fetches.filter(({ url, options }) => {
+    if (!/session\/current|completion\/ack/.test(String(url))) return false
+    return JSON.parse(options.body).sessionId === 'old-session'
+  })
+  assert.equal(staleRequests.length, 0, 'disposed client must not report or acknowledge its old session')
+})

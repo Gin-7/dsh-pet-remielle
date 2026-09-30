@@ -10,6 +10,7 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
   const fetches = []
   const opened = []
   const timers = []
+  const cleanups = []
   let nextTimer = 0
   const styleWrites = []
   let current = initialCurrent
@@ -190,7 +191,9 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
       listeners.push(listener)
       windowListeners.set(name, listeners)
     },
-    removeEventListener() {},
+    removeEventListener(name, listener) {
+      windowListeners.set(name, (windowListeners.get(name) ?? []).filter((entry) => entry !== listener))
+    },
     setInterval() { return 1 },
     clearInterval() {},
     setTimeout(listener) {
@@ -234,7 +237,10 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
       getSnapshot: () => modernNavigation
         ? { byId: { ...snapshotItems, ...(current ? { [current]: { id: current, retainedBy: { mainView: 1 } } } : {}) } }
         : { current, byId: snapshotItems },
-      subscribe(listener) { sessionListener = listener; return () => {} },
+      subscribe(listener) {
+        sessionListener = listener
+        return () => { if (sessionListener === listener) sessionListener = undefined }
+      },
     },
     ...(modernNavigation ? {} : { open: openSession }),
   }
@@ -254,7 +260,11 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
       if (name === 'layout') return withLayout ? layout : undefined
       return undefined
     },
-    effect: (callback) => callback(),
+    effect: (callback) => {
+      const cleanup = callback()
+      if (typeof cleanup === 'function') cleanups.push(cleanup)
+      return cleanup
+    },
   })
 
   function send(snapshot) {
@@ -298,7 +308,7 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
     focused = next
     dispatchWindowEvent(next ? 'focus' : 'blur')
   }
-  return { allowClicks, beacons, card, click, dispatchDocumentEvent, dispatchWindowEvent, elements, fetches, navigator: navigatorStub, opened, panel: approvalPanel, otherPanel: otherApprovalPanel, select, send, setApprovalDom: (next) => { if (Array.isArray(next.scopedRoots)) scopedRoots = next.scopedRoots; if (Array.isArray(next.loosePanels)) loosePanels = next.loosePanels }, setFocus, setPanelActive, setVisibility, styleWrites, flushTitleTimers }
+  return { allowClicks, beacons, card, click, dispatchDocumentEvent, dispatchWindowEvent, dispose: () => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() }, elements, fetches, navigator: navigatorStub, opened, panel: approvalPanel, otherPanel: otherApprovalPanel, select, send, setApprovalDom: (next) => { if (Array.isArray(next.scopedRoots)) scopedRoots = next.scopedRoots; if (Array.isArray(next.loosePanels)) loosePanels = next.loosePanels }, setFocus, setPanelActive, setVisibility, styleWrites, flushTitleTimers }
 }
 
 export const base = {
