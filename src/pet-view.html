@@ -40,7 +40,7 @@
     position: relative;
     margin-bottom: 16px;
     width: fit-content;
-    max-width: min(440px, calc(100vw - 24px));
+    max-width: 453px;
     display: none;
     flex-direction: column;
     align-items: center;
@@ -53,7 +53,7 @@
     margin-bottom: 13px;
     box-sizing: border-box;
     min-width: 200px;
-    max-width: min(440px, calc(100vw - 24px));
+    max-width: 453px;
     padding: 16px 27px 16px 40px;
     border-radius: 29px;
     background: #fff0f5;
@@ -115,8 +115,8 @@
   .rm2-pet-bubble.top { border-color: #b03a60; box-shadow: var(--rm2-glow-top); }
   .rm2-pet-bubble.attention { border-color: #e8508a; animation: rm2-pet-attention 1.6s ease-in-out infinite; }
   @keyframes rm2-pet-attention { 0%,100% { box-shadow: 0 0 0 0 rgba(232,80,138,.35); } 50% { box-shadow: 0 0 0 6px rgba(232,80,138,0); } }
-  .rm2-bubble-dots { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 120; }
-  .rm2-bubble-dot { width: 10px; height: 10px; border-radius: 50%; background: #e8508a; cursor: pointer; box-shadow: 0 0 0 2px rgba(255,255,255,.65); transition: transform .18s, background .18s; }
+  .rm2-bubble-dots { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 120; }
+  .rm2-bubble-dot { width: 13px; height: 13px; border-radius: 50%; background: #e8508a; cursor: pointer; box-shadow: 0 0 0 3px rgba(255,255,255,.65); transition: transform .18s, background .18s; }
   .rm2-bubble-dot:hover { transform: scale(1.25); }
   .rm2-bubble-balance { box-sizing: border-box; height: 91px; min-height: 91px; max-width: 440px; }
   .rm2-bubble-balance .rm2-pet-bubble-title { line-height: 29px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -149,7 +149,7 @@
   /* 几何参数与网页端 src/client.core.js 的 .rm2-pet-menu 逐项一致：
      定宽 240px、行间距 6px、行内边距 7px 9px、滑块 92px、百分比 36px。
      滑块列被压到 92px 是给名称列让位：「角色大小」4 字 ≈52px，名称列算出 64px，
-     再压就会溢出触发 ellipsis，显示成「角色大…」。test/desktop-window.test.js
+     再压就会溢出触发 ellipsis，显示成「角色大…」。test/platform/desktop-window.test.js
      有「两端参数相等」与「名称列宽度够放最长滑块标签」两条断言钉着，改一端必须同步。 */
   .menu {
     display: none; position: fixed; z-index: 999;
@@ -207,6 +207,7 @@
   <script src="/plugins/dsh-pet-remielle/session-order.js"></script>
   <script src="/plugins/dsh-pet-remielle/pet-tip.js"></script>
   <script src="/plugins/dsh-pet-remielle/gif-frame.js"></script>
+  <script src="/plugins/dsh-pet-remielle/bubble-title.js"></script>
   <div class="menu" id="menu"></div>
   <div class="pet">
     <div class="rm2-pet-bubbles" id="bubbleStack" title=""></div>
@@ -233,17 +234,10 @@
   var balanceRequested = false
   var SESSION_OPEN_ENDPOINT = '/plugins/dsh-pet-remielle/session/open'
   var COMPLETION_ACK_ENDPOINT = '/plugins/dsh-pet-remielle/completion/ack'
-  var BUBBLE_MIN_W = 277
   // 牌叠第二层假背板的固定 sessionId（不对应真实会话，仅承载 +N 与点击跳转）。
   var BUBBLE_BACKBOARD_ID = '__pet_backboard__'
   var BACKBOARD_TIP_DEBOUNCE_MS = 400
-  // 牌叠第二层上移量：卡片高 91px − 80px = 露出 11px；zoom = 角色大小，
-  // 75% 档位露出约 8px。与网页端 client.core.js 的 STACK_LIFT_PX 同值，别只改一端。
-  var STACK_LIFT_PX = 80
-  // 当前会话完成卡的自动 ack 标记（sessionId -> true）：见 updateBubbles 内说明
-  var autoAckedCompletions = new Map()
   var currentSessionId = undefined
-  var lastTopEntry = null
   var bubbleEls = new Map()
   // 自绘悬停提示浮层：原生 title 由系统渲染、不随 setZoomFactor 缩放，
   // 高 DPI 屏（200%）上文字过小。文本存卡片 dataset.rm2Tip，悬停时显示浮层。
@@ -252,6 +246,14 @@
   var petTipAnchor = null
   var __tip = window.__rm2PetTip
   if (!__tip) throw new Error('__rm2PetTip is missing: pet-tip.js script failed to load')
+  // 气泡会话卡的标题节流、宽度测量与状态文案（审批 / 计划待审 / 完成）：
+  // 与网页端同一份实现 src/bubble-title.cjs。
+  var __bubbleTitle = window.__rm2BubbleTitle
+  // 这里 throw 而不像下面的 __gifFrame 那样降级：气泡卡的标题节流、宽度测量与
+  // 状态文案都走它，缺了会静默渲染出不对的卡片，比直接报错难排查。
+  // 唯一会走到这里的是「插件文件已更新、DSH 仍未重启」——宿主内存里还没有
+  // bubble-title.js 这条路由，pet-view.html 却已是新版。
+  if (!__bubbleTitle) throw new Error('__rm2BubbleTitle is missing: bubble-title.js failed to load — if you just updated the plugin, restart DSH')
   // 取动态 GIF 当前帧（暂停冻结用）：与网页端同一份实现 src/gif-frame.cjs。
   // 这里不 throw：它只服务「暂停动画」一项，缺了也不该让整个桌宠窗起不来，
   // freeze() 不可用时自动退回首帧快照。__gifFrame.watch 起动画计时表。
@@ -263,6 +265,23 @@
   }
   function layoutPetTip(anchor, L, T, R, B) {
     __tip.layoutPetTip(petTip, anchor, L, T, R, B)
+  }
+  // 一次性提示：把锚点的 tip 换成指定文案显示 ms 毫秒后还原。
+  // 用于「按设计没有执行某个动作」的时刻——比什么都不做更可解释。
+  var TRANSIENT_TIP_MS = 2600
+  function showTransientTip(anchor, text, ms) {
+    if (!anchor || !anchor.dataset) return
+    var had = Object.prototype.hasOwnProperty.call(anchor.dataset, 'rm2Tip')
+    var prev = anchor.dataset.rm2Tip
+    anchor.dataset.rm2Tip = text
+    showPetTip(anchor)
+    window.setTimeout(function () {
+      if (had) anchor.dataset.rm2Tip = prev
+      else delete anchor.dataset.rm2Tip
+      // 还原后若鼠标仍悬停在锚点上，showPetTip 会用原 tooltip 接管；
+      // 已移开则 renderBubble 那侧的 hidePetTip 已经收尾。
+      if (petTipAnchor === anchor) showPetTip(anchor)
+    }, ms || TRANSIENT_TIP_MS)
   }
   function showPetTip(anchor) {
     var text = anchor && anchor.dataset ? anchor.dataset.rm2Tip : ''
@@ -316,31 +335,8 @@
     function (fn, ms) { return window.setTimeout(fn, ms) },
     function (timer) { window.clearTimeout(timer) },
   )
-  var __petMeasureEl = null
-  function ensureMeasureEl() {
-    if (!__petMeasureEl) {
-      __petMeasureEl = document.createElement('span')
-      __petMeasureEl.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;'
-      document.body.appendChild(__petMeasureEl)
-    }
-    return __petMeasureEl
-  }
-  function measureTextW(srcEl, text) {
-    var el = ensureMeasureEl()
-    if (window.getComputedStyle && srcEl) {
-      var cs = window.getComputedStyle(srcEl)
-      el.style.fontFamily = cs.fontFamily
-      el.style.fontSize = cs.fontSize
-      el.style.fontWeight = cs.fontWeight
-      el.style.letterSpacing = cs.letterSpacing
-    }
-    el.textContent = text || ''
-    return el.offsetWidth || 0
-  }
-  function bubbleRowWidth(textW) {
-    var vw = Math.max(150, (window.innerWidth || 1280) - 24)
-    return Math.min(440, vw, Math.max(BUBBLE_MIN_W, textW + 67))
-  }
+  var measureTextW = __bubbleTitle.measureTextW
+  var bubbleRowWidth = __bubbleTitle.bubbleRowWidth
   function switchBubblePage(p) {
     currentBubblePage = p
     syncDotTip()
@@ -429,7 +425,6 @@
       imgEl.src = cv.toDataURL('image/png')
     } catch (e) { /* 冻结失败则忽略 */ }
   }
-  var BUBBLE_TITLE_MS = 2000
   var dragState = null
   var menuOpen = false
   var lockedNow = false
@@ -975,14 +970,13 @@
     var detail = mk('div', '')
     detail.className = 'rm2-pet-bubble-detail'
     var detailText = document.createElement('span')
-    detailText.className = 'rm2-pet-detail-text'
     detail.appendChild(detailText)
     var stackCount = document.createElement('span')
     stackCount.className = 'rm2-pet-bubble-stack-count'
     node.appendChild(header)
     node.appendChild(detail)
     node.appendChild(stackCount)
-    var el = { node: node, header: header, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, completed: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
+    var el = { node: node, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, completed: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
     var activate = function (event) {
       event.preventDefault()
       event.stopPropagation()
@@ -990,9 +984,20 @@
       // 不把 __pet_idle__ 当作真实会话发送给宿主。
       if (el.node.dataset.idlePlaceholder === 'true') {
         // 已经有网页开着就别再开一个（浏览器不会复用已有标签，只会越堆越多）：webClients
-        // 是宿主快照里的 SSE 订阅计数，比"10 分钟 TTL 的当前会话上报"可靠得多。
-        // 代价：网页在线时点击没有可见反馈——刻意取舍，宁可不响应也不堆标签。
+        // 是宿主快照里的 SSE 订阅计数。
+        //
+        // 代价不只是「不新开」——什么都不做等于**点击完全静默**，用户分不清是卡住了
+        // 还是被拦下了。所以这里给一句说明去哪儿看。
+        //
+        // 顺带记录这条判据的已知缺口：webClients 是 SSE 订阅计数，而 Chromium 的
+        // tab discarding 会冻结/丢弃后台标签页，冻结期间连接不 close（hub.add 只在
+        // close/error 时清理，没有 idle 超时），于是计数虚高——用户明明关掉了所有
+        // 网页，点待机气泡却因为「以为还有网页开着」而不打开。彻底修它需要客户端
+        // 标识 + 定期心跳 + 按活跃度计数，是协议级改动，且阈值取小会把「网页真开着
+        // 但页面卡住」误判成没开、进而堆出一串标签。两害相权，这里选择保证不堆标签，
+        // 代价是至少让用户知道发生了什么。
         if (!(lastSnapshot && lastSnapshot.webClients > 0)) __tip.openIdleDshPage(window.petBridge)
+        else showTransientTip(el.node, '网页端已经开着啦，切过去看看~')
         return
       }
       // 假背板：点击时按当帧排序动态解析第 2 名会话并跳转。
@@ -1024,79 +1029,16 @@
     bubbleEls.set(sessionId, el)
     return el
   }
-  function clearBubbleTitleTimer(el) {
-    if (el && el.titleTimer) {
-      window.clearTimeout(el.titleTimer)
-      el.titleTimer = 0
-    }
-  }
-  function commitBubbleTitle(el, text, mood) {
-    clearBubbleTitleTimer(el)
-    el.titleMood = mood
-    el.titleChangedAt = Date.now()
-    el.pendingTitle = ''
-    el.pendingMood = ''
-    if (text !== el.lastText) {
-      el.lastText = text
-      el.title.textContent = text
-    }
-  }
-  function applyBubbleTitle(el, entry) {
-    var text = entry.message || ''
-    var mood = entry.mood || ''
-    var state = entry.state || ''
-    var immediate = !text
-      || state === 'WAITING' || state === 'ERROR' || state === 'SUCCESS'
-      || entry.attention === true
-      || entry.completionNotification === true
-      || entry.idlePlaceholder === true
-    if (!el.titleChangedAt) {
-      commitBubbleTitle(el, text, mood)
-      return
-    }
-    var moodChanged = mood !== el.titleMood
-    var elapsed = Date.now() - el.titleChangedAt
-    if (immediate || moodChanged || elapsed >= BUBBLE_TITLE_MS) {
-      commitBubbleTitle(el, text, mood)
-      return
-    }
-    if (text === el.lastText) {
-      el.pendingTitle = ''
-      clearBubbleTitleTimer(el)
-      return
-    }
-    el.pendingTitle = text
-    el.pendingMood = mood
-    if (!el.titleTimer) {
-      el.titleTimer = window.setTimeout(function () {
-        el.titleTimer = 0
-        if (el.pendingTitle && el.pendingTitle !== el.lastText) {
-          commitBubbleTitle(el, el.pendingTitle, el.pendingMood || el.titleMood)
-        }
-      }, Math.max(16, BUBBLE_TITLE_MS - elapsed))
-    }
-  }
+  var clearBubbleTitleTimer = __bubbleTitle.clearBubbleTitleTimer
+  var commitBubbleTitle = __bubbleTitle.commitBubbleTitle
+  var applyBubbleTitle = __bubbleTitle.applyBubbleTitle
   function renderBubble(el, entry, index) {
     var text = entry.message || ''
     var detail = entry.detail || ''
     if (entry.backboard) {
-      // 假背板：固定高度空方框，仅展示 +N；点击由 activate 动态解析第二层。
       commitBubbleTitle(el, '', '')
-      el.detail.style.display = 'none'
-      el.action.style.display = 'none'
-      el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
-      el.node.className = 'rm2-pet-bubble backboard' + (entry.summaryCount ? ' summary-backboard' : '')
-      el.node.setAttribute('aria-disabled', 'false')
-      el.node.style.cursor = 'pointer'
-      el.node.title = ''
-      el.node.dataset.rm2Tip = entry.backboardTip || ''
+      __bubbleTitle.applyBackboardChrome(el, entry, index)
       if (petTipAnchor === el.node) showPetTip(el.node)
-      el.node.style.zIndex = String(100 - index)
-      el.node.style.order = String(index)
-      el.node.style.marginTop = '-' + STACK_LIFT_PX + 'px'
-      el.node.style.width = '100%'
-      el.node.style.opacity = String(Math.max(0.46, 0.82 - index * 0.1))
-      el.node.style.display = 'block'
       return
     }
     if (!text && !detail) {
@@ -1107,12 +1049,11 @@
     }
     applyBubbleTitle(el, entry)
     // 详情行为单行文本，用 block 使 overflow/ellipsis 生效（display:flex 会让 text-overflow 失效）
-    var detailShown = detail.replace(/^\s*[·•]\s*/, '· ')
-    var planSummary = detailShown.replace(/^计划待审\s*·\s*/, '')
+    var shown = __bubbleTitle.detailShown(detail)
     el.detail.style.display = detail ? 'block' : 'none'
     if (detail !== el.lastDetail) {
       el.lastDetail = detail
-      el.detailText.textContent = detailShown
+      el.detailText.textContent = shown
     }
     var attention = attentionOf(entry)
     var approval = approvalOf(entry)
@@ -1121,37 +1062,15 @@
     el.targetSessionId = targetSessionOf(entry)
     el.canApprove = approval
     el.completed = completed
-    var actionNotif = approval || planReview || (attention && !completed)
-    if (actionNotif) {
-      var glyph = approval ? '✓' : (planReview || entry.phase === 'ask') ? '?' : '!'
-      if (el.action.textContent !== glyph) el.action.textContent = glyph
-      el.action.setAttribute('aria-label', approval ? '允许一次，点击直接确认' : planReview ? '计划待审，点击打开审核' : completed ? '任务已完成，点击查看' : '需要处理，点击跳转')
-    } else if (el.action.firstChild !== el.brandImg) {
-      el.action.textContent = ''
-      el.action.appendChild(el.brandImg)
-      el.action.setAttribute('aria-label', '蕾米埃尔桌宠')
-    }
-    el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
-    el.node.className = 'rm2-pet-bubble' + (index === 0 ? ' top' : '') + (attention ? ' attention' : '') + (approval ? ' approval' : '') + (planReview ? ' plan-review' : '') + (completed ? ' completed' : '') + (entry.idlePlaceholder ? ' idle-placeholder' : '') + (entry.summaryCount ? ' summary-backboard' : '')
-    el.node.setAttribute('aria-disabled', entry.idlePlaceholder ? 'true' : 'false')
-    // 光标策略与网页端对齐（src/client.core.js）：点击行为统一为整卡跳转后，
-    // 工作卡同样可点，仅待机占位卡显示 default；旧的「非审批/完成即 default」
-    // 是 0.3.4 桌面点卡片不跳转时代的遗留，与 title 提示和实际行为矛盾。
-    el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
-    el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
-    // 空闲占位卡不显示会话跳转提示；桌面端单击行为在 activate 中单独处理。
-    // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，自绘
-    // 浮层才能读到请求内容；原生 title 不随 zoom 缩放已废弃；操作说明在勾号
-    // aria-label 里。title 置空避免与自绘浮层双重提示。
-    el.node.dataset.rm2Tip = entry.idlePlaceholder ? '' : approval ? (detailShown || '') : planReview ? (planSummary ? '计划待审：' + planSummary + '，点击打开同意执行/要求修改' : '计划待审，点击打开同意执行/要求修改') : completed ? '完成啦~ 点击查看结果哦' : attention ? '轮到你啦，点击跳到这里处理呢' : '点击跳到这里看一下~'
-    el.node.title = ''
+    __bubbleTitle.applyCardChrome(el, entry, index, {
+      detailShown: shown,
+      planSummary: __bubbleTitle.planSummaryOf(shown),
+      approval: approval,
+      planReview: planReview,
+      completed: completed,
+      attention: attention,
+    })
     if (petTipAnchor === el.node) showPetTip(el.node)
-    el.node.style.zIndex = String(100 - index)
-    el.node.style.order = String(index)
-    el.node.style.marginTop = index === 0 ? '0px' : '-' + STACK_LIFT_PX + 'px'
-    el.node.style.width = '100%'
-    el.node.style.opacity = index === 0 ? '1' : String(Math.max(0.46, 0.82 - index * 0.1))
-    el.node.style.display = 'block'
   }
   function updateBubbles(snapshot) {
     if (!snapshot) return
@@ -1180,24 +1099,10 @@
       }]
     }
     var ordered = orderSessions(sessions)
-    lastTopEntry = ordered[0] || null
-    if (lastTopEntry && lastTopEntry.mood) snapshot.mood = lastTopEntry.mood
-    // 自动 ack 与网页端同构（src/client.core.js updateBubbles）：在数据层对全量
-    // ordered 检查「当前会话是否有完成通知」，而不是只在渲染的顶层卡上检查——
-    // 完成卡被审批/回答压到假背板之下（不渲染）时同样要自动消除提醒。
-    // autoAckedCompletions 保证同一轮完成只 POST 一次；完成被宿主清除后该会话
-    // 的检查转为 false，标记随即删除，同一会话第二轮完成可再次 ack。
-    if (currentSessionId) {
-      var currentHasCompletion = ordered.some(function (entry) {
-        return completionOf(entry) && targetSessionOf(entry) === currentSessionId
-      })
-      if (currentHasCompletion && !autoAckedCompletions.get(currentSessionId)) {
-        autoAckedCompletions.set(currentSessionId, true)
-        acknowledgeCompletion(currentSessionId)
-      } else if (!currentHasCompletion) {
-        autoAckedCompletions.delete(currentSessionId)
-      }
-    }
+    var topEntry = ordered[0]
+    if (topEntry && topEntry.mood) snapshot.mood = topEntry.mood
+    // 桌面窗只负责展示完成提醒，不代替浏览器标签页判断“是否正在查看”。
+    // 自动已读由可见的 DSH 标签页执行；显式点击完成卡仍走 session/open 确认。
     // 牌叠只渲染首层真卡；第二层是无内容的假背板（仅 +N），不渲染第 2 名的
     // 文字与图标——同级会话的 updatedAt 轮转因此不会造成背景卡闪换。
     // 点击背板时按当帧排序动态解析第 2 名并跳转，这里只需记住它是谁。

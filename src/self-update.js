@@ -16,7 +16,12 @@
  *                                          -> running state, elapsed time and the
  *                                             tail of live output while updating
  *
- * All routes only accept local-loopback requests (CSRF guard).
+ * Every route requires a loopback peer, a pinned HTTP method (POST for
+ * `update`, GET for the reads), *and*, when the browser sends one, a
+ * same-origin Origin — see the shared `localHostOk` helper. Host-header checking alone is
+ * not a CSRF guard, and neither is the Origin check on its own: browsers omit
+ * `Origin` on cross-origin GET/HEAD, so the method pin is what makes the
+ * missing header unreachable for a hostile page.
  */
 
 import { spawn } from 'node:child_process'
@@ -26,6 +31,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
 import tls from 'node:tls'
+import { localHostOk } from './local-access.js'
+
+// Keep the previous named export for internal consumers while sharing the implementation.
+export { localHostOk }
 
 export const REPO = 'Gin-7/dsh-pet-remielle'
 export const PKG = 'dsh-pet-remielle'
@@ -281,14 +290,18 @@ export function progressHandler(req, res) {
     json(res, 403, { ok: false, error: 'forbidden: progress route is local-only' })
     return
   }
+  if (req.method !== 'GET') {
+    json(res, 405, { ok: false, error: 'method not allowed (GET only)' })
+    return
+  }
   json(res, 200, { ok: true, ...getUpdateProgress() })
 }
 
 /** Windows 上 shell:true 包了层 cmd.exe，taskkill /T 连树一起杀，避免 pnpm.exe 孤儿。 */
-function killChildTree(child) {
+function killChildTree(child, spawnImpl = spawn) {
   try {
     if (isWin && child.pid) {
-      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+      const killer = spawnImpl('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
       killer.on?.('error', () => { try { child.kill() } catch { /* ignore */ } })
     } else {
       child.kill()
@@ -301,6 +314,10 @@ function killChildTree(child) {
 export function run(cmd, args, cwd, opts) {
   const idleTimeoutMs = (opts && opts.idleTimeoutMs) || IDLE_TIMEOUT_MS
   const totalTimeoutMs = (opts && opts.totalTimeoutMs) || TOTAL_TIMEOUT_MS
+  const spawnImpl = opts?.spawnImpl || spawn
+  const setTimeoutImpl = opts?.setTimeoutImpl || setTimeout
+  const clearTimeoutImpl = opts?.clearTimeoutImpl || clearTimeout
+  const killChildTreeImpl = opts?.killChildTreeImpl || ((child) => killChildTree(child, spawnImpl))
   return new Promise((resolvePromise) => {
     let settled = false
     let idleTimer = null
@@ -308,15 +325,15 @@ export function run(cmd, args, cwd, opts) {
     const finish = (ok, output) => {
       if (settled) return
       settled = true
-      if (idleTimer) clearTimeout(idleTimer)
-      if (totalTimer) clearTimeout(totalTimer)
+      if (idleTimer) clearTimeoutImpl(idleTimer)
+      if (totalTimer) clearTimeoutImpl(totalTimer)
       if (activeChild === child) activeChild = null
       resolvePromise({ ok, output })
     }
     // 超时终止：先杀进程树再落结论——挂死的 pnpm 若继续活着改写 node_modules，
     // 用户重试更新就是在半成品上叠半成品
     const finishTimedOut = (output) => {
-      killChildTree(child)
+      killChildTreeImpl(child)
       finish(false, output)
     }
     let child
@@ -324,9 +341,9 @@ export function run(cmd, args, cwd, opts) {
       if (isWin) {
         // .cmd shims (pnpm, git may resolve through PATHEXT) need cmd.exe.
         const quoted = [cmd, ...args].map((a) => (/\s/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)).join(' ')
-        child = spawn(quoted, { cwd, windowsHide: true, shell: true })
+        child = spawnImpl(quoted, { cwd, windowsHide: true, shell: true })
       } else {
-        child = spawn(cmd, args, { cwd, windowsHide: true })
+        child = spawnImpl(cmd, args, { cwd, windowsHide: true })
       }
     } catch (err) {
       finish(false, String(err))
@@ -337,8 +354,8 @@ export function run(cmd, args, cwd, opts) {
     // 空闲超时：任何一段输出（stdout/stderr）都重置计时器。慢网下载期间 pnpm
     // 持续产出进度行，不会被误杀；真正挂死的进程 60s 内无输出、被终止。
     const armIdleTimer = () => {
-      if (idleTimer) clearTimeout(idleTimer)
-      idleTimer = setTimeout(
+      if (idleTimer) clearTimeoutImpl(idleTimer)
+      idleTimer = setTimeoutImpl(
         () => finishTimedOut(out + `\n[timeout: no output for ${Math.max(1, Math.round(idleTimeoutMs / 1000))}s — 更新进程疑似挂起]`),
         idleTimeoutMs,
       )
@@ -349,7 +366,7 @@ export function run(cmd, args, cwd, opts) {
     child.on('error', (err) => finish(false, out + '\n' + String(err.message)))
     child.on('close', (code) => finish(code === 0, out))
     // 总上限兜底：输出一直有但进程永不结束（如交互式提示卡住）也能退出
-    totalTimer = setTimeout(
+    totalTimer = setTimeoutImpl(
       () => finishTimedOut(out + `\n[timeout: exceeded total ${Math.max(1, Math.round(totalTimeoutMs / 1000))}s]`),
       totalTimeoutMs,
     )
@@ -388,17 +405,37 @@ export function verifyInstallIntegrity(pkgDir) {
   return { ok: problems.length === 0, problems, pkgDir: dir }
 }
 
-export function localHostOk(req) {
-  const host = req.headers.host || ''
-  return /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)
-}
-
+/**
+ * Loopback + same-origin guard, same standard as `localOnly` in src/index.js.
+ *
+ * The Host header alone is not a CSRF guard: it is derived from the request
+ * target, so a hostile page reaching `http://127.0.0.1:<port>/…` produces a
+ * request that passes a Host check while coming from somewhere else entirely.
+ * Only `socket.remoteAddress` is unforgeable by page script.
+ *
+ * The Origin check is the second layer, and it is **not sufficient alone**:
+ * browsers only attach `Origin` to a cross-origin request when the request is
+ * CORS-tainted or the method is outside GET/HEAD/POST-with-simple-headers. A
+ * hostile page's `<img src="…/update">` arrives with no `Origin` at all and
+ * passes everything below. That is why every handler here also pins its
+ * method — see `updateHandler`, which is the one route with side effects.
+ */
 function json(res, code, payload) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(payload))
 }
 
-export function infoHandler(_req, res) {
+export function infoHandler(req, res) {
+  // The payload carries absolute profileDir / repoDir paths. Guard it like every
+  // other route here instead of leaving it as the one unguarded read endpoint.
+  if (!localHostOk(req)) {
+    json(res, 403, { ok: false, error: 'forbidden: info route is local-only' })
+    return
+  }
+  if (req.method !== 'GET') {
+    json(res, 405, { ok: false, error: 'method not allowed (GET only)' })
+    return
+  }
   try {
     const info = resolveInstall()
     const needsReinstall = needsCleanReinstallFor(info.version)
@@ -428,6 +465,10 @@ export function infoHandler(_req, res) {
 export async function checkHandler(req, res) {
   if (!localHostOk(req)) {
     json(res, 403, { ok: false, error: 'forbidden: check route is local-only' })
+    return
+  }
+  if (req.method !== 'GET') {
+    json(res, 405, { ok: false, error: 'method not allowed (GET only)' })
     return
   }
   try {
@@ -491,6 +532,19 @@ export async function updateHandler(req, res) {
     json(res, 403, { ok: false, output: 'forbidden: update route is local-only' })
     return
   }
+  // 方法必须钉死：Fetch 规范下跨源 GET/HEAD（<img src=...>、<form method=GET>）不带
+  // Origin 头，mode 是 no-cors 而非 cors，于是上面三项守卫全部通过。不钉方法的话，
+  // 恶意页面一个 <img> 就能触发 git pull / pnpm update（后者会跑依赖 lifecycle scripts）。
+  if (req.method !== 'POST') {
+    json(res, 405, { ok: false, output: 'method not allowed (POST only)' })
+    return
+  }
+  if (updateProgress.running) {
+    json(res, 409, { ok: false, output: '更新正在进行，请等待当前更新完成后再试。' })
+    return
+  }
+  // 首次 await 前占用更新状态，覆盖停窗、执行和收尾；拒绝的请求不能重置进度。
+  beginUpdateProgress()
   // 全量兜底：更新链路上任何意外异常（如包目录正处于被替换的中间态）
   // 都必须落成 500 响应——异步路由抛未处理拒绝会直接拖垮宿主进程
   try {
@@ -509,22 +563,15 @@ export async function updateHandler(req, res) {
     // 否则 pnpm/git 替换包内容时报 EPERM（link 模式的 git pull 同理）
     await quiesceDesktopWindow()
     let result
-    // 进度跟踪围着 hooks.run 包一层（真/假 run 都被覆盖）：running 态期间
-    // 客户端看门狗会轮询 /update-progress 拿输出尾部实时展示。
-    beginUpdateProgress()
-    try {
-      if (info.mode === 'link' && info.repoDir) {
-        result = await hooks.run('git', ['-C', info.repoDir, 'pull'], info.repoDir)
-      } else if (info.profileDir && existsSync(info.profileDir)) {
-        // --latest：跨出 package.json 里可能被钉死的精确版本号（如 "0.3.3"）。
-        // 普通 pnpm update 只在声明范围内升级，精确锁会永远原地重装旧版却报成功。
-        result = await hooks.run('pnpm', ['update', '--latest', PKG], info.profileDir)
-      } else {
-        json(res, 500, { ok: false, output: 'unknown install shape' })
-        return
-      }
-    } finally {
-      endUpdateProgress()
+    if (info.mode === 'link' && info.repoDir) {
+      result = await hooks.run('git', ['-C', info.repoDir, 'pull'], info.repoDir)
+    } else if (info.profileDir && existsSync(info.profileDir)) {
+      // --latest：跨出 package.json 里可能被钉死的精确版本号（如 "0.3.3"）。
+      // 普通 pnpm update 只在声明范围内升级，精确锁会永远原地重装旧版却报成功。
+      result = await hooks.run('pnpm', ['update', '--latest', PKG], info.profileDir)
+    } else {
+      json(res, 500, { ok: false, output: 'unknown install shape' })
+      return
     }
     // 成功后置回调：宿主借此收尾（如关闭桌面模式——运行时已随更新被移除）。
     // 返回字符串则追加到输出里展示给用户。
@@ -554,5 +601,7 @@ export async function updateHandler(req, res) {
     json(res, result.ok ? 200 : 500, { ok: result.ok, output: result.output.slice(-6000) })
   } catch (err) {
     try { json(res, 500, { ok: false, output: 'update failed: ' + String(err && err.message ? err.message : err) }) } catch { /* response already sent */ }
+  } finally {
+    endUpdateProgress()
   }
 }

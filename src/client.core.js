@@ -10,8 +10,8 @@
  *     registry — enable/disable pets, rename them, pick the active pet, and
  *     add new ones (drop six GIFs into assets/pets/<id>/ and flip it on).
  *  2. Settings card injected into the DSH settings page
- *     (`settings.plugin.item` slot, React) talking to the host config
- *     endpoint (global enable toggle).
+ *     (`settings.plugins.tab`) talking to the host config endpoint (global
+ *     enable toggle).
  *  3. The floating sticker pet itself (plain DOM) — instead of scraping the
  *     page DOM for work state, it polls the host state endpoint, which is
  *     driven by real session events through the PetReducer. Sticker GIFs are
@@ -206,7 +206,7 @@ var CSS = [
   '.rm2-pet-bubble-completion{display:none;flex:none;width:16px;height:16px;margin-right:13px;border-radius:50%;corner-shape:round!important;background:#35c979;box-shadow:0 0 0 4px rgba(53,201,121,.18);}',
   '.rm2-pet-bubble.completed .rm2-pet-bubble-completion{display:inline-flex;}',
   '.rm2-pet-bubble.idle-placeholder{height:61px;min-height:61px;padding-top:15px;padding-bottom:15px;}',
-  '.rm2-pet-bubble-stack-count{display:none;position:absolute;right:21px;bottom:0;height:11px;align-items:center;color:#f0a8c0;font-size:12px;font-weight:700;line-height:11px;}',
+  '.rm2-pet-bubble-stack-count{display:none;position:absolute;right:16px;bottom:0;height:8px;align-items:center;color:#f0a8c0;font-size:9px;font-weight:700;line-height:8px;}',
   '.rm2-pet-bubble.summary-backboard .rm2-pet-bubble-stack-count{display:flex;}',
   '.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-title,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-action,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-completion{visibility:hidden;}',
   '.rm2-pet-bubble.top{border-color:#b03a60;box-shadow:0 8px 24px rgba(190,70,110,.22);}',
@@ -214,11 +214,10 @@ var CSS = [
   '@keyframes rm2-pet-attention{0%,100%{box-shadow:0 0 0 0 rgba(232,80,138,.35);}50%{box-shadow:0 0 0 6px rgba(232,80,138,0);}}',
   'body[data-ds-dark-theme] .rm2-pet-bubble.top{border-color:#ffb3c9;}',
   'body[data-ds-dark-theme] .rm2-pet-bubble.attention{border-color:#ff6fa8;}',
-  // 单气泡（余额页）允许圆点露出到边框外；堆叠卡恢复裁剪，不影响省略号
-  // 堆叠卡需要裁剪超长内容（保留省略号），单气泡（余额）不裁剪
+  // 牌叠卡裁剪超长内容（保留省略号）；单气泡（余额页）不在 .rm2-pet-bubbles 内，不受此裁剪
   '.rm2-pet-bubbles .rm2-pet-bubble{overflow:hidden;}',
-  // 余额气泡复用对话卡工作态：border-box 同 68px 高度、max-width 与对话卡一致(330)、去掉气泡尾三角。
-  // 标题行高 22px 对齐对话卡的 header(min-height 22px)。
+  // 余额气泡复用对话卡工作态：border-box 同为 91px 定高、max-width 同为 440px、
+  // 去掉气泡尾三角。标题行高 29px 对齐对话卡 header 的 min-height(29px)。
   '.rm2-bubble-balance{box-sizing:border-box;height:91px;min-height:91px;max-width:440px;}',
   '.rm2-bubble-balance .rm2-pet-bubble-title{line-height:29px;min-width:0;overflow:hidden;text-overflow:ellipsis;}',
   '.rm2-bubble-balance::after{display:none;}',
@@ -282,69 +281,12 @@ function setLatestUpdate(info, isNew) {
   if (isNew) updBubble.style.display = 'inline-flex'
   else updBubble.style.display = 'none'
 }
-// ---- markdown 渲染（release 说明） ----
-// GitHub release body 是 markdown，原先当纯文本 <pre> 展示，标题/列表/链接全糊成一行。
-// 这里实现一个够用的子集：标题、列表、代码块/行内代码、引用、分隔线、粗斜体、删除线、链接。
-// 安全约定：先整体 HTML 转义再做 markdown 变换（转义后的 &lt; 等不会再被二次解释），
-// 链接目标只放行 http(s)/mailto，其余一律置为 '#'——release body 来自远端，不可信任。
-
-// ---- md render begin ----（test/settings-section.test.js 按标记切片单测这一段，勿改标记行）
-function mdEscapeHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-}
-function mdSafeUrl(url) {
-  var u = String(url || '').trim()
-  return /^(https?:\/\/|mailto:)/i.test(u) ? u.replace(/"/g, '%22') : '#'
-}
-function mdInline(text) {
-  var s = mdEscapeHtml(text)
-  s = s.replace(/`([^`]+)`/g, function (_, c) { return '<code>' + c + '</code>' })
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (_, t, u) {
-    return '<a href="' + mdSafeUrl(u) + '" target="_blank" rel="noopener noreferrer">' + t + '</a>'
-  })
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
-  s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>')
-  return s
-}
-function renderMarkdown(src) {
-  var lines = String(src || '').split(/\r?\n/)
-  var html = []
-  var inCode = false
-  var listTag = null
-  var para = []
-  function flushPara() { if (para.length) { html.push('<p>' + para.join('<br>') + '</p>'); para = [] } }
-  function closeList() { if (listTag) { html.push('</' + listTag + '>'); listTag = null } }
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i]
-    if (/^\s*```/.test(line)) {
-      if (inCode) { html.push('</code></pre>'); inCode = false }
-      else { flushPara(); closeList(); html.push('<pre><code>'); inCode = true }
-      continue
-    }
-    if (inCode) { html.push(mdEscapeHtml(line)); continue }
-    var h = line.match(/^(#{1,6})\s+(.*)$/)
-    if (h) { flushPara(); closeList(); var lv = h[1].length; html.push('<h' + lv + '>' + mdInline(h[2]) + '</h' + lv + '>'); continue }
-    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flushPara(); closeList(); html.push('<hr>'); continue }
-    var ul = line.match(/^\s*[-*+]\s+(.*)$/)
-    var ol = line.match(/^\s*\d+[.)]\s+(.*)$/)
-    if (ul || ol) {
-      flushPara()
-      var want = ul ? 'ul' : 'ol'
-      if (listTag !== want) { closeList(); html.push('<' + want + '>'); listTag = want }
-      html.push('<li>' + mdInline((ul || ol)[1]) + '</li>')
-      continue
-    }
-    var q = line.match(/^\s*>\s?(.*)$/)
-    if (q) { flushPara(); closeList(); html.push('<blockquote>' + mdInline(q[1]) + '</blockquote>'); continue }
-    if (!line.trim()) { flushPara(); closeList(); continue }
-    para.push(mdInline(line))
-  }
-  if (inCode) html.push('</code></pre>')
-  flushPara(); closeList()
-  return html.join('')
-}
-// ---- md render end ----
+// ---- markdown 渲染（release 说明）----
+// 已抽到 src/markdown.cjs：纯函数，网页端由 build-client.mjs 拼在本文件之前，
+// 单测直接 require 该模块（test/markdown.test.js），不再按标记切片求值。
+var __md = window.__rm2Markdown
+if (!__md) throw new Error('__rm2Markdown is missing: build-client.mjs markdown prepend was broken')
+const renderMarkdown = __md.renderMarkdown
 
 function baseUpdateNotes() {
   if (latestInfo.needsCleanReinstall) {
@@ -1030,7 +972,7 @@ function PetsSection() {
                 type: 'password',
                 value: v.platformToken || '',
                 disabled: !config || v.showBubbleUsage !== true,
-                placeholder: 'DEEPSEEK_PLATFORM_TOKEN',
+                placeholder: v.platformTokenConfigured ? '已配置令牌（重新输入以替换）' : 'DEEPSEEK_PLATFORM_TOKEN',
                 onChange: function (e) { write('platformToken', e.target.value) },
                 className: 'rm2-pet-input',
                 style: { flex: 1 },
@@ -1162,30 +1104,6 @@ function PetsSection() {
 
 /** ---------- floating pet (plain DOM) ---------- */
 
-// 隐藏测量节点：复制真实渲染字体来精确测量文字宽度，避免 max-content 撑宽。
-// 提升到模块级并懒创建，mountPet 可多次挂载也不会重复往 body 追加节点。
-var __petMeasureEl = null
-function ensureMeasureEl() {
-  if (!__petMeasureEl) {
-    __petMeasureEl = document.createElement('span')
-    __petMeasureEl.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;'
-    if (document.body) document.body.appendChild(__petMeasureEl)
-  }
-  return __petMeasureEl
-}
-function measureTextW(srcEl, text) {
-  var el = ensureMeasureEl()
-  if (window.getComputedStyle && srcEl) {
-    var cs = window.getComputedStyle(srcEl)
-    el.style.fontFamily = cs.fontFamily
-    el.style.fontSize = cs.fontSize
-    el.style.fontWeight = cs.fontWeight
-    el.style.letterSpacing = cs.letterSpacing
-  }
-  el.textContent = text || ''
-  return el.offsetWidth || 0
-}
-
 function mountPet(ctx) {
   function optionalService(name) {
     if (!ctx) return undefined
@@ -1257,6 +1175,12 @@ function mountPet(ctx) {
   var __gifFrame = window.__rm2GifFrame
   if (!__gifFrame) throw new Error('__rm2GifFrame is missing: build-client.mjs gif-frame prepend was broken')
   __gifFrame.watch(img)
+  // 气泡会话卡的标题节流、宽度测量与状态文案（审批 / 计划待审 / 完成）：
+  // 桌面端同一份实现 src/bubble-title.cjs
+  var __bubbleTitle = window.__rm2BubbleTitle
+  if (!__bubbleTitle) throw new Error('__rm2BubbleTitle is missing: build-client.mjs bubble-title prepend was broken')
+  var measureTextW = __bubbleTitle.measureTextW
+  var bubbleRowWidth = __bubbleTitle.bubbleRowWidth
   function hidePetTip() {
     petTipAnchor = null
     if (petTip) petTip.style.display = 'none'
@@ -1293,14 +1217,6 @@ function mountPet(ctx) {
       el.node.dataset.rm2Tip = tip
       if (petTipAnchor === el.node) showPetTip(el.node)
     }
-  }
-  // 气泡框最小宽度：把标题在常见长度内的宽度变化"吸收"掉，避免方框频繁抖动
-  var BUBBLE_MIN_W = 277
-  // 两种方框（堆叠对话卡 / 余额气泡）共用同一宽度规则：取"最宽一行" + 内边距(50)，
-  // 下限 BUBBLE_MIN_W、上限 min(440, 视口-24)。返回含内边距的总宽。
-  function bubbleRowWidth(textW) {
-    var vw = Math.max(150, (window.innerWidth || 1280) - 24)
-    return Math.min(440, vw, Math.max(BUBBLE_MIN_W, textW + 67))
   }
   var currentBubblePage = 0
   function switchBubblePage(p) {
@@ -1443,17 +1359,18 @@ function mountPet(ctx) {
   var intervalId = 0
   var pulseFallbackTimer = 0
   var stream = null
+  var disposed = false
 
   /** 镜像只作用于宠物图案本身（气泡、圆点不翻转）；applyVisuals 与 applyOffset 共用。 */
-  function applyMirror(target, snapshot) {
-    target.style.transform = snapshot && snapshot.mirror === true ? 'scaleX(-1)' : ''
+  function applyMirror(snapshot) {
+    img.style.transform = snapshot && snapshot.mirror === true ? 'scaleX(-1)' : ''
   }
 
   function applyVisuals(snapshot) {
     var scale = snapshot.scale ?? 1
     var opacity = snapshot.opacity ?? 1
     img.style.width = Math.round(180 * scale) + 'px'
-    applyMirror(img, snapshot)
+    applyMirror(snapshot)
     // 气泡缩放口径与桌面端共用 pet-tip.cjs 的 bubbleZoomOf（同步/固定两模式）
     var bubbleZoom = __tip.bubbleZoomOf(snapshot)
     bubble.style.zoom = String(bubbleZoom)
@@ -1463,18 +1380,10 @@ function mountPet(ctx) {
     syncPetCursor()
   }
 
-  /** 气泡首行：同贴纸最多每 BUBBLE_TITLE_MS 换一次（0.3.1 锁定，避免 think/干活
-   *  逐 chunk 翻文案）。贴纸变了，或 WAITING / ERROR / SUCCESS / attention /
-   *  完成卡 / 占位卡，立即更新；到期再刷出等待中的 pending。 */
-  var BUBBLE_TITLE_MS = 2000
   var prevBubbleVisible = false
   // 牌叠第二层假背板的固定 sessionId（不对应真实会话，仅承载 +N 与点击跳转）。
   var BUBBLE_BACKBOARD_ID = '__pet_backboard__'
   var BACKBOARD_TIP_DEBOUNCE_MS = 400
-  // 牌叠第二层（假背板）上移量：卡片高 91px（CSS 里写死）− 80px = 露出 11px；
-  // 同步缩放模式下 stack 的 zoom = 角色大小，故 75% 档位露出约 8px（固定模式随
-  // bubbleFixedSize，不再等于 8px）。桌面端 pet-view.html 用同一个值，别只改一端。
-  var STACK_LIFT_PX = 80
   var backboardStabilizer = __tip.createBackboardStabilizer(
     commitBackboardTarget,
     BACKBOARD_TIP_DEBOUNCE_MS,
@@ -1482,7 +1391,8 @@ function mountPet(ctx) {
     function (timer) { window.clearTimeout(timer) },
   )
   var currentSessionId = undefined
-  var lastTopEntry = null
+  // 每个网页标签页独立的上报身份：隐藏页清除当前会话时不能抹掉另一页的选择。
+  var currentSessionClientId = 'pet-tab-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
   var bubbleEls = new Map() // sessionId -> { node, title, detail }
   // 排序逻辑与桌面悬浮窗共用 src/session-order.cjs（构建时由 scripts/build-client.mjs
   // 拼接到本文件之前）：审批 > 计划审核 > 等待回答 > 完成卡 > attention > 当前会话 > stateRank > updatedAt。
@@ -1499,42 +1409,72 @@ function mountPet(ctx) {
   function orderSessions(sessions) {
     return __order.orderSessions(sessions, currentSessionId)
   }
-  // 当前会话上报：fire-and-forget，宿主只存内存并随下次快照带出（空串=清除）
-  function isForegroundSurface(snapshot) {
-    if (snapshot && snapshot.desktopActive === true) return true
+  // 当前会话上报：fire-and-forget，宿主按标签页存内存并随下次快照带出（空串=清除）。
+  function isForegroundSurface() {
     if (typeof document === 'undefined') return true
-    return document.visibilityState !== 'hidden'
+    if (document.visibilityState === 'hidden') return false
+    return typeof document.hasFocus !== 'function' || document.hasFocus()
   }
-  function reportCurrentSession(id, snapshot) {
-    if (!isForegroundSurface(snapshot)) return
+  function activeGlobalPanel() {
+    var layout = optionalService('layout')
+    try {
+      var info = layout && layout.panelInfo && typeof layout.panelInfo.getSnapshot === 'function'
+        ? layout.panelInfo.getSnapshot()
+        : undefined
+      return !!info && info.activePanelId !== null && info.activePanelId !== undefined
+    } catch (e) {
+      return false
+    }
+  }
+  function isViewingConversation() {
+    return isForegroundSurface() && !activeGlobalPanel()
+  }
+  function reportCurrentSession(id) {
+    if (disposed || !isViewingConversation()) return
     fetch(SESSION_CURRENT_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId: id || '' }),
+      body: JSON.stringify({ sessionId: id || '', clientId: currentSessionClientId }),
+      keepalive: true,
     }).catch(function () {})
   }
-  // 页面卸载时清空宿主记忆的当前会话：否则直接关闭页面后桌面端残留陈旧的
-  // currentSessionId，排序置顶与自动 ack 都会误判。sendBeacon（Blob 指定
-  // application/json）/fetch keepalive 保证卸载过程中请求仍能发出，两者都
-  // 不可用时静默放弃；pagehide 与 beforeunload 双保险，重复清空无副作用。
-  var CURRENT_CLEAR_BODY = JSON.stringify({ sessionId: '' })
+  // 页面卸载、失焦或隐藏时清空**本标签页**的当前会话：否则直接关闭页面后桌面端
+  // 残留陈旧的 currentSessionId，排序置顶与自动 ack 都会误判。sendBeacon（Blob
+  // 指定 application/json）/fetch keepalive 保证卸载过程中请求仍能发出，两者都不可用
+  // 时静默放弃；按 clientId 清除不会抹掉另一可见标签页的状态。
   function clearReportedCurrentSession() {
+    if (disposed) return
+    var body = JSON.stringify({ sessionId: '', clientId: currentSessionClientId })
     if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-      navigator.sendBeacon(SESSION_CURRENT_ENDPOINT, new Blob([CURRENT_CLEAR_BODY], { type: 'application/json' }))
+      navigator.sendBeacon(SESSION_CURRENT_ENDPOINT, new Blob([body], { type: 'application/json' }))
       return
     }
     fetch(SESSION_CURRENT_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: CURRENT_CLEAR_BODY,
+      body: body,
       keepalive: true,
     }).catch(function () {})
   }
+  function onCurrentSessionFocus() {
+    if (disposed) return
+    if (currentSessionId) reportCurrentSession(currentSessionId)
+    if (lastSnapshot) ackCurrentSessionCompletion(lastSnapshot)
+  }
+  function onCurrentSessionVisibilityChange() {
+    if (disposed) return
+    if (isViewingConversation()) {
+      if (currentSessionId) reportCurrentSession(currentSessionId)
+      if (lastSnapshot) ackCurrentSessionCompletion(lastSnapshot)
+    } else {
+      clearReportedCurrentSession()
+    }
+  }
   window.addEventListener('pagehide', clearReportedCurrentSession)
   window.addEventListener('beforeunload', clearReportedCurrentSession)
-  window.addEventListener('visibilitychange', function () {
-    if (currentSessionId) reportCurrentSession(currentSessionId, lastSnapshot)
-  })
+  window.addEventListener('blur', clearReportedCurrentSession)
+  window.addEventListener('focus', onCurrentSessionFocus)
+  document.addEventListener('visibilitychange', onCurrentSessionVisibilityChange)
   // 宿主主题上报：桌面悬浮窗是独立 Electron 窗口，读不到这里的
   // body[data-ds-dark-theme]——它的菜单/气泡配色只能靠这条上报同步。不报的话它
   // 只能跟系统主题，宿主主题与系统不一致时两端菜单就是两种颜色（实测最常见的
@@ -1546,15 +1486,20 @@ function mountPet(ctx) {
     if (!body || typeof body.hasAttribute !== 'function') return ''
     return body.hasAttribute('data-ds-dark-theme') ? 'dark' : 'light'
   }
+  function hostThemeBody(theme) {
+    return JSON.stringify({ theme: theme, clientId: currentSessionClientId })
+  }
   function sendHostTheme(theme) {
+    if (disposed) return
     fetch(THEME_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ theme: theme }),
+      body: hostThemeBody(theme),
       keepalive: true,
     }).catch(function () {})
   }
   function trackHostTheme() {
+    if (disposed) return
     var theme = currentHostTheme()
     if (!theme || theme === reportedHostTheme) return
     reportedHostTheme = theme
@@ -1562,41 +1507,46 @@ function mountPet(ctx) {
   }
   // 卸载清空：网页关掉后桌面悬浮窗不该继续挂着宿主配色，应回落系统主题。
   // 同 currentSession：页面被杀时不会执行，宿主侧另有 TTL 兜底。
-  var HOST_THEME_CLEAR_BODY = JSON.stringify({ theme: '' })
   function clearReportedHostTheme() {
+    if (disposed) return
+    var body = hostThemeBody('')
     if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-      navigator.sendBeacon(THEME_ENDPOINT, new Blob([HOST_THEME_CLEAR_BODY], { type: 'application/json' }))
+      navigator.sendBeacon(THEME_ENDPOINT, new Blob([body], { type: 'application/json' }))
       return
     }
     fetch(THEME_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: HOST_THEME_CLEAR_BODY,
+      body: body,
       keepalive: true,
     }).catch(function () {})
   }
   function watchHostTheme() {
-    if (typeof MutationObserver !== 'function' || !document.body) return
+    if (disposed || typeof MutationObserver !== 'function' || !document.body) return
     trackHostTheme()
     // 宿主切换主题 = body 上 data-ds-dark-theme 的增删，属性一抖就上报一次
-    new MutationObserver(trackHostTheme).observe(document.body, {
+    hostThemeMutationObserver = new MutationObserver(trackHostTheme)
+    hostThemeMutationObserver.observe(document.body, {
       attributes: true,
       attributeFilter: ['data-ds-dark-theme'],
     })
     // 心跳续期：宿主侧上报值带 TTL（页面被强杀时 pagehide 不执行，靠 TTL 兜底），
     // 只在变化时上报会让 TTL 到期后桌面窗静默回落系统主题，与网页端又不同色。
-    setInterval(function () {
+    hostThemeHeartbeatTimer = window.setInterval(function () {
+      if (disposed) return
       var theme = currentHostTheme()
       if (theme) sendHostTheme(theme)
     }, HOST_THEME_HEARTBEAT_MS)
     window.addEventListener('pagehide', clearReportedHostTheme)
     window.addEventListener('beforeunload', clearReportedHostTheme)
   }
+  var hostThemeMutationObserver = null
+  var hostThemeHeartbeatTimer = 0
   if (document.body) watchHostTheme()
   else document.addEventListener('DOMContentLoaded', watchHostTheme)
   var completionAckPending = new Set()
   function acknowledgeCompletion(sessionId, attempt) {
-    if (!sessionId) return
+    if (disposed || !sessionId) return
     var retry = attempt || 0
     if (retry === 0 && completionAckPending.has(sessionId)) return
     completionAckPending.add(sessionId)
@@ -1618,7 +1568,8 @@ function mountPet(ctx) {
   function acknowledgeCompletionAfterOpen(sessionId) {
     var attempts = 40
     var confirm = function () {
-      if (sessionListSnapshot() === sessionId) {
+      if (disposed) return
+      if (currentSessionIdOf() === sessionId) {
         acknowledgeCompletion(sessionId)
         return
       }
@@ -1632,18 +1583,19 @@ function mountPet(ctx) {
    * 渲染连同 ack 一起被跳过，绿点就只剩手动点击才消。所以它在快照入口处独立执行。
    */
   function ackCurrentSessionCompletion(snapshot) {
-    if (!isForegroundSurface(snapshot)) return
+    if (disposed || !isViewingConversation()) return
     var list = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : []
     var completions = list.filter(function (entry) { return entry && completionOf(entry) })
     if (!completions.length) return
+    // 拿不到 currentSessionId 就不猜。「只有一张完成卡」并不等于「用户正在看它」：
+    // 本函数在 apply() 里先于渲染跑，所以页面刚加载（或多标签互相覆盖）时
+    // currentSessionId 还是上一帧的值，猜错等于静默吞掉一条用户没看过的提醒。
+    //
+    // 代价很短暂：currentSessionId 只有三处写入——挂载时同步赋值一次（早于第一条
+    // SSE 快照），之后由 sessionList.subscribe → syncCurrentSession 维护；面板打开
+    // 期间 currentSessionIdOf() 会让值悬空，面板关闭时 layout.panelInfo.subscribe
+    // 的 reopened 分支强制重算补回。故此处不猜不会造成「提醒再也不自动消」。
     var target = currentSessionId
-    if (!target) {
-      // selected 不可用（刚加载/多标签互相覆盖）时的保守兜底：页面在前台且只有一张完成卡，
-      // 才认定它就是用户正在看的那个；多张时不动手，宁可留给手动点击。
-      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return
-      if (completions.length !== 1) return
-      target = targetSessionOf(completions[0])
-    }
     if (!target) return
     for (var i = 0; i < completions.length; i++) {
       if (targetSessionOf(completions[i]) === target) {
@@ -1693,16 +1645,26 @@ function mountPet(ctx) {
     var aria = typeof node.getAttribute === 'function' ? (node.getAttribute('aria-label') || '') : ''
     return String(node.innerText || node.textContent || aria || '').replace(/\s+/g, ' ').trim()
   }
-  function approvalPanels() {
-    var frame = typeof document.querySelector === 'function' ? document.querySelector('[data-panel-conversation]') : null
-    if (frame && typeof frame.querySelectorAll === 'function') return frame.querySelectorAll('[data-approval-key]')
-    if (!document || typeof document.querySelectorAll !== 'function') return []
+  function approvalPanels(sessionId) {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return []
+    var roots = document.querySelectorAll('[data-conversation-session]')
+    if (roots.length > 0) {
+      var scoped = []
+      for (var r = 0; r < roots.length; r++) {
+        var root = roots[r]
+        var rootSession = typeof root.getAttribute === 'function' ? root.getAttribute('data-conversation-session') : ''
+        if (sessionId && rootSession !== sessionId) continue
+        var found = typeof root.querySelectorAll === 'function' ? root.querySelectorAll('[data-approval-key]') : []
+        for (var f = 0; f < found.length; f++) scoped.push(found[f])
+      }
+      return scoped
+    }
     var panels = document.querySelectorAll('[data-approval-key]')
     return panels.length === 1 ? panels : []
   }
   function clickNativeAllowOnce(sessionId) {
-    if (sessionId && sessionListSnapshot() !== sessionId) return false
-    var panels = approvalPanels()
+    if (sessionId && currentSessionIdOf() !== sessionId) return false
+    var panels = approvalPanels(sessionId)
     for (var p = 0; p < panels.length; p++) {
       var nodes = panels[p].querySelectorAll('button, [role="button"]')
       for (var i = 0; i < nodes.length; i++) {
@@ -1724,14 +1686,15 @@ function mountPet(ctx) {
     openSession(sessionId)
     var attempts = 80
     var tryClick = function () {
-      var current = sessionListSnapshot()
+      var current = currentSessionIdOf()
       if (current === sessionId && clickNativeAllowOnce(sessionId)) return
       if (current !== sessionId) openSession(sessionId)
       if (attempts-- > 0) window.setTimeout(tryClick, 50)
     }
     window.setTimeout(tryClick, 50)
   }
-  function sessionListSnapshot() {
+  function currentSessionIdOf() {
+    if (activeGlobalPanel()) return undefined
     if (!ctx || !ctx.sessions || !ctx.sessions.list || typeof ctx.sessions.list.getSnapshot !== 'function') return undefined
     var snapshot = ctx.sessions.list.getSnapshot()
     if (snapshot.current !== undefined) return snapshot.current
@@ -1768,14 +1731,13 @@ function mountPet(ctx) {
     var detail = mk('div', '')
     detail.className = 'rm2-pet-bubble-detail'
     var detailText = document.createElement('span')
-    detailText.className = 'rm2-pet-detail-text'
     detail.appendChild(detailText)
     var stackCount = document.createElement('span')
     stackCount.className = 'rm2-pet-bubble-stack-count'
     node.appendChild(header)
     node.appendChild(detail)
     node.appendChild(stackCount)
-    var el = { node: node, header: header, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
+    var el = { node: node, title: title, detail: detail, detailText: detailText, action: action, brandImg: brandImg, stackCount: stackCount, targetSessionId: sessionId, canApprove: false, lastText: '', lastDetail: '', naturalHeaderWidth: 0, titleMood: '', titleChangedAt: 0, titleTimer: 0, pendingTitle: '', pendingMood: '' }
     var activate = function (event) {
       event.preventDefault()
       event.stopPropagation()
@@ -1805,79 +1767,16 @@ function mountPet(ctx) {
     bubbleEls.set(sessionId, el)
     return el
   }
-  function clearBubbleTitleTimer(el) {
-    if (el && el.titleTimer) {
-      window.clearTimeout(el.titleTimer)
-      el.titleTimer = 0
-    }
-  }
-  function commitBubbleTitle(el, text, mood) {
-    clearBubbleTitleTimer(el)
-    el.titleMood = mood
-    el.titleChangedAt = Date.now()
-    el.pendingTitle = ''
-    el.pendingMood = ''
-    if (text !== el.lastText) {
-      el.lastText = text
-      el.title.textContent = text
-    }
-  }
-  function applyBubbleTitle(el, entry) {
-    var text = entry.message || ''
-    var mood = entry.mood || ''
-    var state = entry.state || ''
-    var immediate = !text
-      || state === 'WAITING' || state === 'ERROR' || state === 'SUCCESS'
-      || entry.attention === true
-      || entry.completionNotification === true
-      || entry.idlePlaceholder === true
-    if (!el.titleChangedAt) {
-      commitBubbleTitle(el, text, mood)
-      return
-    }
-    var moodChanged = mood !== el.titleMood
-    var elapsed = Date.now() - el.titleChangedAt
-    if (immediate || moodChanged || elapsed >= BUBBLE_TITLE_MS) {
-      commitBubbleTitle(el, text, mood)
-      return
-    }
-    if (text === el.lastText) {
-      el.pendingTitle = ''
-      clearBubbleTitleTimer(el)
-      return
-    }
-    el.pendingTitle = text
-    el.pendingMood = mood
-    if (!el.titleTimer) {
-      el.titleTimer = window.setTimeout(function () {
-        el.titleTimer = 0
-        if (el.pendingTitle && el.pendingTitle !== el.lastText) {
-          commitBubbleTitle(el, el.pendingTitle, el.pendingMood || el.titleMood)
-        }
-      }, Math.max(16, BUBBLE_TITLE_MS - elapsed))
-    }
-  }
+  var clearBubbleTitleTimer = __bubbleTitle.clearBubbleTitleTimer
+  var commitBubbleTitle = __bubbleTitle.commitBubbleTitle
+  var applyBubbleTitle = __bubbleTitle.applyBubbleTitle
   function renderBubble(el, entry, index) {
     var text = entry.message || ''
     var detail = entry.detail || ''
     if (entry.backboard) {
-      // 假背板：固定高度空方框，仅展示 +N；点击由 activate 动态解析第二层。
       commitBubbleTitle(el, '', '')
-      el.detail.style.display = 'none'
-      el.action.style.display = 'none'
-      el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
-      el.node.className = 'rm2-pet-bubble backboard' + (entry.summaryCount ? ' summary-backboard' : '')
-      el.node.setAttribute('aria-disabled', 'false')
-      el.node.style.cursor = 'pointer'
-      el.node.title = ''
-      el.node.dataset.rm2Tip = entry.backboardTip || ''
+      __bubbleTitle.applyBackboardChrome(el, entry, index)
       if (petTipAnchor === el.node) showPetTip(el.node)
-      el.node.style.zIndex = String(100 - index)
-      el.node.style.order = String(index)
-      el.node.style.marginTop = '-' + STACK_LIFT_PX + 'px'
-      el.node.style.width = '100%'
-      el.node.style.opacity = String(Math.max(0.46, 0.82 - index * 0.1))
-      el.node.style.display = 'block'
       return
     }
     if (!text && !detail) {
@@ -1888,12 +1787,11 @@ function mountPet(ctx) {
     }
     applyBubbleTitle(el, entry)
     // 详情行为单行文本，用 block 使 overflow/ellipsis 生效（display:flex 会让 text-overflow 失效）
-    var detailShown = detail.replace(/^\s*[·•]\s*/, '· ')
-    var planSummary = detailShown.replace(/^计划待审\s*·\s*/, '')
+    var shown = __bubbleTitle.detailShown(detail)
     el.detail.style.display = detail ? 'block' : 'none'
     if (detail !== el.lastDetail) {
       el.lastDetail = detail
-      el.detailText.textContent = detailShown
+      el.detailText.textContent = shown
     }
     var attention = attentionOf(entry)
     var approval = approvalOf(entry)
@@ -1902,40 +1800,16 @@ function mountPet(ctx) {
     el.targetSessionId = targetSessionOf(entry)
     el.canApprove = approval
     el.completed = completed
-    var actionNotif = approval || planReview || (attention && !completed)
-    if (actionNotif) {
-      var glyph = approval ? '✓' : (planReview || entry.phase === 'ask') ? '?' : '!'
-      if (el.action.textContent !== glyph) el.action.textContent = glyph
-      el.action.setAttribute('aria-label', approval ? '允许一次，点击直接确认' : planReview ? '计划待审，点击打开审核' : completed ? '任务已完成，点击查看' : '需要处理，点击跳转')
-    } else if (el.action.firstChild !== el.brandImg) {
-      el.action.textContent = ''
-      el.action.appendChild(el.brandImg)
-      el.action.setAttribute('aria-label', '蕾米埃尔桌宠')
-    }
-    el.stackCount.textContent = entry.summaryCount ? '+' + entry.summaryCount : ''
-    el.node.className = 'rm2-pet-bubble' + (index === 0 ? ' top' : '') + (attention ? ' attention' : '') + (approval ? ' approval' : '') + (planReview ? ' plan-review' : '') + (completed ? ' completed' : '') + (entry.idlePlaceholder ? ' idle-placeholder' : '') + (entry.summaryCount ? ' summary-backboard' : '')
-    el.node.setAttribute('aria-disabled', entry.idlePlaceholder ? 'true' : 'false')
-    el.node.style.cursor = entry.idlePlaceholder ? 'default' : 'pointer'
-    el.node.dataset.idlePlaceholder = entry.idlePlaceholder ? 'true' : 'false'
     // 占位卡不可交互（activate 有守卫），提示不能落进「点击跳转」兜底文案。
-    // 审批卡悬停用第二行全文（工作区 · preview）：气泡宽度会 CSS 省略，自绘
-    // 浮层才能读到请求内容；原生 title 不随 zoom 缩放已废弃；操作说明在勾号
-    // aria-label 里。title 置空避免与自绘浮层双重提示。
-    el.node.dataset.rm2Tip = entry.idlePlaceholder ? '' : approval ? (detailShown || '') : planReview ? (planSummary ? '计划待审：' + planSummary + '，点击打开同意执行/要求修改' : '计划待审，点击打开同意执行/要求修改') : completed ? '完成啦~ 点击查看结果哦' : attention ? '轮到你啦，点击跳到这里处理呢' : '点击跳到这里看一下~'
-    el.node.title = ''
+    __bubbleTitle.applyCardChrome(el, entry, index, {
+      detailShown: shown,
+      planSummary: __bubbleTitle.planSummaryOf(shown),
+      approval: approval,
+      planReview: planReview,
+      completed: completed,
+      attention: attention,
+    })
     if (petTipAnchor === el.node) showPetTip(el.node)
-    // Deck layout: the front card is readable and background cards expose
-    // only a shallow lower edge. Visual order is driven by the flex `order`
-    // property (not DOM order), so cards keep their correct stacking even
-    // when a session moves between the front and the backboard slot.
-    el.node.style.zIndex = String(100 - index)
-    el.node.style.order = String(index)
-    el.node.style.marginTop = index === 0 ? '0px' : '-' + STACK_LIFT_PX + 'px'
-    // All cards share one width: the widest visible card determines the deck,
-    // so a short front card never floats above a much wider lower card.
-    el.node.style.width = '100%'
-    el.node.style.opacity = index === 0 ? '1' : String(Math.max(0.46, 0.82 - index * 0.1))
-    el.node.style.display = 'block'
   }
   // 与宿主 src/status-copy.js 的 success 文案池保持一致（网页包不含该模块，此处内联）。
   var SUCCESS_COPY_POOL = ['这次任务搞定啦~', '这一轮顺利完成哦', '任务完成咯，干得漂亮']
@@ -1953,7 +1827,8 @@ function mountPet(ctx) {
     var sessions = Array.isArray(snapshot.sessions)
       ? snapshot.sessions
       : [snapshot] // legacy single-session snapshot
-    var foreground = isForegroundSurface(snapshot)
+    var foreground = isForegroundSurface()
+    var currentVisible = foreground && !activeGlobalPanel()
     // Be defensive against an older Host process that still includes settled
     // records. The browser deck never renders durable inactive sessions.
     sessions = sessions.filter(function (entry) {
@@ -1961,13 +1836,13 @@ function mountPet(ctx) {
     })
     // 打开该会话即已读：当前对话的耐久 ERROR 不再当提醒卡（与完成绿点同语义）。
     // 宿主会把该会话收成 IDLE；这里先从牌叠拿掉，避免等下一帧 SSE。
-    if (foreground && currentSessionId) {
+    if (currentVisible && currentSessionId) {
       sessions = sessions.filter(function (entry) {
         return !(entry && entry.state === 'ERROR' && targetSessionOf(entry) === currentSessionId)
       })
     }
     sessions = sessions.map(function (entry) {
-      if (!foreground || !entry || !completionOf(entry) || targetSessionOf(entry) !== currentSessionId) return entry
+      if (!currentVisible || !entry || !completionOf(entry) || targetSessionOf(entry) !== currentSessionId) return entry
       // 已读不在这里做（见 ackCurrentSessionCompletion：渲染会被桌面模式短路），
       // 这里只负责把已读的卡从牌叠里摘掉。
       if (entry.state === 'SUCCESS' && entry.pulseUntil > Date.now()) {
@@ -1997,7 +1872,7 @@ function mountPet(ctx) {
             // 兜底是那种情况下唯一的提醒来源。
             if (item.origin === 'subagent') continue
             if (existingIds.has(sid) || existingIds.has('completion:' + sid)) continue
-            if (item.running === true || (foreground && sid === currentSessionId)) continue
+            if (item.running === true || (currentVisible && sid === currentSessionId)) continue
             sessions.push({
               sessionId: 'completion:' + sid,
               targetSessionId: sid,
@@ -2050,10 +1925,9 @@ function mountPet(ctx) {
       }]
     }
     var ordered = orderSessions(sessions)
-    lastTopEntry = ordered[0] || null
-    // Pet body follows the top bubble's mood; the turn-end "得意中" flash
-    // below also keys off the top entry's state.
-    if (lastTopEntry && lastTopEntry.mood) snapshot.mood = lastTopEntry.mood
+    // Pet body follows the top bubble's mood.
+    var topEntry = ordered[0]
+    if (topEntry && topEntry.mood) snapshot.mood = topEntry.mood
     // 牌叠只渲染首层真卡；第二层是无内容的假背板（仅 +N），不渲染第 2 名的
     // 文字与图标——同级会话的 updatedAt 轮转因此不会造成背景卡闪换。
     // 点击背板时按当帧排序动态解析第 2 名并跳转，这里只需记住它是谁。
@@ -2099,7 +1973,8 @@ function mountPet(ctx) {
       var actionWidth = 40
       var completionWidth = completionOf(entry) ? 29 : 0
       bubbleEl.naturalHeaderWidth = titleWidth + actionWidth + completionWidth
-      // 宽度由两行中最宽的一行决定（标题行 或 详情行，取更宽者 + 内边距）；上限由下文 min(330,viewport) 截断，
+      // 宽度由两行中最宽的一行决定（标题行 或 详情行，取更宽者 + 内边距）；上限由下文
+      // bubbleRowWidth 的 min(440, 视口-24) 截断，
       // 只有超出该上限时才由详情行的省略号截断，符合「最宽行决定宽度 + 最大宽度限制」的设计。
       var detailW = bubbleEl.detail.scrollWidth || bubbleEl.detail.offsetWidth || 0
       if (i === 0) measuredWidth = Math.max(bubbleEl.naturalHeaderWidth, detailW)
@@ -2133,28 +2008,45 @@ function mountPet(ctx) {
   }
   // Follow the user's current conversation so its bubble ranks on top of
   // same-priority peers (the "which dialog is on top" rule).
+  function syncCurrentSession(force) {
+    if (disposed) return
+    if (activeGlobalPanel()) {
+      clearReportedCurrentSession()
+      return
+    }
+    var next = currentSessionIdOf()
+    if (!force && next === currentSessionId) return
+    currentSessionId = next
+    reportCurrentSession(next)
+    if (next && lastSnapshot && Array.isArray(lastSnapshot.sessions)) {
+      var openedCompletion = lastSnapshot.sessions.some(function (entry) {
+        return entry && targetSessionOf(entry) === next && completionOf(entry)
+      })
+      if (openedCompletion && isViewingConversation()) acknowledgeCompletion(next)
+    }
+    // 统一走 updateBubble：它带余额页门控，直接调 updateBubbles 会在
+    // 停留余额页时把牌叠强制显示出来，与单气泡短暂重叠
+    if (lastSnapshot) updateBubble(lastSnapshot)
+  }
   if (ctx && ctx.sessions && ctx.sessions.list && typeof ctx.effect === 'function') {
     var sessionList = ctx.sessions.list
-    currentSessionId = sessionListSnapshot()
+    currentSessionId = currentSessionIdOf()
     reportCurrentSession(currentSessionId)
     ctx.effect(function () {
-      return sessionList.subscribe(function () {
-        var next = sessionListSnapshot()
-        if (next !== currentSessionId) {
-          currentSessionId = next
-          reportCurrentSession(next)
-          if (next && lastSnapshot && Array.isArray(lastSnapshot.sessions)) {
-            var openedCompletion = lastSnapshot.sessions.some(function (entry) {
-              return entry && targetSessionOf(entry) === next && completionOf(entry)
-            })
-            if (openedCompletion && isForegroundSurface(lastSnapshot)) acknowledgeCompletion(next)
-          }
-          // 统一走 updateBubble：它带余额页门控，直接调 updateBubbles 会在
-          // 停留余额页时把牌叠强制显示出来，与单气泡短暂重叠
-          if (lastSnapshot) updateBubble(lastSnapshot)
-        }
-      })
+      return sessionList.subscribe(function () { syncCurrentSession(false) })
     })
+    var layout = optionalService('layout')
+    if (layout && layout.panelInfo && typeof layout.panelInfo.subscribe === 'function') {
+      var panelWasActive = activeGlobalPanel()
+      ctx.effect(function () {
+        return layout.panelInfo.subscribe(function () {
+          var panelActive = activeGlobalPanel()
+          var reopened = panelWasActive && !panelActive
+          panelWasActive = panelActive
+          syncCurrentSession(reopened)
+        })
+      })
+    }
   }
   function updateBubble(snapshot) {
     if (!snapshot) return
@@ -2247,7 +2139,7 @@ function mountPet(ctx) {
 
   /** Single entry point for both polling and the SSE stream. */
   function applySnapshot(snapshot) {
-    if (!snapshot) return
+    if (disposed || !snapshot) return
     if (snapshot.kind === 'session-action') {
       if (snapshot.sessionId && snapshot.approve) approveSession(snapshot.sessionId)
       // 桌面悬浮窗点击气泡卡（approve=false）：仅跳转到该对话；完成卡顺带 ack。
@@ -2371,6 +2263,7 @@ function mountPet(ctx) {
   }
 
   function poll() {
+    if (disposed) return
     fetchState().then(applySnapshot)
   }
 
@@ -2385,6 +2278,7 @@ function mountPet(ctx) {
     }
     stream = source
     source.onmessage = function (e) {
+      if (disposed) return
       var snapshot
       try {
         snapshot = JSON.parse(e.data)
@@ -2472,7 +2366,7 @@ function mountPet(ctx) {
   function applyOffset(mood) {
     var scale = (lastSnapshot && lastSnapshot.scale) || 1
     img.style.width = Math.round(180 * scale) + 'px'
-    applyMirror(img, lastSnapshot)
+    applyMirror(lastSnapshot)
   }
 
   // Sticker URLs resolve per active pet; a missing artwork falls back to the
@@ -2634,6 +2528,7 @@ function mountPet(ctx) {
   }
 
   function poll() {
+    if (disposed) return
     fetchState().then(function (snapshot) {
       applySnapshot(snapshot)
     })
@@ -2976,6 +2871,25 @@ function mountPet(ctx) {
   sync()
 
   ctx.effect(function () { return function () {
+    clearReportedCurrentSession()
+    clearReportedHostTheme()
+    disposed = true
+    window.removeEventListener('pagehide', clearReportedCurrentSession)
+    window.removeEventListener('beforeunload', clearReportedCurrentSession)
+    window.removeEventListener('blur', clearReportedCurrentSession)
+    window.removeEventListener('focus', onCurrentSessionFocus)
+    document.removeEventListener('visibilitychange', onCurrentSessionVisibilityChange)
+    document.removeEventListener('DOMContentLoaded', watchHostTheme)
+    window.removeEventListener('pagehide', clearReportedHostTheme)
+    window.removeEventListener('beforeunload', clearReportedHostTheme)
+    if (hostThemeMutationObserver) {
+      try { hostThemeMutationObserver.disconnect() } catch (e) { /* already disconnected */ }
+      hostThemeMutationObserver = null
+    }
+    if (hostThemeHeartbeatTimer) {
+      window.clearInterval(hostThemeHeartbeatTimer)
+      hostThemeHeartbeatTimer = 0
+    }
     if (intervalId) window.clearInterval(intervalId)
     document.removeEventListener('pointerdown', outsideDown, true)
     // 断开 SSE、注销余额订阅、清掉全部遗留定时器与游离节点，
@@ -3010,9 +2924,10 @@ function apply(ctx) {
         inject: function () { return {} },
       }, PetsSection)
     })
-    ctx.slots.inject('settings.plugin.item', function () {
+    ctx.slots.inject('settings.plugins.tab', function () {
       return ctx.slots.register({
-        name: 'settings.plugin.item', id: 'dsh-pet-remielle', key: 'dsh-pet-remielle', order: 30,
+        name: 'settings.plugins.tab', id: 'dsh-pet-remielle', order: 30,
+        label: function () { return '蕾米埃尔桌宠' },
         inject: function () { return {} },
       }, RemielleCard)
     })

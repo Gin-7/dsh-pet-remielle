@@ -65,24 +65,18 @@ test('desktop idle action opens DSH only when the bridge exposes it', () => {
   assert.equal(tip.openIdleDshPage(null), false)
 })
 
-test('bubbleZoomOf sync mode multiplies pet scale by relative ratio', () => {
-  // 默认（字段缺失）回落旧口径 zoom = scale，与 0.3.6 行为一致
+test('bubbleZoomOf honours the sync/fixed modes and clamps malformed input', () => {
+  // 默认（字段缺失）回落旧口径 zoom = scale，与 0.3.6 行为一致；显式同步开关（true）与缺失等价
   assert.equal(tip.bubbleZoomOf({ scale: 1.2 }), 1.2)
   assert.equal(tip.bubbleZoomOf({ scale: 1.5, bubbleScaleRatio: 1 }), 1.5)
   assert.equal(tip.bubbleZoomOf({ scale: 1.5, bubbleScaleRatio: 0.8 }), 1.2)
   assert.equal(tip.bubbleZoomOf({ scale: 0.5, bubbleScaleRatio: 2 }), 1)
-  // 显式同步开关（true）与缺失等价
   assert.equal(tip.bubbleZoomOf({ scale: 1.5, bubbleScaleSync: true, bubbleScaleRatio: 0.8 }), 1.2)
-})
-
-test('bubbleZoomOf fixed mode ignores pet scale', () => {
+  // 固定模式与桌宠 scale 无关；缺 fixed 字段回落 1（基准大小），不偷用 scale
   assert.equal(tip.bubbleZoomOf({ scale: 1.8, bubbleScaleSync: false, bubbleFixedSize: 0.8 }), 0.8)
   assert.equal(tip.bubbleZoomOf({ scale: 0.5, bubbleScaleSync: false, bubbleFixedSize: 1.5 }), 1.5)
-  // 固定模式缺 fixed 字段回落 1（基准大小），不偷用 scale
   assert.equal(tip.bubbleZoomOf({ scale: 1.8, bubbleScaleSync: false }), 1)
-})
-
-test('bubbleZoomOf clamps and tolerates malformed snapshots', () => {
+  // 畸形快照与上下限钳位
   assert.equal(tip.bubbleZoomOf(null), 1)
   assert.equal(tip.bubbleZoomOf({}), 1)
   assert.equal(tip.bubbleZoomOf({ scale: 'abc' }), 1)
@@ -132,54 +126,40 @@ test('onDotLeave keeps, restores the card, or hides', () => {
   assert.deepEqual(hidden, [true])
 })
 
-test('layoutPetTip expands to visible width, nowraps short copy, and slides into glow padding', () => {
-  const petTip = { style: {}, offsetWidth: 200, offsetHeight: 40, textContent: '点击看余额呀~' }
-  const anchor = {
-    getBoundingClientRect: () => ({ left: 1100, width: 180, top: 8, bottom: 76 }),
+// 浮层定位与换行：先按单行量自然宽，超出可见 maxW 或文案自带换行才换行；
+// 盒子始终钳在可见区域内并留 24px 光晕。
+test('layoutPetTip clamps into the visible area and only wraps when needed', () => {
+  const at = (left, top) => ({ getBoundingClientRect: () => ({ left, width: 180, top, bottom: top + 68 }) })
+  const place = (text, offsetWidth, offsetHeight, anchor) => {
+    const petTip = { style: {}, offsetWidth, offsetHeight, textContent: text }
+    tip.layoutPetTip(petTip, anchor, 0, 0, 1280, 800)
+    return petTip
   }
-  tip.layoutPetTip(petTip, anchor, 0, 0, 1280, 800)
-  assert.equal(Number.parseFloat(petTip.style.maxWidth), 420)
-  assert.equal(petTip.style.whiteSpace, 'nowrap')
-  assert.equal(petTip.style.wordBreak, 'normal')
-  const left = Number.parseFloat(petTip.style.left)
-  const top = Number.parseFloat(petTip.style.top)
+
+  // 贴右边界的短文案：撑到可见宽度上限、不拆字、整体滑进光晕
+  const edge = place('点击看余额呀~', 200, 40, at(1100, 8))
+  assert.equal(Number.parseFloat(edge.style.maxWidth), 420)
+  assert.equal(edge.style.whiteSpace, 'nowrap')
+  assert.equal(edge.style.wordBreak, 'normal')
+  const left = Number.parseFloat(edge.style.left)
+  const top = Number.parseFloat(edge.style.top)
   assert.ok(left >= 24, `left ${left}`)
   assert.ok(left + 200 <= 1280 - 24, `right ${left + 200}`)
   assert.ok(top >= 24, `top ${top}`)
   assert.ok(top + 40 <= 800 - 24, `bottom ${top + 40}`)
-})
 
-test('layoutPetTip nowraps backboard copy that still fits maxW', () => {
-  const petTip = {
-    style: {},
-    offsetWidth: 360,
-    offsetHeight: 40,
-    textContent: '点击去看 dsh-pet-remielle · 审查提示框颜色与溢出问题 哦~',
-  }
-  const anchor = {
-    getBoundingClientRect: () => ({ left: 100, width: 180, top: 80, bottom: 148 }),
-  }
-  tip.layoutPetTip(petTip, anchor, 0, 0, 1280, 800)
-  assert.equal(petTip.style.whiteSpace, 'nowrap')
-  assert.equal(petTip.style.wordBreak, 'normal')
-})
+  // 放得下的背板长文案同样不换行
+  const backboard = place('点击去看 dsh-pet-remielle · 审查提示框颜色与溢出问题 哦~', 360, 40, at(100, 80))
+  assert.equal(backboard.style.whiteSpace, 'nowrap')
+  assert.equal(backboard.style.wordBreak, 'normal')
 
-test('layoutPetTip wraps copy wider than maxW', () => {
-  const petTip = { style: {}, offsetWidth: 500, offsetHeight: 80, textContent: '工作区 · ' + '审批请求全文'.repeat(8) }
-  const anchor = {
-    getBoundingClientRect: () => ({ left: 100, width: 180, top: 80, bottom: 148 }),
-  }
-  tip.layoutPetTip(petTip, anchor, 0, 0, 1280, 800)
-  assert.equal(petTip.style.whiteSpace, 'pre-wrap')
-  assert.equal(petTip.style.wordBreak, 'break-all')
-})
+  // 超出 maxW 的审批全文：换行并允许任意断点
+  const wide = place('工作区 · ' + '审批请求全文'.repeat(8), 500, 80, at(100, 80))
+  assert.equal(wide.style.whiteSpace, 'pre-wrap')
+  assert.equal(wide.style.wordBreak, 'break-all')
 
-test('layoutPetTip wraps copy that already contains a newline', () => {
-  const petTip = { style: {}, offsetWidth: 100, offsetHeight: 80, textContent: '第一行\n第二行' }
-  const anchor = {
-    getBoundingClientRect: () => ({ left: 100, width: 180, top: 80, bottom: 148 }),
-  }
-  tip.layoutPetTip(petTip, anchor, 0, 0, 1280, 800)
-  assert.equal(petTip.style.whiteSpace, 'pre-wrap')
-  assert.equal(petTip.style.wordBreak, 'break-all')
+  // 文案自带换行：直接换行，不再等宽度超限
+  const multiline = place('第一行\n第二行', 100, 80, at(100, 80))
+  assert.equal(multiline.style.whiteSpace, 'pre-wrap')
+  assert.equal(multiline.style.wordBreak, 'break-all')
 })

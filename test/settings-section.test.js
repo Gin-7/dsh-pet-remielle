@@ -14,11 +14,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { runInNewContext } from 'node:vm'
 import { fileURLToPath } from 'node:url'
 
+const require = createRequire(import.meta.url)
 const CORE = new URL('../src/client.core.js', import.meta.url)
 const src = readFileSync(CORE, 'utf8')
+// client.core.js 顶层要求 window.__rm2Markdown 就位（网页端由 build-client.mjs
+// 拼接提供）。这里直接注入共享模块，沙箱跑的是 src 而不是产物，故需手工供上。
+const markdown = require('../src/markdown.cjs')
 
 function makeReact({ tab, data, config, updMsg }) {
   const initial = [tab, data, null, false, config, false, null, false, updMsg]
@@ -50,7 +55,8 @@ function loadPetsSection() {
     },
     module: { exports: {} },
     RM_PLUGIN_VERSION: '0.0.0-test',
-    window: { addEventListener() {} },
+    __rm2Markdown: markdown,
+    window: { addEventListener() {}, __rm2Markdown: markdown },
     document: {
       createElement: () => ({ style: {}, addEventListener() {}, contains() {}, appendChild() {}, textContent: '' }),
       body: null,
@@ -160,18 +166,28 @@ test('update check shows feedback when the repo has no release yet', () => {
   )
 })
 
-test('source-level guards: petCard stays deleted, RenameButton is referenced', () => {
-  assert.ok(!src.includes('function petCard('), 'petCard 是死代码，已删除——别再把它加回来')
-  assert.ok(src.includes('React.createElement(RenameButton'), 'RenameButton 必须有活引用')
-  assert.ok(src.includes("updMsg === 'no-release'"), 'no-release 渲染分支必须存在')
-})
-
-test('settings controls carry the shared button/input classes (host-consistent styling)', () => {
+/**
+ * 配色护栏。CHANGELOG 记的三个真实 bug（深色下浅色系边框/错误色、主按钮黑底黑字、
+ * 主按钮悬浮白字浅底）全都出在 CSS 变量取值上，且没有浏览器就复现不了——所以只能
+ * 用源码级断言钉住「不得回潮」。
+ *
+ * 「控件带统一类名」这条**渲染级**断言（className prop）只证明 JSX 传了类名，
+ * 不证明那条 CSS 规则存在——规则没了，按钮照样全绿地退化成浏览器默认样式、改名框
+ * 变裸 input。所以下面把 CSS 底座本身也钉住。
+ *
+ * 改名入口同理：假 React 不展开函数组件，拿不到 RenameButton 内部的事件绑定，
+ * 只能源码级断言。此前用的是 [\s\S]{0,900} 字符窗口（挪几行就断），改为按函数
+ * 边界切片，没有魔法数字。
+ */
+test('palette guards: no non-existent CSS vars, primary button readable in both themes', () => {
+  // 底座规则：.rm2-pet-btn 是所有设置页按钮的样式来源，.rm2-pet-input 是改名编辑态
+  // 输入框的。二者都在 client.core.js 注入的 CSS 数组里。
   assert.ok(src.includes("'.rm2-pet-btn{"), 'CSS 注入数组必须定义 .rm2-pet-btn（带 hover/disabled 态）')
   assert.ok(src.includes("'.rm2-pet-input{"), 'CSS 注入数组必须定义 .rm2-pet-input')
-  assert.ok(/RenameButton[\s\S]{0,900}?onDoubleClick/.test(src), '改名入口必须是双击名字（onDoubleClick）')
-  assert.ok(/RenameButton[\s\S]{0,1600}?className: 'rm2-pet-input'/.test(src), '改名编辑态输入框必须使用 rm2-pet-input 类，不允许裸 input')
-  assert.ok(/RenameButton[\s\S]{0,2000}?rm2-pet-btn-primary/.test(src), '改名编辑态的「保存」必须是主按钮')
+  // 改名入口是「双击名字」，不是一颗独立按钮（README 承诺的交互）
+  const renameBody = /function RenameButton[\s\S]*?\n\}/.exec(src)?.[0]
+  assert.ok(renameBody, '必须能定位 RenameButton')
+  assert.ok(renameBody.includes('onDoubleClick'), '改名入口必须是双击名字（onDoubleClick）')
   // var(--border-color/--danger-color/--surface-color) 是不存在的变量，
   // 永远落浅色 fallback → 深色主题下边框/错误色全是浅色系。禁止回潮。
   assert.ok(!/var\(--(border|danger|surface)-color/.test(src), '禁止使用不存在的 --border-color/--danger-color/--surface-color 变量')
@@ -203,94 +219,57 @@ test('rendered pet-card buttons use the shared classes', () => {
   assert.ok(setActive.className.includes('rm2-pet-btn'), '设为当前按钮必须带 rm2-pet-btn 类')
 })
 
+/**
+ * release 说明走 markdown 渲染器的接线。
+ *
+ * 渲染行为本身（标题/列表/链接/XSS 转义顺序/协议白名单）由
+ * test/markdown.test.js 对共享模块 src/markdown.cjs 直接断言；这里只钉住调用点。
+ * 此前这里还有 4 条字符窗口正则（[\s\S]{0,2200} 等）与一条「先 replace 掉再 grep」
+ * 的文本启发式——窗口跨度过大，只要上面多写几行就误报或漏报，已全部移除。
+ */
 test('release notes render as markdown, not plain <pre>', () => {
-  // CSS：.rm2-md 排版类必须存在
   assert.ok(src.includes("'.rm2-md p{"), '.rm2-md 排版样式必须注入（release 说明不再是裸 pre）')
-  // 更新卡：说明区用 renderMarkdown + rm2-md；更新输出/失败原因保持等宽纯文本（进程日志不是 markdown）
-  assert.ok(/renderUpdateCard[\s\S]{0,2200}?className = 'rm2-md'/.test(src), '更新卡说明区必须挂 rm2-md 类并走 renderMarkdown')
-  assert.ok(/renderUpdateCard[\s\S]{0,2600}?renderMarkdown\(baseUpdateNotes\(\)\)/.test(src), '更新卡说明必须经 renderMarkdown 渲染')
-  assert.ok(/renderUpdateCard[\s\S]{0,3000}?更新输出/.test(src), '更新输出必须保持为独立的纯文本 pre（不得混进 markdown）')
-  assert.ok(!/updInfo\.notes\)/.test(src.replace(/renderMarkdown\(updInfo\.notes\)/g, '')), '设置页不得再把 updInfo.notes 当纯文本渲染')
-  // 设置页关于 tab：dangerouslySetInnerHTML + renderMarkdown
-  assert.ok(/dangerouslySetInnerHTML:\s*\{\s*__html:\s*renderMarkdown\(updInfo\.notes\)/.test(src), '设置页 release 说明必须经 renderMarkdown 渲染')
-  // XSS 面收敛：markdown 变换前必须先整体转义（先 escape 后变换的顺序靠 marker 切片单测兜底）
-  assert.ok(src.includes('// ---- md render begin ----') && src.includes('// ---- md render end ----'), 'md 渲染函数必须带切片标记（护栏按标记切片做行为单测）')
+  // 设置页「关于」tab：先转义后插入 innerHTML，不得退回纯文本
+  assert.ok(
+    /dangerouslySetInnerHTML:\s*\{\s*__html:\s*renderMarkdown\(updInfo\.notes\)/.test(src),
+    '设置页 release 说明必须经 renderMarkdown 渲染',
+  )
 })
 
-test('renderMarkdown behavior (slice-evaluated from source)', () => {
-  const begin = src.indexOf('// ---- md render begin ----')
-  const end = src.indexOf('// ---- md render end ----')
-  assert.ok(begin !== -1 && end > begin, 'md 渲染切片标记必须成对出现')
-  const code = src.slice(begin, end)
-  const sandbox = {}
-  runInNewContext(code + '; this.__md = { mdEscapeHtml, mdSafeUrl, mdInline, renderMarkdown }', sandbox)
-  const { renderMarkdown, mdInline, mdSafeUrl } = sandbox.__md
-
-  // 标题 / 列表 / 粗体 / 行内代码 / 链接
-  const html = renderMarkdown('# v0.5.0\n\n## Fixes\n\n- 修复 **撞色** 问题\n- 见 `hover` 规则\n\n1. 第一步\n2. 第二步\n\n[说明](https://github.com/x) 和 ~~废弃~~。')
-  assert.ok(html.includes('<h1>v0.5.0</h1>'), '应渲染 h1')
-  assert.ok(html.includes('<h2>Fixes</h2>'), '应渲染 h2')
-  assert.ok(html.includes('<ul><li>'), '无序列表应渲染成 ul/li')
-  assert.ok(html.includes('<ol><li>第一步</li><li>第二步</li></ol>'), '有序列表应渲染成 ol/li')
-  assert.ok(html.includes('<strong>撞色</strong>'), '粗体应渲染')
-  assert.ok(html.includes('<code>hover</code>'), '行内代码应渲染')
-  assert.ok(html.includes('href="https://github.com/x"'), '链接应渲染')
-  assert.ok(html.includes('<del>废弃</del>'), '删除线应渲染')
-
-  // XSS：先转义再变换 —— 标签变成字面文本，不产生可执行的元素
-  const xss = renderMarkdown('<script>alert(1)</script>\n\n[x](javascript:alert(1)) ![y](javascript:x)')
-  assert.ok(!xss.includes('<script>'), 'HTML 标签必须被转义为字面文本')
-  assert.ok(xss.includes('&lt;script&gt;'), '转义后的标签应可见为纯文本')
-  assert.ok(!xss.includes('href="javascript:'), 'javascript: 链接必须被拒绝')
-
-  // mdSafeUrl 只放行 http(s)/mailto
-  assert.equal(mdSafeUrl('javascript:alert(1)'), '#')
-  assert.equal(mdSafeUrl('https://ok.example.com/a'), 'https://ok.example.com/a')
-  assert.equal(mdSafeUrl('mailto:a@b.c'), 'mailto:a@b.c')
-  assert.ok(mdInline('<b>&</b>').includes('&lt;b&gt;&amp;&lt;/b&gt;'), '行内变换前必须先整体 HTML 转义')
-
-  // 代码块：内容按纯文本转义，不被 markdown 解析
-  const code2 = renderMarkdown('```\n**不是粗体** <img>\n```')
-  assert.ok(code2.includes('<pre><code>'), '围栏代码块应渲染为 pre>code')
-  assert.ok(code2.includes('**不是粗体**') && !code2.includes('<strong>'), '代码块内容不得被 markdown 解析')
-  assert.ok(code2.includes('&lt;img&gt;'), '代码块内容必须转义')
-})
-
-test('update card live progress wiring (source guards)', () => {
-  // 进度端点常量 + 看门狗轮询
-  assert.ok(src.includes("var PROGRESS_ENDPOINT = '/plugins/dsh-pet-remielle/update-progress'"), '客户端必须定义 update-progress 端点')
-  assert.ok(/PROGRESS_ENDPOINT \+ '\?t='/.test(src), '看门狗必须轮询进度端点（与 /info 并行，1s 周期）')
-  assert.ok(/fetchJson\(PROGRESS_ENDPOINT[\s\S]{0,1600}?}, 1000\)/.test(src), '看门狗轮询周期必须是 1s（进度行每秒增长）')
-  // running 态渲染实时输出尾部 + 已耗时
-  assert.ok(src.includes("progPre.className = 'rm2-upd-progress'"), '更新中必须渲染实时输出尾部 pre')
-  assert.ok(/progPre = mk\('pre', '[^']*max-height:120px[^']*', '──── 实时输出（自动刷新）/.test(src), '实时输出区高度必须是 120px（用户要求缩小）')
-  assert.ok(src.includes('实时输出（自动刷新）'), '实时输出区必须有可辨识标题')
-  // 卡片不得被长输出拉长：失败输出与成功输出区都必须限高滚动
-  assert.ok(/else if \(lastUpdateError\) \{[\s\S]{0,120}?mk\('pre', '[^']*max-height:120px;overflow:auto/.test(src), '失败输出必须限高 120px 滚动（pnpm 全量日志不得撑长弹窗）')
-  assert.ok(/max-height:120px;overflow:auto[^']*', '──── 更新输出 ────/.test(src), '成功输出必须限高 120px 滚动')
-  assert.ok(/notesBox = mk\('div', '[^']*max-height:180px/.test(src), 'release 说明区限高 180px')
-  assert.ok(src.includes("已进行 ' + elapsedS + ' 秒"), 'running 态必须显示已耗时')
-  // 变化检测：输出或秒数没变不重绘，避免卡片重建打断用户滚动
-  assert.ok(/key !== lastProgressKey/.test(src), '进度轮询必须做变化检测')
-  // 超时错误翻译成简短提示（不展开 pnpm/镜像细节，手动操作走 GitHub 按钮）
-  assert.ok(/function friendlyUpdateError/.test(src), '必须存在超时文案翻译函数')
-  assert.ok(/\[timeout/.test(src), '翻译函数必须识别宿主超时标记')
-  assert.ok(src.includes('手动更新（GitHub）'), '更新弹窗必须常驻「手动更新（GitHub）」按钮')
-  // 合并检查只针对更新弹窗区域：设置页「关于」标签的「去 GitHub 查看」是另一界面，保留
+/**
+ * 更新弹窗的三条产品契约：常驻「手动更新（GitHub）」、跳仓库首页而非 releases、
+ * 进程输出保持纯文本（见 CHANGELOG 对应条目）。
+ *
+ * 只能从源码断言：更新卡的渲染依赖 updateState / latestInfo / updateHandler 的一整套
+ * 状态，把它们搭出来比断言本身更容易漂。此前这里还有 20 多条——像素级样式
+ * （max-height:120px）、字符窗口正则（[\s\S]{0,1600}）、轮询周期 `}, 1000)`。
+ * 样式属手工验收，窗口正则一改版就断，均已移除。
+ */
+test('update card keeps a permanent manual-update button and never markdown-izes process logs', () => {
+  assert.ok(
+    src.includes("var PROGRESS_ENDPOINT = '/plugins/dsh-pet-remielle/update-progress'"),
+    '客户端必须定义 update-progress 端点',
+  )
   const cardRegion = /function renderUpdateCard[\s\S]*?function openUpdateCard/.exec(src)?.[0]
-  assert.ok(cardRegion && cardRegion.includes('手动更新（GitHub）'), '常驻按钮必须在 renderUpdateCard 内')
-  assert.ok(cardRegion && !cardRegion.includes('去 GitHub 查看'), '弹窗内「去 GitHub 查看」必须与手动更新按钮合并（避免同跳发布页的两个按钮并存）')
+  assert.ok(cardRegion, '必须能定位 renderUpdateCard')
+  assert.ok(cardRegion.includes('手动更新（GitHub）'), '常驻按钮必须在 renderUpdateCard 内')
+  assert.ok(!cardRegion.includes('去 GitHub 查看'), '弹窗内「去 GitHub 查看」必须与手动更新按钮合并（避免同跳发布页的两个按钮并存）')
   // 常驻 = 按钮创建在状态分支之外（由 needsCleanReinstall 守卫，不锁进某个 phase）
   assert.ok(/if \(!latestInfo\.needsCleanReinstall\) \{[\s\S]*?var manualBtn/.test(src), '手动更新按钮必须渲染在状态分支之外（常驻）')
-  // GitHub 按钮一律跳仓库首页（用户要求，不跳 releases 发布页）
-  assert.ok(cardRegion && cardRegion.includes("window.open('https://github.com/Gin-7/dsh-pet-remielle', '_blank')"), '手动更新按钮必须跳仓库首页')
-  assert.ok(cardRegion && !cardRegion.includes('/releases'), '更新弹窗内不得再跳 releases 发布页')
-  // 更新输出是进程日志，保持等宽纯文本，不得被 markdown 化
+  assert.ok(cardRegion.includes("window.open('https://github.com/Gin-7/dsh-pet-remielle', '_blank')"), '手动更新按钮必须跳仓库首页')
+  assert.ok(!cardRegion.includes('/releases'), '更新弹窗内不得再跳 releases 发布页')
+  // 更新输出是进程日志，保持等宽纯文本，不得被 markdown 化（转义后会被 <p>/<br> 重排）
   assert.ok(!/renderMarkdown\(updateState\.output/.test(src), '更新输出必须保持纯文本 pre')
+})
 
-  // friendlyUpdateError 行为切片：超时给简短解释，普通错误追加一句手动更新建议；
-  // pnpm/镜像细节必须从失败提示中移除（Electron 运行时下载文案里的 npmmirror 与此无关，
-  // 所以断言只针对本函数切片，不扫全文）
+/**
+ * 超时文案翻译。pnpm/镜像细节必须从失败提示中移除——用户只关心「网络慢」和
+ * 「接下来怎么办」，展开 pnpm add / npmmirror / 续传只会让人更困惑。
+ *
+ * 按函数名切片后真跑：文案分支多（timeout / 未知错误），grep 覆盖不全，
+ * 而切片只依赖函数名不依赖它内部的行号。
+ */
+test('friendlyUpdateError turns a stalled update into a short actionable hint', () => {
   const fn = /function friendlyUpdateError[\s\S]*?\n\}/.exec(src)?.[0]
   assert.ok(fn, 'friendlyUpdateError 必须可按源码切片')
   assert.ok(!fn.includes('npmmirror'), '失败提示不得再展开镜像方案（已收敛为手动更新 + GitHub 按钮）')

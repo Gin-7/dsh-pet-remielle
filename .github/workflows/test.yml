@@ -1,0 +1,75 @@
+name: 测试
+
+# 本仓库的测试全部是 node --test + node:assert，无外部测试框架。
+# 依赖只有 @deepseek-ai/schemastery（src/index.js 的 Config schema 用）；
+# @deepseek-ai/cordis 是 peerDependency，测试不需要，用 --omit=peer 跳过，
+# 免得为一个宿主 SDK 拉整棵依赖树。
+
+on:
+  push:
+    # '**'：本 fork 的开发直接推分支（见 AGENTS.md），只盯 main 会让日常推送
+    # 完全不触发 CI。并发组会自动取消同一分支的旧运行，避免重复占用矩阵 runner。
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  # 同一分支只保留最新提交；push 与 pull_request 事件共用分支名，避免同一提交跑两套矩阵。
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装依赖
+        run: npm install --omit=peer --no-package-lock --no-audit --no-fund
+
+      - name: 语法检查
+        run: npm run check
+
+      # 完整行为套件只跑一次；Windows/macOS 只跑平台相关测试，避免重复消耗稀缺 runner。
+      - name: 完整测试
+        run: npm test
+
+      - name: 构建产物与源码同步
+        run: git diff --exit-code lib/client.js
+
+      - name: 构建产物行尾
+        run: node -e "const b=require('fs').readFileSync('lib/client.js');if(b.includes(13)){console.error('lib/client.js 含 CR，产物必须是单一 LF');process.exit(1)}"
+
+  platform:
+    # 不加 fail-fast：两个平台的结果都要看到；这不等于覆盖每个架构。
+    name: platform (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装依赖
+        run: npm install --omit=peer --no-package-lock --no-audit --no-fund
+
+      - name: 语法检查
+        run: npm run check
+
+      # Electron/窗口/更新器测试依赖平台；完整行为套件由 unit job 覆盖。
+      - name: 平台测试
+        run: npm run test:platform

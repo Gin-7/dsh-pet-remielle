@@ -28,17 +28,45 @@ export function normalizeUsageMode(m) {
 }
 
 /**
+ * `usage/by_api_key/cost` returns the platform's own cost per hour bucket
+ * (`data.biz_data.data[].series[].buckets[].cost`, CNY string). Summing them
+ * gives the exact today usage — no local pricing table needed.
+ */
+export function computeTodayCost(data) {
+  const biz = data && data.data && data.data.biz_data
+  const groups = biz && Array.isArray(biz.data) ? biz.data : null
+  if (!groups) return null
+  let total = 0
+  let found = false
+  for (const g of groups) {
+    const series = Array.isArray(g && g.series) ? g.series : []
+    for (const s of series) {
+      const buckets = Array.isArray(s && s.buckets) ? s.buckets : []
+      for (const b of buckets) {
+        const c = Number(b && b.cost)
+        if (!isFinite(c)) continue
+        found = true
+        total += c
+      }
+    }
+  }
+  return found ? total : null
+}
+
+/**
  * @param {object} options
  * @param {(name: string) => Promise<{value: string}|null>} options.resolveCredential
  * @param {string} [options.dshHome]
  * @param {(m: string) => void} [options.log]
+ * @param {typeof fetch} [options.fetchImpl] 网络出口，测试注入用（默认全局 fetch）
+ * @param {() => number} [options.now] 时钟，测试注入用（默认 Date.now）
  */
-export function createBalanceService({ resolveCredential, getPlatformToken, dshHome, log }) {
+export function createBalanceService({ resolveCredential, getPlatformToken, dshHome, log, fetchImpl = globalThis.fetch, now = () => Date.now() }) {
   const DSH_HOME = dshHome || process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
   const logger = log || (() => {})
   // 峰谷时段判定（issue #25）：周末/法定节假日全天空闲，其余按 9–12、14–18
   // 判高峰。节假日日历以内置表兜底、后台静默刷新远程数据。
-  const holidays = createHolidayStore({ dshHome: DSH_HOME, log: logger })
+  const holidays = createHolidayStore({ dshHome: DSH_HOME, log: logger, fetchImpl, now })
 
   const USAGE_FILE_CANDIDATES = [
     path.join(DSH_HOME, '.dshp-usage.json'),
@@ -62,7 +90,7 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
     for (let attempt = 0; attempt < 2; attempt++) {
       let res
       try {
-        res = await fetch(BALANCE_URL, {
+        res = await fetchImpl(BALANCE_URL, {
           headers: { Authorization: 'Bearer ' + cred.value },
           signal: AbortSignal.timeout(20000),
         })
@@ -92,7 +120,7 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
         ok: true,
         totalBalance: Number(info.total_balance),
         currency: String(info.currency || 'CNY'),
-        updatedAt: new Date().toISOString(),
+        updatedAt: new Date(now()).toISOString(),
       }
     }
     const transient = !(lastErr && /^HTTP 4\d\d/.test(lastErr.message))
@@ -119,12 +147,12 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
       token = String(cred.value).replace(/^Bearer\s+/i, '')
     }
     try {
-      const now = new Date()
-      const tz = -now.getTimezoneOffset() * 60
-      const start = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000)
+      const current = new Date(now())
+      const tz = -current.getTimezoneOffset() * 60
+      const start = Math.floor(new Date(current.getFullYear(), current.getMonth(), current.getDate()).getTime() / 1000)
       const end = start + 86400
       const url = `${USAGE_URL}?start=${start}&end=${end}&tz=${tz}`
-      const res = await fetch(url, {
+      const res = await fetchImpl(url, {
         headers: { Authorization: 'Bearer ' + token },
         signal: AbortSignal.timeout(15000),
       })
@@ -138,34 +166,8 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
     }
   }
 
-  /**
-   * `usage/by_api_key/cost` returns the platform's own cost per hour bucket
-   * (`data.biz_data.data[].series[].buckets[].cost`, CNY string). Summing them
-   * gives the exact today usage — no local pricing table needed.
-   */
-  function computeTodayCost(data) {
-    const biz = data && data.data && data.data.biz_data
-    const groups = biz && Array.isArray(biz.data) ? biz.data : null
-    if (!groups) return null
-    let total = 0
-    let found = false
-    for (const g of groups) {
-      const series = Array.isArray(g && g.series) ? g.series : []
-      for (const s of series) {
-        const buckets = Array.isArray(s && s.buckets) ? s.buckets : []
-        for (const b of buckets) {
-          const c = Number(b && b.cost)
-          if (!isFinite(c)) continue
-          found = true
-          total += c
-        }
-      }
-    }
-    return found ? total : null
-  }
-
   function todayKey() {
-    const d = new Date()
+    const d = new Date(now())
     const p = (n) => String(n).padStart(2, '0')
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
   }
@@ -225,7 +227,7 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
     const led = recordLedgerUsage(Number(payload.totalBalance))
     const mode = normalizeUsageMode(usageMode)
     const full = { ...payload }
-    full.isPeak = holidays.isPeak(Math.floor(Date.now() / 1000))
+    full.isPeak = holidays.isPeak(Math.floor(now() / 1000))
     // 日历刷新属后台行为，不阻塞余额展示；失败静默（内置表兜底仍在）。
     void holidays.refresh()
     if (mode === 'ledger') {
@@ -247,15 +249,15 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
   }
 
   async function getBalance(usageMode) {
-    const now = Date.now()
-    if (balanceCache && now - balanceCache.at < BALANCE_TTL_MS) {
+    const at = now()
+    if (balanceCache && at - balanceCache.at < BALANCE_TTL_MS) {
       return balanceCache.payload
     }
     if (balanceInFlight) return balanceInFlight
     balanceInFlight = getBalancePayload(usageMode)
       .then((payload) => {
         if (payload.ok) {
-          balanceCache = { at: Date.now(), payload }
+          balanceCache = { at: now(), payload }
           return payload
         }
         if (payload.transient && balanceCache) {

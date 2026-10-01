@@ -43,6 +43,7 @@ import {
 } from './pets.js'
 import { createBalanceService, normalizeUsageMode } from './balance.js'
 import { statusCopy } from './status-copy.js'
+import { localHostOk } from './local-access.js'
 import { TURN_WATCHDOG_INTERVAL_MS, createTurnWatchdog } from './turn-watchdog.js'
 
 const { compareSessions } = createRequire(import.meta.url)('./session-order.cjs')
@@ -147,6 +148,16 @@ export function publicConfig(config = {}) {
   }
 }
 
+/** Configuration sent to browser settings pages; secret values are write-only. */
+export function clientConfig(config = {}) {
+  const value = publicConfig(config)
+  const { platformToken, ...safe } = value
+  return {
+    ...safe,
+    platformTokenConfigured: typeof platformToken === 'string' && platformToken.length > 0,
+  }
+}
+
 function localSettingsScope(value) {
   return {
     get: () => value,
@@ -210,26 +221,11 @@ function jsonResponse(res, status, body) {
   res.end(payload)
 }
 
-function isLoopback(address) {
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
-}
-
 /** Loopback + same-origin guard shared by every host endpoint. */
 function localOnly(req, res) {
-  if (!isLoopback(req.socket?.remoteAddress)) {
-    jsonResponse(res, 403, { error: 'local access only' })
-    return false
-  }
-  const origin = req.headers?.origin
-  if (origin) {
-    let originHost
-    try { originHost = new URL(origin).host } catch {}
-    if (!originHost || originHost !== req.headers.host) {
-      jsonResponse(res, 403, { error: 'origin mismatch' })
-      return false
-    }
-  }
-  return true
+  if (localHostOk(req)) return true
+  jsonResponse(res, 403, { error: 'local access only' })
+  return false
 }
 
 async function readJsonBody(req) {
@@ -262,7 +258,7 @@ export function createConfigHandler(settings) {
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method === 'GET') {
-      jsonResponse(res, 200, settings.get())
+      jsonResponse(res, 200, clientConfig(settings.get()))
       return
     }
     if (req.method !== 'PATCH') {
@@ -273,7 +269,7 @@ export function createConfigHandler(settings) {
       const value = await readJsonBody(req)
       if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error('patch contains an unknown setting')
       await settings.update(value)
-      jsonResponse(res, 200, settings.get())
+      jsonResponse(res, 200, clientConfig(settings.get()))
     } catch (error) {
       jsonResponse(res, 400, { error: error instanceof Error ? error.message : String(error) })
     }
@@ -370,14 +366,51 @@ export function createSessionOpenHandler({ notify, onUndelivered }) {
 }
 
 /**
- * Web-client current-session uplink: POST { sessionId } (empty string clears).
+ * Per-browser-tab current-session state. A single global lastReported value lets a
+ * hidden tab clear the visible tab's selection; keeping one short-lived record per
+ * client avoids that cross-tab race while retaining the existing TTL fallback.
+ */
+export function createCurrentSessionStore({ ttlMs = 10 * 60 * 1000, now = () => Date.now() } = {}) {
+  const reports = new Map()
+  const keyOf = (clientId) => typeof clientId === 'string' && clientId.length > 0 && clientId.length <= 128
+    ? clientId
+    : 'legacy'
+  const prune = (timestamp) => {
+    for (const [key, report] of reports) {
+      if (timestamp - report.at >= ttlMs) reports.delete(key)
+    }
+  }
+  return {
+    accept(clientId, sessionId) {
+      const timestamp = now()
+      prune(timestamp)
+      const key = keyOf(clientId)
+      const previous = reports.get(key)
+      reports.set(key, { sessionId, at: timestamp })
+      return { changed: !previous || previous.sessionId !== sessionId }
+    },
+    current() {
+      const timestamp = now()
+      prune(timestamp)
+      let latest = null
+      for (const report of reports.values()) {
+        if (!report.sessionId || (latest && latest.at > report.at)) continue
+        latest = report
+      }
+      return latest?.sessionId || ''
+    },
+  }
+}
+
+/**
+ * Web-client current-session uplink: POST { sessionId, clientId } (empty string clears).
  * Fire-and-forget，但值真的变化时通过 `accept` 的第二个参数把 changed 交给调用方：
  * 桌面窗的「当前会话已读」完全依赖宿主快照里的 `currentSessionId`，这里不主动广播的话
  * 它只能等下一次任意广播、或自己 5 秒轮询，完成卡绿点因此比网页端慢半拍。
- * @param accept - (sessionId, { changed }) => void；changed = 与上一次上报值不同。
+ * @param accept - (sessionId, { changed, clientId }) => void；changed = 该标签页上报值不同。
+ * @param store - 可注入的按标签页状态存储；省略时为该 handler 独立创建。
  */
-export function createSessionCurrentHandler({ accept }) {
-  let lastReported = null
+export function createSessionCurrentHandler({ accept, store = createCurrentSessionStore() }) {
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method !== 'POST') {
@@ -387,9 +420,9 @@ export function createSessionCurrentHandler({ accept }) {
     try {
       const body = await readJsonBody(req)
       if (typeof body.sessionId !== 'string') throw new Error('sessionId must be a string')
-      const changed = body.sessionId !== lastReported
-      lastReported = body.sessionId
-      accept(body.sessionId, { changed })
+      const clientId = typeof body.clientId === 'string' ? body.clientId : ''
+      const { changed } = store.accept(clientId, body.sessionId)
+      accept(body.sessionId, { changed, clientId })
       jsonResponse(res, 200, { ok: true })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -409,15 +442,29 @@ export function normalizeHostTheme(value) {
 }
 
 /**
- * Web-client host-theme uplink: POST { theme: 'dark' | 'light' | '' }（空串=清除）。
+ * Web-client host-theme uplink: POST { theme: 'dark' | 'light' | '', clientId }（空串=清除）。
  * 桌面悬浮窗是独立 Electron 窗口，读不到宿主页面的 body[data-ds-dark-theme]，
  * 主题只能由网页端上报：有网页在线时桌面窗跟随宿主主题，两端菜单/气泡同色；
  * 没有网页在线（或上报过期）时快照里不带 hostTheme，桌面窗回落系统主题。
  * fire-and-forget，值真变化时通过 `accept` 的第二个参数把 changed 交给调用方广播。
- * @param accept - (theme, { changed }) => void；changed = 与上一次上报值不同。
+ * @param accept - (theme, { changed, clientId }) => void；changed = 有效主题与上次不同。
  */
-export function createThemeHandler({ accept }) {
-  let lastReported = null
+export function createThemeHandler({ accept, ttlMs = 10 * 60 * 1000, now = () => Date.now() }) {
+  const reports = new Map()
+  const keyOf = (clientId) => typeof clientId === 'string' && clientId.length > 0 && clientId.length <= 128
+    ? clientId
+    : 'legacy'
+  const currentTheme = (timestamp) => {
+    for (const [key, report] of reports) {
+      if (timestamp - report.at >= ttlMs) reports.delete(key)
+    }
+    let latest = null
+    for (const report of reports.values()) {
+      if (!report.theme || (latest && latest.at > report.at)) continue
+      latest = report
+    }
+    return latest?.theme || ''
+  }
   return async (req, res) => {
     if (!localOnly(req, res)) return
     if (req.method !== 'POST') {
@@ -427,9 +474,14 @@ export function createThemeHandler({ accept }) {
     try {
       const body = await readJsonBody(req)
       const theme = normalizeHostTheme(body.theme)
-      const changed = theme !== lastReported
-      lastReported = theme
-      accept(theme, { changed })
+      const clientId = typeof body.clientId === 'string' ? body.clientId : ''
+      const timestamp = now()
+      const previous = currentTheme(timestamp)
+      const key = keyOf(clientId)
+      if (theme) reports.set(key, { theme, at: timestamp })
+      else reports.delete(key)
+      const next = currentTheme(timestamp)
+      accept(next, { changed: next !== previous, clientId })
       jsonResponse(res, 200, { ok: true })
     } catch (error) {
       jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -683,6 +735,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         attention: activePulse.state === PetState.WAITING || activePulse.state === PetState.ERROR,
         approval: false,
         ask: false,
+        planReview: false,
         completed: activePulse.state === PetState.SUCCESS,
         updatedAt: now,
         pulseUntil: activePulse.until,
@@ -713,6 +766,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         attention: false,
         approval: false,
         ask: false,
+        planReview: false,
       }))
     }
     const currentId = currentOf() || undefined
@@ -733,7 +787,10 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       showBubbleStatus: config.showBubbleStatus !== false,
       showBubbleUsage: config.showBubbleUsage === true,
       usageMode: config.usageMode ?? 'ledger',
-      platformToken: config.platformToken ?? '',
+      // platformToken 不进 /state 快照：快照经 SSE 广播给所有订阅者（任意网页标签
+      // 页、桌面窗），明文带令牌等于把平台凭证散给每个连上快照的页面。
+      // /config 也只返回 clientConfig：设置页知道令牌是否已配置，但不会收到令牌明文。
+      // balance 服务仍从 settings.get() 读取令牌；令牌写入只走 /config 的 PATCH。
       paused: config.paused === true,
       hidden: config.hidden === true,
       desktopActive: desktopActiveOf(),
@@ -907,14 +964,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     detail: 'DSH · 等待下一次任务',
   })
   let pulse = null
-  // 网页端上报的当前会话 id（空串=清除）：只存内存，随下次快照/SSE 自然带出，
-  // 上报本身 fire-and-forget，不触发 broadcast。附带 TTL：页面崩溃/被杀时
-  // pagehide 清空上报不会执行，陈旧的 currentSessionId 会让桌面端持续误置顶、
-  // 并对用户没看过的完成卡误自动 ack——超过时效后回落为「无当前会话」，
-  // 用户下次任意操作即重新上报恢复。TTL 取 10 分钟，远大于正常浏览间隔。
+  // 网页端按标签页上报当前会话（空串=清除）：只存内存，随下次快照/SSE 自然带出，
+  // 上报本身 fire-and-forget，不触发 broadcast。每个标签页独立保存，避免隐藏页的
+  // 清除请求抹掉可见页；页面崩溃/被杀时仍以 TTL 兜底，防止陈旧 currentSessionId
+  // 持续误置顶或误自动 ack。TTL 取 10 分钟，远大于正常浏览间隔。
   const CURRENT_SESSION_TTL_MS = 10 * 60 * 1000
-  let reportedCurrentSessionId = ''
-  let reportedCurrentSessionAt = 0
+  const currentSessionStore = createCurrentSessionStore({ ttlMs: CURRENT_SESSION_TTL_MS })
   // 网页端上报的宿主主题（'dark' / 'light'，空串=清除/未上报）：桌面悬浮窗是独立
   // 窗口，拿不到宿主页面的 body[data-ds-dark-theme]，只能靠这条上报与网页端同色。
   // 与 currentSessionId 同理带 TTL：页面被杀时 pagehide 的清除上报不会执行，没有
@@ -1010,6 +1065,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
 
   // webClients 要在快照里读 hub，而 hub 又要靠这份快照做 serve —— 用延迟绑定打破这个环。
   let hubRef = null
+  // 网页端上报的当前会话：按标签页独立 TTL，宿主退出/页面崩溃后不残留僵尸 id。
+  // 快照与「当前会话失败即已读」判定共用这一个口径。
+  const currentSessionNow = () => currentSessionStore.current()
   const serveState = createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
@@ -1020,7 +1078,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
     getStates: () => reducer.states(),
     getCompletions: () => [...completionQueue.values()],
-    getCurrent: () => (Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''),
+    getCurrent: () => currentSessionNow(),
     getTheme: () => (Date.now() - reportedHostThemeAt < HOST_THEME_TTL_MS ? reportedHostTheme : ''),
     getSessionTitle: (sessionId) => readSessionTitle(ctx, sessionId),
   })
@@ -1052,9 +1110,6 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     subagentSessionIds.delete(id)
     hub.broadcast()
   }
-  const currentSessionNow = () => (
-    Date.now() - reportedCurrentSessionAt < CURRENT_SESSION_TTL_MS ? reportedCurrentSessionId : ''
-  )
   const dismissErrorIfNeeded = (sessionId) => {
     if (!sessionId) return
     const hadError = reducer.states().some((entry) => entry.sessionId === sessionId && entry.state === PetState.ERROR)
@@ -1146,7 +1201,9 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   void refreshRegistry()
 
   if (typeof ctx.inject === 'function') {
-    ctx.inject(['webServer', 'connection'], (httpCtx) => {
+    // 只注入 webServer。写上 connection 会让整个回调（内含全部 20 条路由注册）
+    // 在没有该服务的宿主上不执行，插件静默全瘫——见下方 dshWebUrl 的说明。
+    ctx.inject(['webServer'], (httpCtx) => {
       const port = httpCtx.webServer.port
 
       // ---- desktop pet window (transparent always-on-top Electron) ----
@@ -1161,8 +1218,26 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       }
       const origin = `http://127.0.0.1:${port}`
       const desktopUrl = `${origin}${PET_VIEW_ENDPOINT}`
-      // DSH 0.1.2-alpha.1 起 Web 壳根路径必须通过 connection 带进程 token。
-      const dshWebUrl = () => httpCtx.connection.authenticatedUrl(origin)
+      // DSH 0.1.2-alpha.1 起 Web 壳根路径要带进程 token，走 connection 的
+      // authenticatedUrl。connection 是**可选依赖**：上一版把它写进
+      // ctx.inject(['webServer', 'connection'])，而 cordis 的 inject 要所有服务
+      // 都可用才执行回调——这一整个块里包着全部 20 条 webServer.register，于是
+      // 宿主一旦没有 connection 服务，插件不是某个端点坏，而是整条路由表都不
+      // 注册，且没有任何报错。commit 的本意只是让 desktop url 带 token，不该
+      // gate 整张表，故这里改回只注入 webServer，connection 走 get() 取。
+      // 同时保留容错：authenticatedUrl 抛错时回落裸 origin，别让一次取 URL
+      // 的异常把整个桌面窗启动流程带走。
+      const dshWebUrl = () => {
+        try {
+          const connection = httpCtx.get('connection')
+          return typeof connection?.authenticatedUrl === 'function'
+            ? connection.authenticatedUrl(origin)
+            : origin
+        } catch (error) {
+          logger.warn?.(`dsh-pet-remielle: dshWebUrl() 失败，回落 origin（${String(error)}）`)
+          return origin
+        }
+      }
       // DSH Desktop 宿主给 WebServer 所有路由套了 desktopBrowserAccess 准入
       // （仅带渲染进程专属头的请求放行，未开「浏览器访问」时其余一律 403
       // "forbidden"）。独立桌宠 Electron 窗口必须从宿主上下文取 rendererHeader
@@ -1175,7 +1250,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           desktopRendererHeader = { name: access.rendererHeader.name, value: access.rendererHeader.value }
         }
       } catch { /* 无此服务（普通 web 宿主） */ }
-      const onDesktopExit = () => {
+      const onDesktopExit = (owner) => {
+        // stop() 先清空旧实例的 child，但旧 Electron 的 exit 事件可能迟到；
+        // 只有仍然挂在宿主 desktop 引用上的实例才能清理当前窗口。
+        if (desktop !== owner) return
         desktop = undefined
         if (desktopActive) { desktopActive = false; hub.broadcast() }
       }
@@ -1305,6 +1383,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         gifFrameJs = await readFile(new URL('../src/gif-frame.cjs', import.meta.url), 'utf8')
         return gifFrameJs
       }
+      let bubbleTitleJs = null
+      const readBubbleTitle = async () => {
+        if (bubbleTitleJs) return bubbleTitleJs
+        bubbleTitleJs = await readFile(new URL('../src/bubble-title.cjs', import.meta.url), 'utf8')
+        return bubbleTitleJs
+      }
 
       httpCtx.effect(
         () => httpCtx.webServer.register({ kind: 'exact', path: CONFIG_ENDPOINT, handler: createConfigHandler(settings) }),
@@ -1351,10 +1435,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           kind: 'exact',
           path: SESSION_CURRENT_ENDPOINT,
           handler: createSessionCurrentHandler({
+            store: currentSessionStore,
             accept: (sessionId, { changed }) => {
-              reportedCurrentSessionId = sessionId
-              // 空串（清除上报）同样刷新时间戳：清除态本身也是一种有效状态
-              reportedCurrentSessionAt = Date.now()
               dismissErrorIfNeeded(sessionId)
               // 值变了就广播：桌面窗要靠快照里的 currentSessionId 才知道你在看哪个会话，
               // 不广播它就得等下一次任意广播或自己的 5 秒轮询（绿点消失比网页端慢半拍）。
@@ -1478,6 +1560,18 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           res.end(js)
         } }),
         'dsh-pet-remielle: shared gif frame script',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/bubble-title.js', handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const js = await readBubbleTitle()
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'cache-control': 'no-store',
+          })
+          res.end(js)
+        } }),
+        'dsh-pet-remielle: shared bubble card script',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({

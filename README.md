@@ -28,7 +28,7 @@
 | 实时推送 | SSE 流（断线自动重连 + 轮询兜底） |
 | 状态气泡 | 页面内与桌面悬浮均使用自适应两层牌叠：顶层状态卡 + 带 `+N` 的汇总背板；message + detail（项目 · 已完成 x/y · 阶段） |
 | 会话操作 | 网页与桌面一致：点卡片 / `?` / `!` 打开对应会话，`✓` 允许一次；无网页客户端在线时点卡片/图标用系统浏览器打开 DSH 页面 |
-| 完成提醒 | 后台完成后保留绿点直至处理；仅活动标签页（或桌面悬浮窗）中的当前会话会自动消除，后台标签页不抢清除，切回后仍可看到；点开该会话（网页内跳转或浏览器打开）同样消除。当前已打开会话不显示未读绿点（仅当前 Host 生命周期） |
+| 完成提醒 | 后台完成后保留绿点直至处理；仅前台可见的标签页中的当前会话会自动消除（即便此刻正开着桌面悬浮窗），后台标签页不抢清除；桌面悬浮窗只展示提醒，点开该会话（网页内跳转、浏览器打开，或点击桌面完成卡）同样消除。当前已打开会话不显示未读绿点（仅当前 Host 生命周期） |
 | 出错提醒 | 后台回合失败（模型调用失败等）保留粉圈直至打开该对话；当前会话失败不进提醒。点气泡跳转或侧边栏点进该对话后提醒消失。审批/提问不受影响 |
 | 余额 | 状态与用量都开启时，点气泡左侧圆点或在气泡上滚轮切换余额页（60s 自动刷新、数字滚动动画、网络抖动沿用最近余额）；停在当前页，不自动回落 |
 | 今日已用 | 双模式任选：小鲸鱼记账（免令牌，余额差值累计）/ 实时·令牌（平台费用接口直接返回真实金额，精确） |
@@ -46,10 +46,10 @@
 | 02 摸鱼中 | <img src="assets/pets/remielle/02.gif" width="56" alt="02 摸鱼中"/> | WORKING / ERROR：调用工具（查找/编辑/测试/命令） |
 | 03 得意中 | <img src="assets/pets/remielle/03.gif" width="56" alt="03 得意中"/> | PULSE SUCCESS：回合完成、绘制完成、点击互动 |
 | 04 思考中 | <img src="assets/pets/remielle/04.gif" width="56" alt="04 思考中"/> | THINKING：回合/步骤开始、推理、结果整理 |
-| 05 等待中 | <img src="assets/pets/remielle/05.gif" width="56" alt="05 等待中"/> | WAITING：提问回答、审批等待、回合挂起（blocked） |
+| 05 等待中 | <img src="assets/pets/remielle/05.gif" width="56" alt="05 等待中"/> | WAITING：提问回答、审批等待、计划待审、回合挂起（blocked） |
 | 06 待机中 | <img src="assets/pets/remielle/06.gif" width="56" alt="06 待机中"/> | IDLE / DISCONNECTED：空闲、回合结束之后 |
 
-多 Session 同时运行时按 `审批 > 等待回答 > 完成提醒 > 等待/错误 > 当前会话 > 状态优先级 > 更新时间` 选择顶层任务；其余会话由可点击的 `+N` 汇总背板表示。子 Agent 默认忽略（可在设置开启）。
+多 Session 同时运行时按 `审批 > 计划审核 > 等待回答 > 完成提醒 > 等待/错误 > 当前会话 > 状态优先级 > 更新时间` 选择顶层任务；其余会话由可点击的 `+N` 汇总背板表示。子 Agent 默认忽略（可在设置开启）。
 
 ### 宠物定义约定
 
@@ -217,16 +217,36 @@ src/
 ├── protocol.js       # 类型化协议：PetState / PetMood / PetMessageKind
 ├── pets.js           # 宠物注册表：目录发现/合并/校验（可单测）
 ├── status-copy.js    # 蕾米埃尔风格状态文案（可整体替换）
+├── turn-watchdog.js  # 回合挂起看门狗：兜底「强杀会话后卡在分析阶段」
 ├── desktop-window.js # 桌面模式：Electron 发现 + 窗口进程管理（可单测）
+├── electron-fetch.mjs # 按当前平台/架构下载并解压 Electron 运行时
 ├── pet-window.cjs    # 桌面模式：Electron main（透明置顶窗口 + 屏幕右上角作品窗）
+├── pet-window-paths.cjs # 桌宠窗 userData 目录决策（与宿主 Electron 隔离）
+├── pet-preload.cjs   # 桌宠窗 preload：页面 ↔ 主进程桥（点击穿透、拖拽、命中矩形、菜单展开）
 ├── pet-view.html     # 桌面模式：宠物窗口页面（GIF + 气泡 + SSE + 画画 + 余额气泡）
 ├── balance-widget.js # 余额控制器（客户端）：取数/滚动动画，渲染进宠物自带气泡
 └── client.core.js    # 浏览器端：宠物 UI + 设置（构建时包装）
+
+# 两端共用的 .cjs（包是 "type":"module"，宿主经 createRequire 取导出）。
+# 网页端由 scripts/build-client.mjs 拼在 client.core.js 之前，桌面端由宿主注册
+# 路由提供 <script src>——同一份实现，避免两端文案/几何漂移。
+├── session-order.cjs # 牌叠排序（审批 > 计划待审 > 等待回答 > 完成卡 > attention …）
+├── pet-tip.cjs       # 翻页圆点悬停文案、tip 视口钳位、气泡缩放口径
+├── gif-frame.cjs     # 取动图「此刻那一帧」（右键暂停用，canvas 只画首帧）
+├── bubble-title.cjs  # 气泡会话卡呈现层：标题节流、宽度测量、审批/待审/完成的文案与类名
+└── markdown.cjs      # release 说明的 markdown 渲染（先转义再变换，链接只放行 http(s)/mailto）
+
 lib/client.js         # 构建产物（版本号注入，安装即用）
 assets/pets/remielle/ # 蕾米埃尔素材（GIF + 作品图）
 scripts/build-client.mjs
 test/                 # node --test
 ```
+
+> `.cjs` 后缀是为了让宿主 ESM 能 `createRequire` 拿到导出；对外 URL 仍是 `.js`
+> （浏览器 script 不认 `.cjs` 扩展语义）。新增两端共用模块时记得同时补进
+> `scripts/build-client.mjs` 的拼接列表**和**宿主的路由注册。用
+> `test/host-transport.test.js` 验证真实路由返回脚本，再由
+> `test/desktop-window-ui.test.js` 检查页面的 script src 与共享模块调用。
 
 ### 发布到 npm
 

@@ -73,15 +73,6 @@ test('tool/call -> WORKING with sticker 02 and activity', () => {
   assert.equal(state.activity, 'searching')
 })
 
-test('mid-turn attachment handles results for registered tools', () => {
-  const reducer = new PetReducer()
-  const sess = session()
-  collect(reducer, sess, [event('tool/call', { callId: 'c1', name: 'read' }, 2)])
-  assert.equal(reducer.states()[0].state, PetState.WORKING)
-  collect(reducer, sess, [event('tool/result', { callId: 'c1' }, 3)])
-  assert.equal(reducer.states()[0].state, PetState.THINKING)
-})
-
 test('exit_plan_mode keeps a plan-review card until the tool resolves', () => {
   const reducer = new PetReducer()
   const sess = session()
@@ -206,7 +197,11 @@ test('turn/end aborted -> IDLE (已停止)', () => {
   assert.deepEqual(reducer.states(), [])
 })
 
-test('states() omits multiple settled turns while retaining active work', () => {
+// states() 的对外形状：一条活动会话 = 一条 entry，标题/项目/贴纸/提示都在这里；
+// 已结束的 turn 不再占位。空态、同形状断言、settled 省略合并在此。
+test('states() exposes one entry per live session and drops settled turns', () => {
+  assert.deepEqual(new PetReducer().states(), [], '没有会话时应为空')
+
   const reducer = new PetReducer()
   collect(reducer, session('completed'), [
     event('turn/start'),
@@ -216,11 +211,22 @@ test('states() omits multiple settled turns while retaining active work', () => 
     event('turn/start', {}, 3),
     event('turn/end', { reason: { kind: 'aborted' } }, 4),
   ])
-  collect(reducer, session('active'), [
+  collect(reducer, session('s1', { header: { id: 's1', cwd: 'D:\\workspace\\company\\A07' } }), [
     event('turn/start', {}, 5),
-    event('tool/call', { callId: 'x', name: 'read' }, 6),
+    event('assistant/message', {}, 6),
+    // session/title 只写标题，不得改动贴纸
+    event('session/title', { title: '审查提示框颜色与溢出问题' }, 7),
   ])
-  assert.deepEqual(reducer.states().map((entry) => entry.sessionId), ['active'])
+
+  const states = reducer.states()
+  assert.deepEqual(states.map((entry) => entry.sessionId), ['s1'], '已结束的 turn 不应占位')
+  const [entry] = states
+  assert.equal(entry.state, PetState.THINKING)
+  assert.equal(entry.mood, '01')
+  assert.ok(entry.detail)
+  assert.equal(entry.attention, false)
+  assert.equal(entry.title, '审查提示框颜色与溢出问题')
+  assert.equal(entry.project, 'A07')
 })
 
 test('background completion emits SUCCESS while another session needs attention', () => {
@@ -276,6 +282,14 @@ test('disposeSession drops the record and re-renders', () => {
   collect(reducer, sess, [event('turn/start')])
   const messages = reducer.disposeSession(sess)
   assert.ok(messages.some((m) => m.kind === PetMessageKind.STATE))
+
+  // 只摘掉这一个会话，其余照常留在牌叠里
+  collect(reducer, session('s1'), [event('turn/start', {}, 2)])
+  collect(reducer, session('s2'), [event('turn/start', {}, 3)])
+  reducer.disposeSession(session('s1'))
+  const states = reducer.states()
+  assert.equal(states.length, 1)
+  assert.equal(states[0].sessionId, 's2')
 })
 
 test('moodFor maps phases to stickers', () => {
@@ -453,171 +467,120 @@ test('late interaction results do not resurrect a completed turn', () => {
   assert.deepEqual(reducer.states(), [])
 })
 
-test('states() is empty with no sessions', () => {
-  const reducer = new PetReducer()
-  assert.deepEqual(reducer.states(), [])
-})
-
-test('session/title is stored on states() without changing mood', () => {
-  const reducer = new PetReducer()
-  collect(reducer, session('s1'), [
-    event('turn/start'),
-    event('session/title', { title: '审查提示框颜色与溢出问题' }, 2),
-  ])
-  const states = reducer.states()
-  assert.equal(states.length, 1)
-  assert.equal(states[0].title, '审查提示框颜色与溢出问题')
-  assert.equal(states[0].state, PetState.THINKING)
-  assert.equal(states[0].mood, '04')
-})
-
-test('states() folds session/title from the session log', () => {
-  const reducer = new PetReducer()
-  const sess = session('s1', {
-    snapshotEvents: () => [{ type: 'session/title', data: { title: '审查提示框颜色与溢出问题' } }],
-  })
-  collect(reducer, sess, [event('turn/start')])
-  assert.equal(reducer.states()[0].title, '审查提示框颜色与溢出问题')
-})
-
-test('states() folds the last session/title from the log (resumed session)', () => {
-  const reducer = new PetReducer()
-  // 恢复的老会话：标题事件在插件加载前就写进日志，实时只见到 turn/start 之后的事件。
-  const sess = session('s1', {
-    snapshotEvents: () => [
-      { type: 'session/title', data: { title: '旧标题' } },
-      { type: 'turn/start' },
-      { type: 'session/title', data: { title: '新标题' } },
-    ],
-  })
-  collect(reducer, sess, [event('turn/start'), event('step/start', {}, 2)])
-  assert.equal(reducer.states()[0].title, '新标题')
-})
-
-test('states() drops title folding when the host exposes no snapshotEvents()', () => {
-  const reducer = new PetReducer()
-  const sess = session('s1', { events: [{ type: 'session/title', data: { title: '不存在的内部字段' } }] })
-  collect(reducer, sess, [event('turn/start')])
-  // session.events 不是宿主 API，不得据此产出标题
-  assert.equal(reducer.states()[0].title, undefined)
-})
-
-test('states() keeps the folded title verbatim (DSH already normalized it)', () => {
-  const reducer = new PetReducer()
-  // DSH 写入 session/title 时已按 maxTitleBytes 规范化，插件不再二次截断——
-  // 服务口径（readSessionTitle）与日志口径必须一致，否则同一会话的标题长度随
-  // 服务是否加载而变。
+// 标题折叠：宿主只在 session/title 事件里给标题，插件靠 snapshotEvents() 补历史。
+// 每行一个独立场景，失败时看断言消息即可。
+test('states() folds session titles from the host log', () => {
+  const fold = (sess, events) => {
+    const reducer = new PetReducer()
+    collect(reducer, sess, events)
+    return reducer.states()[0]?.title
+  }
+  assert.equal(
+    fold(session('s1', {
+      snapshotEvents: () => [{ type: 'session/title', data: { title: '审查提示框颜色与溢出问题' } }],
+    }), [event('turn/start')]),
+    '审查提示框颜色与溢出问题',
+    '日志里的标题应被折取',
+  )
+  // 恢复的老会话：标题事件在插件加载前就写进日志，取最后一条
+  assert.equal(
+    fold(session('s1', {
+      snapshotEvents: () => [
+        { type: 'session/title', data: { title: '旧标题' } },
+        { type: 'turn/start' },
+        { type: 'session/title', data: { title: '新标题' } },
+      ],
+    }), [event('turn/start'), event('step/start', {}, 2)]),
+    '新标题',
+    '取日志里最后一条标题',
+  )
+  // DSH 写入时已按 maxTitleBytes 规范化，插件不再二次截断——服务口径与日志口径
+  // 必须一致，否则同一会话的标题长度会随服务是否加载而变。
   const long = '标'.repeat(120)
-  const sess = session('s1', {
-    snapshotEvents: () => [{ type: 'session/title', data: { title: long } }],
-  })
-  collect(reducer, sess, [event('turn/start')])
-  assert.equal(reducer.states()[0].title, long)
+  assert.equal(
+    fold(session('s1', { snapshotEvents: () => [{ type: 'session/title', data: { title: long } }] }), [event('turn/start')]),
+    long,
+    '标题应原样保留',
+  )
+  // session.events 不是宿主 API，不得据此产出标题
+  assert.equal(
+    fold(session('s1', { events: [{ type: 'session/title', data: { title: '不存在的内部字段' } }] }), [event('turn/start')]),
+    undefined,
+    '没有 snapshotEvents() 时不折叠',
+  )
+  // 宿主抛错不能让整条消息链断掉
+  const reducer = new PetReducer()
+  const messages = collect(reducer, session('s1', { snapshotEvents: () => { throw new Error('boom') } }), [event('turn/start')])
+  assert.ok(messages.length > 0)
+  assert.equal(reducer.states()[0].title, undefined, 'snapshotEvents 抛错时应降级为无标题')
 })
 
-test('states() folds the session log at most once per session', () => {
+test('states() folds the log once per session and keeps taking later titles', () => {
   const reducer = new PetReducer()
   let calls = 0
   // 日志里始终没有 session/title（标题尚未生成）：折取不得每个事件都做一遍。
-  const sess = session('s1', {
-    snapshotEvents: () => { calls++; return [{ type: 'turn/start' }] },
-  })
+  const sess = session('s1', { snapshotEvents: () => { calls++; return [{ type: 'turn/start' }] } })
   collect(reducer, sess, [
     event('turn/start'),
     event('step/start', {}, 2),
     event('tool/call', { callId: 'c1', name: 'read' }, 3),
   ])
   assert.equal(calls, 1)
+
+  // 折过一次之后，实时 session/title 事件仍要能覆盖
+  const live = new PetReducer()
+  const liveSess = session('s1', { snapshotEvents: () => [{ type: 'session/title', data: { title: '旧标题' } }] })
+  collect(live, liveSess, [event('turn/start')])
+  assert.equal(live.states()[0].title, '旧标题')
+  collect(live, liveSess, [event('session/title', { title: '改过的标题' }, 2)])
+  assert.equal(live.states()[0].title, '改过的标题')
 })
 
-test('states() survives a throwing snapshotEvents()', () => {
-  const reducer = new PetReducer()
-  const sess = session('s1', { snapshotEvents: () => { throw new Error('boom') } })
-  const messages = collect(reducer, sess, [event('turn/start')])
-  assert.ok(messages.length > 0)
-  assert.equal(reducer.states()[0].title, undefined)
-})
-
-test('session/title events keep updating a title that was folded earlier', () => {
-  const reducer = new PetReducer()
-  const sess = session('s1', {
-    snapshotEvents: () => [{ type: 'session/title', data: { title: '旧标题' } }],
-  })
-  collect(reducer, sess, [event('turn/start')])
-  assert.equal(reducer.states()[0].title, '旧标题')
-  collect(reducer, sess, [event('session/title', { title: '改过的标题' }, 2)])
-  assert.equal(reducer.states()[0].title, '改过的标题')
-})
-
-test('states() takes the project name from the session header cwd', () => {
-  const reducer = new PetReducer()
-  const sess = session('s1', { header: { cwd: 'D:\\workspace\\company\\A07' } })
-  collect(reducer, sess, [event('turn/start')])
-  assert.equal(reducer.states()[0].project, 'A07')
-})
-
-test('states() returns one entry per session with mood/message/detail', () => {
-  const reducer = new PetReducer()
-  collect(reducer, session('s1'), [
-    event('turn/start'),
-    event('assistant/message', {}, 2),
-  ])
-  const states = reducer.states()
-  assert.equal(states.length, 1)
-  assert.equal(states[0].sessionId, 's1')
-  assert.equal(states[0].state, PetState.THINKING)
-  assert.equal(states[0].mood, '01')
-  assert.ok(states[0].detail)
-  assert.equal(states[0].attention, false)
-})
-
-test('states() ranks approval above ask above ERROR above WORKING', () => {
+// 牌叠顺序：需要人处理的会话（审批 > 提问 > ERROR）压过后台工作流，
+// 同一批会话一次性排序，避免分散在多个用例里互相漂移。
+//
+// 分工：优先级表本身只由 test/session-order.test.js 定义一处（它直接测
+// compareSessions）。这里是**接线护栏**——事件按 work/stream/err/ask/appr 的乱序
+// 喂进去，断言 states() 真的按比较器排过（完全不排序就会挂），而不是把规则再
+// 表述一遍。后半段的 state/attention 标注与排序无关，是本用例自己的价值。
+test('states() ranks approval above ask above ERROR above background work', () => {
   const reducer = new PetReducer()
   collect(reducer, session('work'), [
     event('turn/start'),
     event('tool/call', { callId: 'c0', name: 'bash' }, 2),
   ])
-  collect(reducer, session('err'), [
+  collect(reducer, session('stream'), [
     event('turn/start', {}, 3),
-    event('turn/end', { reason: { kind: 'error' } }, 4),
+    event('assistant/message', {}, 4),
+  ])
+  collect(reducer, session('err'), [
+    event('turn/start', {}, 5),
+    event('turn/end', { reason: { kind: 'error' } }, 6),
   ])
   collect(reducer, session('ask'), [
-    event('turn/start', {}, 5),
-    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 6),
+    event('turn/start', {}, 7),
+    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 8),
   ])
   collect(reducer, session('appr'), [
-    event('turn/start', {}, 7),
-    event('tool/call', { callId: 'c1', name: 'bash' }, 8),
-    event('approval/asked', { id: 'a1', toolName: 'bash', callId: 'c1' }, 9),
+    event('turn/start', {}, 9),
+    event('tool/call', { callId: 'c1', name: 'bash' }, 10),
+    event('approval/asked', { id: 'a1', toolName: 'bash', callId: 'c1' }, 11),
   ])
-  assert.deepEqual(reducer.states().map((entry) => entry.sessionId), [
+  const states = reducer.states()
+  assert.deepEqual(states.map((entry) => entry.sessionId), [
     'appr',
     'ask',
     'err',
     'work',
+    'stream',
   ])
-})
-
-test('states() ranks attention-needing sessions on top', () => {
-  const reducer = new PetReducer()
-  // s1 is streaming (THINKING), s2 waits on the human (WAITING via ask).
-  collect(reducer, session('s1'), [
-    event('turn/start', {}, 1),
-    event('assistant/message', {}, 2),
-  ])
-  collect(reducer, session('s2'), [
-    event('turn/start', {}, 3),
-    event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 4),
-  ])
-  const states = reducer.states()
-  assert.equal(states.length, 2)
-  // WAITING (s2) must come first even though s1 was updated later.
-  assert.equal(states[0].sessionId, 's2')
-  assert.equal(states[0].state, PetState.WAITING)
-  assert.equal(states[0].attention, true)
-  assert.equal(states[1].sessionId, 's1')
-  assert.equal(states[1].state, PetState.THINKING)
-  assert.equal(states[1].attention, false)
+  const byId = Object.fromEntries(states.map((entry) => [entry.sessionId, entry]))
+  assert.equal(byId.ask.state, PetState.WAITING)
+  assert.equal(byId.ask.attention, true)
+  assert.equal(byId.err.state, PetState.ERROR)
+  assert.equal(byId.err.attention, true)
+  assert.equal(byId.stream.state, PetState.THINKING)
+  assert.equal(byId.stream.attention, false)
 })
 
 test('turn/end error -> durable ERROR attention', () => {
@@ -634,80 +597,47 @@ test('turn/end error -> durable ERROR attention', () => {
   assert.equal(states[0].attention, true)
 })
 
-test('dismissError idles a durable ERROR session and omits it from states()', () => {
-  const reducer = new PetReducer()
-  collect(reducer, session('s1'), [
-    event('turn/start'),
-    event('turn/end', { reason: { kind: 'error' } }, 2),
-  ])
-  assert.equal(reducer.states()[0].state, PetState.ERROR)
-  const messages = reducer.dismissError('s1')
-  assert.equal(messages.at(-1).state, PetState.IDLE)
-  assert.deepEqual(reducer.states(), [])
-})
+// dismissError 只处理"要人处理"的 ERROR 卡：其余状态与未知 id 必须是无操作，
+// 否则一次误点会把正在进行的会话从牌叠里抹掉。
+test('dismissError clears only durable ERROR sessions', () => {
+  const failed = (seq) => [
+    event('turn/start', {}, seq),
+    event('turn/end', { reason: { kind: 'error' } }, seq + 1),
+  ]
 
-test('dismissError omits a background ERROR while WAITING stays selected', () => {
-  const reducer = new PetReducer()
-  collect(reducer, session('ask'), [
+  const solo = new PetReducer()
+  collect(solo, session('s1'), failed(1))
+  assert.equal(solo.states()[0].state, PetState.ERROR)
+  assert.equal(solo.dismissError('s1').at(-1).state, PetState.IDLE)
+  assert.deepEqual(solo.states(), [])
+
+  // 后台 ERROR + 前台 WAITING：只摘掉后台那条
+  const mixed = new PetReducer()
+  collect(mixed, session('ask'), [
     event('turn/start'),
     event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 2),
   ])
-  collect(reducer, session('err'), [
-    event('turn/start', {}, 3),
-    event('turn/end', { reason: { kind: 'error' } }, 4),
-  ])
-  assert.equal(reducer.states().some((entry) => entry.sessionId === 'err' && entry.state === PetState.ERROR), true)
-  reducer.dismissError('err')
-  assert.equal(reducer.states().some((entry) => entry.sessionId === 'err'), false)
-  assert.equal(reducer.states()[0].sessionId, 'ask')
-  assert.equal(reducer.states()[0].state, PetState.WAITING)
-})
+  collect(mixed, session('err'), failed(3))
+  assert.equal(mixed.states().some((entry) => entry.sessionId === 'err' && entry.state === PetState.ERROR), true)
+  mixed.dismissError('err')
+  assert.equal(mixed.states().some((entry) => entry.sessionId === 'err'), false)
+  assert.equal(mixed.states()[0].sessionId, 'ask')
+  assert.equal(mixed.states()[0].state, PetState.WAITING)
 
-test('dismissError is a no-op for WAITING, WORKING, and unknown ids', () => {
-  const reducer = new PetReducer()
-  collect(reducer, session('ask'), [
+  // WAITING / WORKING / 未知 id：一律无操作
+  const live = new PetReducer()
+  collect(live, session('ask'), [
     event('turn/start'),
     event('tool/call', { callId: 'q1', name: 'ask_user_question' }, 2),
   ])
-  collect(reducer, session('work'), [
+  collect(live, session('work'), [
     event('turn/start', {}, 3),
     event('tool/call', { callId: 'c1', name: 'bash' }, 4),
   ])
-  assert.deepEqual(reducer.dismissError('ask'), [])
-  assert.deepEqual(reducer.dismissError('work'), [])
-  assert.deepEqual(reducer.dismissError('missing'), [])
-  assert.equal(reducer.states().find((entry) => entry.sessionId === 'ask').state, PetState.WAITING)
-  assert.equal(reducer.states().find((entry) => entry.sessionId === 'work').state, PetState.WORKING)
-})
-
-test('states() marks ERROR as attention and sorts before WORKING', () => {
-  const reducer = new PetReducer()
-  collect(reducer, session('s1'), [
-    event('turn/start'),
-    event('tool/call', { callId: 'c1', name: 'bash' }, 2),
-  ])
-  collect(reducer, session('s2'), [
-    event('turn/start', {}, 3),
-    event('assistant/message', {}, 4),
-    event('turn/end', { reason: { kind: 'max-tokens' } }, 5),
-  ])
-  const states = reducer.states()
-  assert.equal(states.length, 2)
-  assert.equal(states[0].sessionId, 's2')
-  assert.equal(states[0].state, PetState.ERROR)
-  assert.equal(states[0].attention, true)
-  assert.equal(states[1].sessionId, 's1')
-  assert.equal(states[1].state, PetState.WORKING)
-})
-
-test('disposeSession removes the session from states()', () => {
-  const reducer = new PetReducer()
-  collect(reducer, session('s1'), [event('turn/start')])
-  collect(reducer, session('s2'), [event('turn/start', {}, 2)])
-  assert.equal(reducer.states().length, 2)
-  reducer.disposeSession(session('s1'))
-  const states = reducer.states()
-  assert.equal(states.length, 1)
-  assert.equal(states[0].sessionId, 's2')
+  assert.deepEqual(live.dismissError('ask'), [])
+  assert.deepEqual(live.dismissError('work'), [])
+  assert.deepEqual(live.dismissError('missing'), [])
+  assert.equal(live.states().find((entry) => entry.sessionId === 'ask').state, PetState.WAITING)
+  assert.equal(live.states().find((entry) => entry.sessionId === 'work').state, PetState.WORKING)
 })
 

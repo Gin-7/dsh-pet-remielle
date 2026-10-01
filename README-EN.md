@@ -24,11 +24,11 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | State machine | Pure-function `PetReducer` with mood mapping (unit-tested) |
 | Message protocol | Typed protocol (protocol.js) |
 | Configuration | schemastery persistence + settings card |
-| Multi-session priority | Approval > waiting for an answer (ask_user_question) > completion reminder > waiting/error > current session > state priority > recency. Hysteresis only stabilizes the top two; third and later still rotate with recency |
+| Multi-session priority | Approval > plan review > waiting for an answer (ask_user_question) > completion reminder > waiting/error > current session > state priority > recency. Hysteresis only stabilizes the top two; third and later still rotate with recency |
 | Live push | SSE stream (auto-reconnect + polling fallback) |
 | Status bubble | Adaptive two-layer deck on both the in-page pet and the desktop window: top status card + `+N` summary backboard; message + detail (project · completed x/y · phase) |
 | Session actions | Web and desktop match: card / `?` / `!` open the session, `✓` allows once; with no web client online, a card/icon click opens the DSH page in the system browser |
-| Completion reminders | Persist until handled; a completion on the current session is auto-cleared; opening that session (in-page jump or browser) also clears it. The already-open session has no unread dot (current Host lifetime only) |
+| Completion reminders | Persist until handled; a completion on the current session is auto-cleared only by a foreground browser tab (even while the desktop window is up), so background tabs never clear a reminder ahead of you; the desktop window only shows the reminder — opening that session (in-page jump, browser, or clicking the desktop completion card) also clears it. The already-open session has no unread dot (current Host lifetime only) |
 | Error reminders | A failed turn (model-call error, etc.) keeps the pink attention mark until that conversation is opened; a failure in the current session never becomes a reminder. Opening the session (bubble jump or sidebar) dismisses it. Approvals and questions are unchanged |
 | Balance | With both status and usage on, the left dot or a wheel on the bubble switches to the balance page (60s auto-refresh, rolling-number animation, stale fallback on network blips); stays on the current page, no auto-return |
 | Today usage | Two modes: ledger (default, token-free, balance-delta) / real-time token (platform usage API + peak/off-peak pricing, exact) |
@@ -46,10 +46,10 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | 02 Slacking | <img src="assets/pets/remielle/02.gif" width="56" alt="02 Slacking"/> | WORKING / ERROR: tool calls (search/edit/test/command) |
 | 03 Pleased | <img src="assets/pets/remielle/03.gif" width="56" alt="03 Pleased"/> | PULSE SUCCESS: turn completed / drawing finished / click interaction |
 | 04 Thinking | <img src="assets/pets/remielle/04.gif" width="56" alt="04 Thinking"/> | THINKING: turn/step start, reasoning, result compilation |
-| 05 Waiting | <img src="assets/pets/remielle/05.gif" width="56" alt="05 Waiting"/> | WAITING: question answer, approval pending, turn blocked |
+| 05 Waiting | <img src="assets/pets/remielle/05.gif" width="56" alt="05 Waiting"/> | WAITING: question answer, approval pending, plan review, turn blocked |
 | 06 Idle | <img src="assets/pets/remielle/06.gif" width="56" alt="06 Idle"/> | IDLE / DISCONNECTED: idle, after turn ends |
 
-When multiple sessions run concurrently, the top task is selected by `approval > waiting for an answer > completion reminder > waiting/error > current session > state priority > recency`; every other session is represented by a clickable `+N` summary backboard. Sub-agents are ignored by default (configurable).
+When multiple sessions run concurrently, the top task is selected by `approval > plan review > waiting for an answer > completion reminder > waiting/error > current session > state priority > recency`; every other session is represented by a clickable `+N` summary backboard. Sub-agents are ignored by default (configurable).
 
 ### Pet Definition Convention
 
@@ -134,16 +134,17 @@ dsh plugin --profile web add dsh-pet-remielle
 - Closing/switching returns to the in-page pet automatically; the window closes when the DSH host exits (within 1 second).
 - The desktop window's Electron data dir is pinned under the system application-data directory (`%APPDATA%\dsh-pet-remielle` on Windows) instead of a temp dir, which disk-cleanup tools would wipe along with its cache. Only one desktop window may hold it at a time: on detecting another live instance (host restarted while the old window is still exiting) it falls back to a pid-suffixed sibling directory, so the two never share one Chromium cache.
 
-**Electron runtime sources (probed in order):** `DSH_PET_ELECTRON` env var → `vendor/electron-win32-x64/` (not in Git) → system-installed Electron → none → in-page only.
+**Electron runtime sources (probed in order):** `DSH_PET_ELECTRON` → `vendor/electron-<platform>-<arch>/` (not in Git; downloaded for the current system) → system-installed Electron → none → in-page only.
 
-> **First run**: if desktop mode is enabled but no Electron runtime is found locally, a **prompt will offer to download and install it** (requires confirmation, ~200 MB). Download failure falls back to in-page display automatically. You can also manually extract an Electron win32-x64 release to `vendor/electron-win32-x64/` or set `DSH_PET_ELECTRON` to an existing `electron.exe`.
+> **First run**: if desktop mode is enabled but no Electron runtime is found locally, a **prompt will offer to download and install it** (requires confirmation, about 100–220 MB). Download failure falls back to in-page display automatically. You can also manually extract the matching Electron release to `vendor/electron-<platform>-<arch>/` or set `DSH_PET_ELECTRON` to an existing executable (`electron.exe` on Windows, `Electron.app/Contents/MacOS/Electron` on macOS, `electron` on Linux).
 
 ### Platform support
 
 | Platform | Desktop float | In-page pet |
 |---|---|---|
-| Windows x64 (Fairy desktop / pure DSH) | ✓ (Electron transparent window) | Hidden when desktop mode is on |
-| macOS / Linux | ✗ | ✓ (falls back to in-page automatically) |
+| Windows x64 | ✓ (Electron transparent window) | Hidden when desktop mode is on |
+| macOS (arm64 / x64) | ✓ (matching darwin runtime) | Hidden when desktop mode is on |
+| Linux x64 | ✓ (matching linux runtime) | Hidden when desktop mode is on |
 
 ---
 
@@ -216,16 +217,36 @@ src/
 ├── protocol.js       # Typed protocol: PetState / PetMood / PetMessageKind
 ├── pets.js           # Pet registry: directory discovery/merge/validation (unit-tested)
 ├── status-copy.js    # Remielle-flavored status copy (replaceable)
+├── turn-watchdog.js  # Turn-hang watchdog: recovers a session stuck in THINKING after a forced kill
 ├── desktop-window.js # Desktop mode: Electron discovery + window process management (unit-tested)
+├── electron-fetch.mjs # On-demand cross-platform Electron runtime download and extraction
 ├── pet-window.cjs    # Desktop mode: Electron main (transparent window + top-right artwork window)
+├── pet-window-paths.cjs # Pet-window userData directory policy (isolated from the host's Electron)
+├── pet-preload.cjs   # Pet-window preload: page ↔ main bridge (click-through, drag, hit rects, menu expand)
 ├── pet-view.html     # Desktop mode: pet window page (GIF + bubble + SSE + drawing + balance bubble)
 ├── balance-widget.js # Balance controller (client): fetch/rolling animation, rendered into the pet's own bubble
 └── client.core.js    # Browser side: pet UI + settings (wrapped at build time)
+
+# Shared between both ends. The `.cjs` suffix is what lets the host ESM pick the
+# exports up through createRequire; the served URL keeps the `.js` extension
+# because a browser <script> doesn't treat `.cjs` specially. One implementation for
+# both ends, so copy and geometry can't drift apart.
+├── session-order.cjs # Deck ordering (approval > plan review > ask > completion > attention …)
+├── pet-tip.cjs       # Page-switch-dot hover copy, tip viewport clamp, bubble zoom resolution
+├── gif-frame.cjs     # The GIF frame currently on screen (right-click pause; canvas only ever paints frame 0)
+├── bubble-title.cjs  # Session-card presentation: title throttle, width measurement, approval/review/done copy & classes
+└── markdown.cjs      # Markdown rendering for release notes (escape first, then transform; only http(s)/mailto links)
+
 lib/client.js         # Build artifact (version injected, ready to use)
 assets/pets/remielle/ # Remielle assets (GIFs + artwork)
 scripts/build-client.mjs
 test/                 # node --test
 ```
+
+> When you add a shared module, wire it into **both** `scripts/build-client.mjs`
+> (web bundle) and the host's route registration (desktop window). Verify the
+> actual script response in `test/host-transport.test.js`, and check the page's
+> script src and shared-module calls in `test/desktop-window-ui.test.js`.
 
 ### Publishing to npm
 
