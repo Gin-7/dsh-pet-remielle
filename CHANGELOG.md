@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.5] — 2026-10-01
 
 ### Changes
 - 气泡会话卡的呈现层抽到两端共用的 `src/bubble-title.cjs`（桌面端经宿主 `/bubble-title.js` 提供，网页端随 `lib/client.js` 打入）：标题节流、隐藏测量节点、方框宽度、牌叠上移量，以及审批 / 计划待审 / 完成三种状态的文案、类名与层叠布局。此前这些逻辑在 `client.core.js` 与 `pet-view.html` 各写一份，「计划待审」提示重复项目名这类漂移要两端各修一次；现在只有一份实现，纯函数由 `test/bubble-title.test.js` 直接断言。
