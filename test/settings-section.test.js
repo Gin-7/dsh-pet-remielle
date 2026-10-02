@@ -1,9 +1,9 @@
 /**
- * 设置页（PetsSection）结构护栏。
+ * 插件配置页（PetsSection）结构护栏。
  *
  * 背景：宠物卡片的「改名」与「状态徽章」曾因 PetsSection 内联手写卡片而
  * 成为死代码（petCard/RenameButton/petBadge 无人调用，README 承诺的改名
- * 在 UI 上消失了几个月）。本文件把设置页的关键结构钉住：
+ * 在 UI 上消失了几个月）。本文件把配置页的关键结构钉住：
  *   1. tab 清单与顺序（外观/宠物/行为/桌面悬浮/关于）
  *   2. 宠物卡片必须渲染改名按钮与状态徽章（防死代码回退）
  *   3. 检查更新的 no-release 状态必须有可见反馈（不许静默）
@@ -140,9 +140,17 @@ test('appearance tab field order (mirror stays below opacity)', () => {
   assert.deepEqual(labels, ['角色大小', '气泡随桌宠同步缩放', '气泡相对桌宠的大小', '透明度', '角色左右镜像'])
 })
 
-test('settings title matches the nav label (宠物管理)', () => {
+test('legacy settings fallback keeps the section title (宠物管理)', () => {
   const tree = renderTab('appearance')
   assert.ok(collectStrings(tree).includes('宠物管理'), 'section 标题应与左侧导航 label 一致')
+})
+
+test('modern DSH uses the plugin bundle page instead of the built-in plugin tab', () => {
+  assert.match(src, /plugins\.bundle\.config/, '必须注册插件详情页配置 slot')
+  assert.match(src, /function RemielleBundleConfig\(props\)/, '插件详情页必须有独立渲染入口')
+  assert.match(src, /props && props\.view === 'summary'/, '插件详情页必须区分卡片摘要和完整配置页')
+  assert.doesNotMatch(src, /settings\.plugins\.tab/, '不得再把可写配置挂在内置插件清单 tab')
+  assert.match(src, /hostConfigForms\(ctx\)/, '旧版 DSH 必须保留 settings.section 回退判断')
 })
 
 test('pet cards render rename-on-double-click and status badges (no dead code fallback)', () => {

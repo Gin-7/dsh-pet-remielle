@@ -10,7 +10,7 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 - SSE live push + optional desktop floating window (bundled Electron, transparent & always-on-top)
 - Double-click drawing: brush-reveal artwork (drawing → satisfied → fade-out)
 - Built-in version check + one-click incremental update
-- Settings panel: pet management (tabbed) + plugin config card
+- Plugin detail page settings (appearance / pets / behavior / desktop float / about)
 
 > Compatible with DeepSeek Harness (and its forks) web profile; desktop mode is off by default and can be enabled anytime. Desktop mode requires DSH `>= 0.1.2-alpha.1` to provide an authenticated root URL with a launch token.
 
@@ -23,7 +23,7 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | State source | DSH `session/event` real events — no DOM scraping |
 | State machine | Pure-function `PetReducer` with mood mapping (unit-tested) |
 | Message protocol | Typed protocol (protocol.js) |
-| Configuration | schemastery persistence + settings card |
+| Configuration | schemastery persistence + DSH plugin detail page |
 | Multi-session priority | Approval > plan review > waiting for an answer (ask_user_question) > completion reminder > waiting/error > current session > state priority > recency. Hysteresis only stabilizes the top two; third and later still rotate with recency |
 | Live push | SSE stream (auto-reconnect + polling fallback) |
 | Status bubble | Adaptive two-layer deck on both the in-page pet and the desktop window: top status card + `+N` summary backboard; message + detail (project · completed x/y · phase) |
@@ -33,7 +33,7 @@ A multi-pet web desktop pet **driven by real DSH session events** — it tracks 
 | Balance | With both status and usage on, the left dot or a wheel on the bubble switches to the balance page (60s auto-refresh, rolling-number animation, stale fallback on network blips); stays on the current page, no auto-return |
 | Today usage | Two modes: ledger (default, token-free, balance-delta) / real-time token (platform usage API + peak/off-peak pricing, exact) |
 | Desktop float | Bundled Electron transparent always-on-top window (opt-in) |
-| Multi-pet | Settings → Pet Management (registry + switch active pet) |
+| Multi-pet | Plugins → Remielle Desktop Pet → Pets (registry + switch active pet) |
 | Version update | Built-in check + one-click incremental update |
 
 ---
@@ -97,7 +97,7 @@ Plugin row id: `dsh-pet-remielle`. Uninstalling removes everything cleanly.
 
 ## Updating
 
-Built-in update check in Settings → Pet Management → Update + bottom-right update bubble: checks GitHub for the latest version and offers one-click update.
+Built-in update check in Plugins → Remielle Desktop Pet → About + bottom-right update bubble: checks GitHub for the latest version and offers one-click update.
 
 | Install type | Version | Update method |
 |---|---|---|
@@ -117,7 +117,7 @@ dsh plugin --profile web add dsh-pet-remielle
 # or: dsh plugin --profile web add github:Gin-7/dsh-pet-remielle
 ```
 
-> The same uninstall/reinstall guidance is shown in Settings → Pet Management → Update when the installed version is below 0.3.0.
+> The same uninstall/reinstall guidance is shown in Plugins → Remielle Desktop Pet → About when the installed version is below 0.3.0.
 
 ---
 
@@ -153,7 +153,7 @@ dsh plugin --profile web add dsh-pet-remielle
 - **Single-click pet**: cycle through random sticker moods.
 - **Double-click pet**: enter drawing animation; after completion a artwork pops up (screen top-right) and fades out.
 - **Right-click pet**: the **same menu** in-page and in the desktop window (same width and order, sliders aligned) — character size / opacity / mirror / lock position / pause animation / show bubble / drawing / reset position / desktop float mode. "Reset position" clears both the in-page and the desktop-window position at once; "Pause animation" freezes on the **currently displayed frame** (not the first frame) — exact on secure contexts (`127.0.0.1` / `localhost` / https), falls back to the first frame over plain-HTTP LAN addresses; resuming replays the GIF from frame 0 (an inherent consequence of re-assigning `src` — `<img>` cannot seek to a given frame).
-- **Settings-only**: enable / hide pet, pet management, respond to sub-agents, usage mode and platform token, bubble sub-toggles and bubble-scaling details — these are either low-frequency or would remove their own entry point (hide pet), so they stay out of the right-click menu.
+- **Plugin-detail-only**: enable / hide pet, pet management, respond to sub-agents, usage mode and platform token, bubble sub-toggles and bubble-scaling details — these are either low-frequency or would remove their own entry point (hide pet), so they stay out of the right-click menu.
 - **Both ends share one theme source**: the in-page menu/bubbles and the desktop window use the **same colours** and follow the **same** theme — the page reports the host theme (`body[data-ds-dark-theme]`) and the desktop window colours itself from that report; with no web client online (or the report expired) it falls back to the **system** light/dark setting, which stays a sensible default for a standalone window. Rows, order and geometry match item by item as well (a toggle's check mark never changes its row height), and a cross-file assertion pins the colours.
 - **Bubble paging**: with both status and usage on, the left dot or a wheel on the bubble switches between the status card and the balance page; stays on the current page, no auto-return.
 - **Scroll wheel (pet)**: resize character.
@@ -171,23 +171,23 @@ With both status and usage on, the left dot or a wheel on the bubble shows your 
   - The bubble also shows the current period (off-peak / peak): on workdays peak is 09:00–12:00 and 14:00–18:00 Beijing time, while **Saturdays, Sundays and Chinese public holidays are off-peak all day** (weekends that are adjusted workdays still count as off-peak, matching the official rule). The holiday calendar falls back to a built-in table and silently refreshes a public calendar in the background (cached at `$DSH_HOME/.dshp-holidays-<year>.json`), issuing a year-only request on first use or after expiry
   - Falls back to ledger mode when the token is missing or invalid
 
-**Switching usage mode**: Settings → Pet Management → Behavior → "Usage Mode" (ledger / real-time token). It is a configuration choice rather than a live tweak, so it lives in Settings only.
+**Switching usage mode**: Plugins → Remielle Desktop Pet → Behavior → "Usage Mode" (ledger / real-time token). It is a configuration choice rather than a live tweak, so it lives on the plugin detail page.
 
 > To obtain `DEEPSEEK_PLATFORM_TOKEN`: sign in to platform.deepseek.com → F12 DevTools → Network → open the "Usage" page → copy the `Authorization` header value of the `api/v0/usage/...` request → add it to the DSH credentials service.
 
 ---
 
-## Configuration (Settings → Plugin → Remielle Desktop Pet)
+## Configuration (Plugins → Remielle Desktop Pet)
 
 | Field | Default | Description |
 |---|---|---|
-| enabled | true | Enable the pet (disables immediately, re-enabling restores) |
+| enabled | true | Show the pet (hiding it immediately; plugin-manager bundle enablement is managed separately) |
 
-All other appearance/behavior options (size, opacity, mirror, lock, bubble, usage mode, desktop float, pause, hide, etc.) live in Settings → Pet Management, not duplicated in the plugin config card. The few that are instantly visible and high-frequency also appear in the right-click menu (list under "Usage") — both ends share one skeleton and one set of labels, so changing one means changing the other.
+All other appearance/behavior options (size, opacity, mirror, lock, bubble, usage mode, desktop float, pause, hide, etc.) live on the plugin detail page, not duplicated in the Built-in Plugins list. The few that are instantly visible and high-frequency also appear in the right-click menu (list under "Usage") — both ends share one skeleton and one set of labels, so changing one means changing the other.
 
-## Settings → Pet Management
+## Plugin detail page
 
-Pet registry as its own tab, alongside **Appearance / Pets / Behavior / Desktop Float / About** (five tabs).
+Pet registry as its own tab, alongside **Appearance / Pets / Behavior / Desktop Float / About** (five tabs). Current DSH renders this configuration on the plugin detail page; older DSH versions without the plugin-manager configuration slot fall back to **Settings → Pet Management** using the same component and configuration endpoints.
 
 - Enable/disable pets, set as current, rename, add new pets; pets with a missing directory or incomplete stickers show the reason on the card (the enable switch is disabled alongside).
 - Behavior page: enable / lock / pause / hide / respond to sub-agents / show bubble / **usage mode**.

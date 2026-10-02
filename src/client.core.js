@@ -6,18 +6,17 @@
  * top-level imports here.
  *
  * Three responsibilities:
- *  1. Settings section "宠物管理" (`settings.section` slot, React): the pet
- *     registry — enable/disable pets, rename them, pick the active pet, and
- *     add new ones (drop six GIFs into assets/pets/<id>/ and flip it on).
- *  2. Settings card injected into the DSH settings page
- *     (`settings.plugins.tab`) talking to the host config endpoint (global
- *     enable toggle).
- *  3. The floating sticker pet itself (plain DOM) — instead of scraping the
+ *  1. The plugin configuration page (`plugins.bundle.config`, React): the
+ *     pet registry and all persistent appearance/behaviour settings. Older
+ *     hosts without the plugin-manager slot get the same component through
+ *     the legacy `settings.section` fallback.
+ *  2. The floating sticker pet itself (plain DOM) — instead of scraping the
  *     page DOM for work state, it polls the host state endpoint, which is
  *     driven by real session events through the PetReducer. Sticker GIFs are
  *     served by the host at
  *     /plugins/dsh-pet-remielle/assets/<petId>/<mood>.gif;
  *     scale/opacity/locked/enabled/petId ride along on the snapshot.
+ *  3. The update overlay and shared browser helpers used by the pet view.
  */
 
 var CONFIG_ENDPOINT = '/plugins/dsh-pet-remielle/config'
@@ -156,7 +155,7 @@ var CSS = [
   '.rm2-pet-settings-field{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.06));}',
   '.rm2-pet-settings-field:last-child{border-bottom:none;}',
   '[data-testid="dsh-pet-remielle-settings"]:hover{border-color:var(--dsw-alias-label-dimmed);}',
-  // 设置页按钮/输入框 — 只用 DSH 原生 --dsw-alias-* 变量，浅/深色由宿主变量自动切换，
+  // 插件配置页按钮/输入框 — 只用 DSH 原生 --dsw-alias-* 变量，浅/深色由宿主变量自动切换，
   // 不再手写 body[data-ds-dark-theme] 覆盖（此前用的 --border-color/--danger-color
   // 是不存在的变量，永远落浅色 fallback，深色下边框是浅灰）。
   '.rm2-pet-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:4px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2,#d8d8d8);background:var(--dsw-alias-bg-layer-2,transparent);color:var(--dsw-alias-label-primary,inherit);font-family:inherit;font-size:12px;line-height:20px;white-space:nowrap;cursor:pointer;transition:background .15s,border-color .15s;}',
@@ -175,7 +174,7 @@ var CSS = [
   '.rm2-pet-input::placeholder{color:var(--dsw-alias-label-quaternary,#9aa5bd);}',
   '.rm2-pet-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#526aa8);}',
   '.rm2-pet-input:disabled{opacity:.45;}',
-  // markdown 渲染区（更新卡 + 设置页关于 tab 的 release 说明）。容器底色由使用处
+  // markdown 渲染区（更新卡 + 插件配置页关于 tab 的 release 说明）。容器底色由使用处
   // 内联给定；这里只排内部元素。半透明白/黑叠色两主题通用，深色只需微调代码底色。
   '.rm2-md h1,.rm2-md h2,.rm2-md h3,.rm2-md h4,.rm2-md h5,.rm2-md h6{margin:10px 0 4px;line-height:1.4;}',
   '.rm2-md h1{font-size:1.25em;}.rm2-md h2{font-size:1.15em;}.rm2-md h3{font-size:1.08em;}.rm2-md h4,.rm2-md h5,.rm2-md h6{font-size:1em;}',
@@ -487,7 +486,7 @@ function patchPet(id, patch) {
   }).catch(function () { return null })
 }
 
-/** ---------- settings card (React) ---------- */
+/** ---------- plugin configuration page (React) ---------- */
 
 function Field(props) {
   return React.createElement('label', { className: 'rm2-pet-settings-field', style: props.fieldStyle || undefined },
@@ -509,73 +508,6 @@ function Switch(props) {
     disabled: props.disabled,
     onClick: function () { if (!props.disabled && props.onChange) props.onChange(!on) },
   })
-}
-
-function RemielleCard() {
-  var statusState = React.useState('loading')
-  var status = statusState[0]
-  var setStatus = statusState[1]
-  var valueState = React.useState({})
-  var value = valueState[0]
-  var setValue = valueState[1]
-  var busyState = React.useState(false)
-  var busy = busyState[0]
-  var setBusy = busyState[1]
-  var patchSeq = React.useRef(0)
-  var writable = status === 'ready' && !busy
-  React.useEffect(function () {
-    var active = true
-    fetch(CONFIG_ENDPOINT, { cache: 'no-store' })
-      .then(function (response) {
-        if (!response.ok) throw new Error('settings request failed: ' + response.status)
-        return response.json()
-      })
-      .then(function (next) { if (active) { setValue(next); setStatus('ready') } })
-      .catch(function () { if (active) setStatus('unavailable') })
-    return function () { active = false }
-  }, [])
-  var write = function (field, next) {
-    var seq = ++patchSeq.current
-    setBusy(true)
-    fetch(CONFIG_ENDPOINT, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ [field]: next }),
-    })
-      .then(function (response) {
-        if (!response.ok) throw new Error('settings write failed: ' + response.status)
-        return response.json()
-      })
-      .then(function (updated) {
-        if (seq === patchSeq.current) { setValue(updated); setStatus('ready') }
-      })
-      .catch(function () { if (seq === patchSeq.current) setStatus('unavailable') })
-      .finally(function () { if (seq === patchSeq.current) setBusy(false) })
-  }
-  var cardStyle = {
-    listStyle: 'none',
-    border: '1px solid var(--dsw-alias-border-l2)',
-    background: 'var(--dsw-alias-bg-layer-3)',
-    borderRadius: 12,
-    transition: 'border-color .16s, background .16s',
-    padding: '14px 16px',
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-    font: 'inherit', color: 'inherit',
-  }
-  return React.createElement('li', { style: cardStyle, 'data-testid': 'dsh-pet-remielle-settings' },
-    React.createElement('div', { style: { flex: 1, minWidth: 0 } },
-      React.createElement('div', { style: { color: 'var(--dsw-alias-label-primary)', fontSize: 15, fontWeight: 600, lineHeight: 1.4 } }, '蕾米埃尔桌宠'),
-      React.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 13, lineHeight: 1.5, marginTop: 2 } }, '跟随 DSH 会话实时状态变化而变动的网页桌宠。'),
-    ),
-    status === 'unavailable'
-      ? React.createElement('span', { role: 'status', style: { whiteSpace: 'nowrap', fontSize: 12, opacity: 0.6 } }, '未连接到 Host')
-      : status === 'loading'
-      ? React.createElement('span', { style: { whiteSpace: 'nowrap', fontSize: 12, opacity: 0.6 } }, '读取中…')
-      : React.createElement(Switch, { checked: value.enabled !== false, disabled: !writable, onChange: function (val) {
-        setValue(function (prev) { return Object.assign({}, prev, { enabled: val }) }) // 乐观更新，即时反馈
-        void write('enabled', val)
-      } }),
-  )
 }
 
 /** ---------- pet management section (React) ---------- */
@@ -693,7 +625,8 @@ function AddPetForm(props) {
   )
 }
 
-function PetsSection() {
+function PetsSection(props) {
+  var embedded = props && props.embedded === true
   var tabState = React.useState('appearance')
   var tab = tabState[0]
   var setTab = tabState[1]
@@ -741,7 +674,7 @@ function PetsSection() {
         setUpdInfo(info)
         setUpdMsg(isNew ? 'has-update' : 'latest')
         setLatestUpdate(info, isNew)
-        updBubble.style.display = 'none' // 设置页已显示更新信息，不需要气泡
+        updBubble.style.display = 'none' // 配置页已显示更新信息，不需要气泡
       })
       .catch(function () {
         setUpdChecking(false)
@@ -772,7 +705,7 @@ function PetsSection() {
     if (pending) clearTimeout(pending)
     sliderTimers.current.set(key, setTimeout(function () { sliderTimers.current.delete(key); void patchConfig(key, val) }, 250))
   }
-  var sectionStyle = { display: 'grid', gap: 10, padding: '4px 2px', fontSize: 13, color: 'var(--dsw-alias-label-primary, #172347)' }
+  var sectionStyle = { display: 'grid', gap: 10, padding: embedded ? '0 2px' : '4px 2px', fontSize: 13, color: 'var(--dsw-alias-label-primary, #172347)' }
   var tabs = [
     { id: 'appearance', label: '外观' },
     { id: 'pets', label: '宠物' },
@@ -1063,7 +996,7 @@ function PetsSection() {
   )
   var tabContent = tab === 'appearance' ? appearanceTab : tab === 'pets' ? petsTab : tab === 'behavior' ? behaviorTab : tab === 'desktop' ? desktopTab : aboutTab
   return React.createElement('section', { style: sectionStyle, 'data-testid': 'dsh-pet-remielle-pets-section' },
-    React.createElement('h3', { style: { margin: 0, fontSize: 15 } }, '宠物管理'),
+    embedded ? null : React.createElement('h3', { style: { margin: 0, fontSize: 15 } }, '宠物管理'),
     tabBar,
     tabContent,
     tokenHelpOpen
@@ -2701,9 +2634,9 @@ function mountPet(ctx) {
   // 同一顺序、同名条目：
   //   状态信息 │ 角色大小 · 透明度 · 左右镜像 │ 锁定位置 · 暂停动画 · 显示气泡
   //   │ 画画 · 重置位置 │ 桌面悬浮模式
-  // 收录标准三条：点完立刻在宠物身上看得见、不想为此跳设置页、关掉后还有出口。
+  // 收录标准三条：点完立刻在宠物身上看得见、不想为此跳配置页、关掉后还有出口。
   // 因此启用/隐藏桌宠、宠物管理、响应子 Agent、平台令牌、用量模式、气泡细项与
-  // 缩放细项一律只留设置页——它们要么低频，要么会把入口一起关掉。
+  // 缩放细项一律只留配置页——它们要么低频，要么会把入口一起关掉。
   function buildMenuContent() {
     menu.textContent = ''
     var snap = lastSnapshot
@@ -2911,28 +2844,70 @@ function mountPet(ctx) {
   } })
 }
 
+/** ---------- plugin settings slots ---------- */
+
+function hostConfigForms(ctx) {
+  try {
+    var forms = typeof ctx?.get === 'function' ? ctx.get('configForms') : ctx?.configForms
+    return forms && typeof forms.get === 'function' ? forms : null
+  } catch (e) {
+    return null
+  }
+}
+
+/** The modern Plugins page asks for a summary and a full configuration page. */
+function RemielleBundleConfig(props) {
+  if (props && props.view === 'summary') return null
+  return React.createElement(PetsSection, { embedded: true })
+}
+
+function registerSettingsSlots(ctx) {
+  var register = function (slots, scope) {
+    if (!slots || typeof slots.inject !== 'function') return
+    var effect = function (fn, label) {
+      if (scope && typeof scope.effect === 'function') return scope.effect(fn, label)
+      return fn()
+    }
+
+    // DSH 0.1.7+: a bundle owns its configuration on the Plugins page.
+    effect(function () { return slots.inject('plugins.bundle.config', function () {
+      return slots.register({
+        name: 'plugins.bundle.config',
+        key: 'dsh-pet-remielle',
+        label: function () { return '蕾米埃尔桌宠' },
+        inject: function () { return {} },
+      }, RemielleBundleConfig)
+    }) }, 'dsh-pet-remielle: plugin page')
+
+    // Older hosts have no bundle-config slot. Keep the same page reachable
+    // from the legacy settings navigation, but never register it alongside
+    // the modern configForms/plugin-manager surface.
+    effect(function () { return slots.inject('settings.section', function () {
+      if (hostConfigForms(ctx)) return function () {}
+      return slots.register({
+        name: 'settings.section', id: 'pets', order: 25,
+        label: function () { return '宠物管理' },
+        inject: function () { return {} },
+      }, PetsSection)
+    }) }, 'dsh-pet-remielle: settings section')
+  }
+
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['slots'], function (scope) {
+      var slots = scope && typeof scope.get === 'function' ? scope.get('slots') : null
+      register(slots, scope)
+    })
+  } else {
+    register(ctx.slots)
+  }
+}
+
 /** ---------- plugin entry ---------- */
 
 function apply(ctx) {
   if (typeof document === 'undefined' || !document.body) return
 
-  if (ctx.slots) {
-    ctx.slots.inject('settings.section', function () {
-      return ctx.slots.register({
-        name: 'settings.section', id: 'pets', order: 25,
-        label: function () { return '宠物管理' },
-        inject: function () { return {} },
-      }, PetsSection)
-    })
-    ctx.slots.inject('settings.plugins.tab', function () {
-      return ctx.slots.register({
-        name: 'settings.plugins.tab', id: 'dsh-pet-remielle', order: 30,
-        label: function () { return '蕾米埃尔桌宠' },
-        inject: function () { return {} },
-      }, RemielleCard)
-    })
-  }
-
+  registerSettingsSlots(ctx)
   mountPet(ctx)
 }
 
