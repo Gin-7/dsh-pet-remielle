@@ -155,6 +155,7 @@ var CSS = [
   // Settings section spacing
   '.rm2-pet-settings-field{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.06));}',
   '.rm2-pet-settings-field:last-child{border-bottom:none;}',
+  '.rm2-pet-settings-slider{accent-color:var(--dsw-alias-brand-primary,#526aa8);}',
   '[data-testid="dsh-pet-remielle-settings"]:hover{border-color:var(--dsw-alias-label-dimmed);}',
   // 设置页按钮/输入框 — 只用 DSH 原生 --dsw-alias-* 变量，浅/深色由宿主变量自动切换，
   // 不再手写 body[data-ds-dark-theme] 覆盖（此前用的 --border-color/--danger-color
@@ -800,20 +801,20 @@ function PetsSection() {
   var subFieldStyle = { marginLeft: 18, paddingLeft: 12 }
   var appearanceTab = React.createElement('div', null,
     React.createElement(Field, { label: '角色大小', hint: Math.round((v.scale ?? 1) * 100) + '%' },
-      React.createElement('input', { type: 'range', min: 0.5, max: 2, step: 0.05, value: v.scale ?? 1, disabled: !config, onChange: function (e) { writeSlider('scale', Number(e.target.value)) } }),
+      React.createElement('input', { type: 'range', className: 'rm2-pet-settings-slider', min: 0.5, max: 2, step: 0.05, value: v.scale ?? 1, disabled: !config, onChange: function (e) { writeSlider('scale', Number(e.target.value)) } }),
     ),
     React.createElement(Field, { label: '气泡随桌宠同步缩放', hint: v.bubbleScaleSync !== false ? '气泡大小 = 角色大小 × 相对比例' : '气泡使用固定大小，不随角色缩放' },
       React.createElement(Switch, { checked: v.bubbleScaleSync !== false, disabled: !config, onChange: function (val) { write('bubbleScaleSync', val) } }),
     ),
     v.bubbleScaleSync !== false
       ? React.createElement(Field, { label: '气泡相对桌宠的大小', hint: Math.round((v.bubbleScaleRatio ?? 1) * 100) + '%', fieldStyle: subFieldStyle },
-          React.createElement('input', { type: 'range', min: 0.5, max: 2, step: 0.05, value: v.bubbleScaleRatio ?? 1, disabled: !config, onChange: function (e) { writeSlider('bubbleScaleRatio', Number(e.target.value)) } }),
+          React.createElement('input', { type: 'range', className: 'rm2-pet-settings-slider', min: 0.5, max: 2, step: 0.05, value: v.bubbleScaleRatio ?? 1, disabled: !config, onChange: function (e) { writeSlider('bubbleScaleRatio', Number(e.target.value)) } }),
         )
       : React.createElement(Field, { label: '气泡固定大小', hint: Math.round((v.bubbleFixedSize ?? 1) * 100) + '%', fieldStyle: subFieldStyle },
-          React.createElement('input', { type: 'range', min: 0.5, max: 2, step: 0.05, value: v.bubbleFixedSize ?? 1, disabled: !config, onChange: function (e) { writeSlider('bubbleFixedSize', Number(e.target.value)) } }),
+          React.createElement('input', { type: 'range', className: 'rm2-pet-settings-slider', min: 0.5, max: 2, step: 0.05, value: v.bubbleFixedSize ?? 1, disabled: !config, onChange: function (e) { writeSlider('bubbleFixedSize', Number(e.target.value)) } }),
         ),
     React.createElement(Field, { label: '透明度', hint: Math.round((v.opacity ?? 1) * 100) + '%' },
-      React.createElement('input', { type: 'range', min: 0.3, max: 1, step: 0.05, value: v.opacity ?? 1, disabled: !config, onChange: function (e) { writeSlider('opacity', Number(e.target.value)) } }),
+      React.createElement('input', { type: 'range', className: 'rm2-pet-settings-slider', min: 0.3, max: 1, step: 0.05, value: v.opacity ?? 1, disabled: !config, onChange: function (e) { writeSlider('opacity', Number(e.target.value)) } }),
     ),
     React.createElement(Field, { label: '角色左右镜像', hint: v.mirror === true ? '已镜像' : '正常方向' },
       React.createElement(Switch, { checked: v.mirror === true, disabled: !config, onChange: function (val) { write('mirror', val) } }),
