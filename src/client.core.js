@@ -145,13 +145,14 @@ var CSS = [
   'body[data-ds-dark-theme] .rm2-pet-menu-item .mute{color:#f0a8c0;}',
   'body[data-ds-dark-theme] .rm2-pet-menu-item .tick{color:#ffb3c9;}',
   'body[data-ds-dark-theme] .rm2-pet-menu-item:hover{background:rgba(255,150,185,.16);}',
-  // Toggle switch — matches old zzz-pet-switch style
-  '.rm2-pet-switch{position:relative;flex:none;width:36px;height:20px;border-radius:999px;corner-shape:round!important;background:rgba(113,130,166,.45);cursor:pointer;transition:background .15s;border:none;padding:0;}',
-  '.rm2-pet-switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;corner-shape:round!important;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:left .15s;}',
-  '.rm2-pet-switch.on{background:var(--dsw-alias-brand-primary,#526aa8);}',
-  '.rm2-pet-switch.on::after{left:18px;}',
-  'body[data-ds-dark-theme] .rm2-pet-switch{background:rgba(150,166,201,.4);}',
-  'body[data-ds-dark-theme] .rm2-pet-switch.on{background:var(--dsw-alias-brand-primary,#8ba4d8);}',
+  // DSH 官方 Switch 几何与主题令牌：轨道和滑块跟随宿主主题
+  '.rm2-pet-switch{box-sizing:border-box;position:relative;flex:0 0 auto;width:36px;height:20px;padding:2px;border:0;border-radius:999px;corner-shape:round;background:var(--dsw-alias-border-l3,rgba(0,0,0,.2));cursor:pointer;transition:background-color .12s ease;}',
+  '.rm2-pet-switch[aria-checked="true"]{background:var(--dsw-alias-brand-primary,#526aa8);}',
+  '.rm2-pet-switch::after{content:"";display:block;position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;corner-shape:round;background:var(--dsw-alias-label-primary-foreground,#fff);box-shadow:0 1px 2px rgba(20,20,19,.18);transition:transform 120ms ease;}',
+  '.rm2-pet-switch[aria-checked="false"]::after{background:var(--dsw-alias-switch-thumb,var(--dsw-alias-label-primary,#172347));}',
+  '.rm2-pet-switch[aria-checked="true"]::after{transform:translateX(16px);}',
+  '.rm2-pet-switch:disabled{cursor:default;opacity:.5;}',
+  '.rm2-pet-switch:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px;}',
   // Settings section spacing
   '.rm2-pet-settings-field{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.06));}',
   '.rm2-pet-settings-field:last-child{border-bottom:none;}',
