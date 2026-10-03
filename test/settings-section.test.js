@@ -140,17 +140,47 @@ test('appearance tab field order (mirror stays below opacity)', () => {
   assert.deepEqual(labels, ['角色大小', '气泡随桌宠同步缩放', '气泡相对桌宠的大小', '透明度', '角色左右镜像'])
 })
 
-test('legacy settings fallback keeps the section title (宠物管理)', () => {
+test('settings section keeps the section title (宠物管理)', () => {
   const tree = renderTab('appearance')
   assert.ok(collectStrings(tree).includes('宠物管理'), 'section 标题应与左侧导航 label 一致')
 })
 
-test('modern DSH uses the plugin bundle page instead of the built-in plugin tab', () => {
-  assert.match(src, /plugins\.bundle\.config/, '必须注册插件详情页配置 slot')
-  assert.match(src, /function RemielleBundleConfig\(props\)/, '插件详情页必须有独立渲染入口')
-  assert.match(src, /props && props\.view === 'summary'/, '插件详情页必须区分卡片摘要和完整配置页')
-  assert.doesNotMatch(src, /settings\.plugins\.tab/, '不得再把可写配置挂在内置插件清单 tab')
-  assert.match(src, /hostConfigForms\(ctx\)/, '旧版 DSH 必须保留 settings.section 回退判断')
+for (const modern of [true, false]) {
+  test(`${modern ? 'modern' : 'legacy'} DSH keeps the settings entry alongside supported plugin configuration`, () => {
+    const { sandbox } = loadPetsSection()
+    const registered = new Map()
+    const supported = new Set(modern ? ['settings.section', 'plugins.bundle.config'] : ['settings.section'])
+    const slots = {
+      inject(name, callback) { if (supported.has(name)) return callback() },
+      register(options, component) {
+        assert.ok(!registered.has(options.name), '每个配置入口只能注册一次')
+        registered.set(options.name, { options, component })
+        return () => registered.delete(options.name)
+      },
+    }
+    const configForms = modern ? { get() {} } : undefined
+    const ctx = { slots, configForms, get(name) { return name === 'configForms' ? configForms : undefined } }
+    if (modern) ctx.inject = (_, callback) => callback({ get: () => slots, effect: (fn) => fn() })
+    sandbox.registerSettingsSlots(ctx)
+    assert.equal(registered.get('settings.section')?.component, sandbox.PetsSection, '新版和旧版都应保留宠物管理')
+    assert.equal(registered.get('settings.section')?.options.label(), '宠物管理')
+    assert.equal(registered.has('plugins.bundle.config'), modern)
+    if (modern) {
+      const detail = registered.get('plugins.bundle.config')
+      assert.equal(detail.options.key, 'dsh-pet-remielle')
+      assert.equal(detail.component({ view: 'page' }).type, sandbox.PetsSection, '两个入口必须共用配置组件')
+    }
+    assert.doesNotMatch(src, /settings\.plugins\.tab/, '不得恢复内置插件清单中的开关卡片')
+  })
+}
+
+test('plugin detail shares settings tabs without duplicating the host heading or summary', () => {
+  const { sandbox } = loadPetsSection()
+  assert.equal(sandbox.RemielleBundleConfig({ view: 'summary' }), null)
+  const detail = sandbox.RemielleBundleConfig({ view: 'page' })
+  const tree = detail.type(detail.props)
+  assert.ok(!collectStrings(tree).includes('宠物管理'), '插件详情页由宿主提供标题')
+  assert.deepEqual(collectTabLabels(tree), ['外观', '宠物', '行为', '桌面悬浮', '关于'])
 })
 
 test('pet cards render rename-on-double-click and status badges (no dead code fallback)', () => {

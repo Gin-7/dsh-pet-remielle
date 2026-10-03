@@ -6,10 +6,9 @@
  * top-level imports here.
  *
  * Three responsibilities:
- *  1. The plugin configuration page (`plugins.bundle.config`, React): the
- *     pet registry and all persistent appearance/behaviour settings. Older
- *     hosts without the plugin-manager slot get the same component through
- *     the legacy `settings.section` fallback.
+ *  1. 设置页与插件详情页共用的 React 配置组件：宠物注册表及所有
+ *     持久化外观/行为设置，同时提供 `settings.section` 和
+ *     `plugins.bundle.config` 两个入口。
  *  2. The floating sticker pet itself (plain DOM) — instead of scraping the
  *     page DOM for work state, it polls the host state endpoint, which is
  *     driven by real session events through the PetReducer. Sticker GIFs are
@@ -2846,15 +2845,6 @@ function mountPet(ctx) {
 
 /** ---------- plugin settings slots ---------- */
 
-function hostConfigForms(ctx) {
-  try {
-    var forms = typeof ctx?.get === 'function' ? ctx.get('configForms') : ctx?.configForms
-    return forms && typeof forms.get === 'function' ? forms : null
-  } catch (e) {
-    return null
-  }
-}
-
 /** The modern Plugins page asks for a summary and a full configuration page. */
 function RemielleBundleConfig(props) {
   if (props && props.view === 'summary') return null
@@ -2879,11 +2869,8 @@ function registerSettingsSlots(ctx) {
       }, RemielleBundleConfig)
     }) }, 'dsh-pet-remielle: plugin page')
 
-    // Older hosts have no bundle-config slot. Keep the same page reachable
-    // from the legacy settings navigation, but never register it alongside
-    // the modern configForms/plugin-manager surface.
+    // 设置页与插件详情页共用同一组件和配置，两个入口同时保留。
     effect(function () { return slots.inject('settings.section', function () {
-      if (hostConfigForms(ctx)) return function () {}
       return slots.register({
         name: 'settings.section', id: 'pets', order: 25,
         label: function () { return '宠物管理' },

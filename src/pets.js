@@ -8,7 +8,7 @@
  * config and projects the registry view served to the plugin configuration page.
  *
  * Adding a pet never touches code: drop six GIFs into assets/pets/<id>/,
- * then flip it on in the plugin detail page (older DSH falls back to Settings → 宠物管理).
+ * 然后在「设置 → 宠物管理」或插件详情页启用。
  */
 
 export const PET_MOODS = ['01', '02', '03', '04', '05', '06']
