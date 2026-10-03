@@ -145,16 +145,18 @@ var CSS = [
   'body[data-ds-dark-theme] .rm2-pet-menu-item .mute{color:#f0a8c0;}',
   'body[data-ds-dark-theme] .rm2-pet-menu-item .tick{color:#ffb3c9;}',
   'body[data-ds-dark-theme] .rm2-pet-menu-item:hover{background:rgba(255,150,185,.16);}',
-  // Toggle switch — matches old zzz-pet-switch style
-  '.rm2-pet-switch{position:relative;flex:none;width:36px;height:20px;border-radius:999px;corner-shape:round!important;background:rgba(113,130,166,.45);cursor:pointer;transition:background .15s;border:none;padding:0;}',
-  '.rm2-pet-switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;corner-shape:round!important;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:left .15s;}',
-  '.rm2-pet-switch.on{background:var(--dsw-alias-brand-primary,#526aa8);}',
-  '.rm2-pet-switch.on::after{left:18px;}',
-  'body[data-ds-dark-theme] .rm2-pet-switch{background:rgba(150,166,201,.4);}',
-  'body[data-ds-dark-theme] .rm2-pet-switch.on{background:var(--dsw-alias-brand-primary,#8ba4d8);}',
+  // DSH 官方 Switch 几何与主题令牌：轨道和滑块跟随宿主主题
+  '.rm2-pet-switch{box-sizing:border-box;position:relative;flex:0 0 auto;width:36px;height:20px;padding:2px;border:0;border-radius:999px;corner-shape:round;background:var(--dsw-alias-border-l3,rgba(0,0,0,.2));cursor:pointer;transition:background-color .12s ease;}',
+  '.rm2-pet-switch[aria-checked="true"]{background:var(--dsw-alias-brand-primary,#526aa8);}',
+  '.rm2-pet-switch::after{content:"";display:block;position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;corner-shape:round;background:var(--dsw-alias-label-primary-foreground,#fff);box-shadow:0 1px 2px rgba(20,20,19,.18);transition:transform 120ms ease;}',
+  '.rm2-pet-switch[aria-checked="false"]::after{background:var(--dsw-alias-switch-thumb,var(--dsw-alias-label-primary,#172347));}',
+  '.rm2-pet-switch[aria-checked="true"]::after{transform:translateX(16px);}',
+  '.rm2-pet-switch:disabled{cursor:default;opacity:.5;}',
+  '.rm2-pet-switch:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px;}',
   // Settings section spacing
   '.rm2-pet-settings-field{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.06));}',
   '.rm2-pet-settings-field:last-child{border-bottom:none;}',
+  '.rm2-pet-settings-slider{accent-color:var(--dsw-alias-brand-primary,#526aa8);}',
   '[data-testid="dsh-pet-remielle-settings"]:hover{border-color:var(--dsw-alias-label-dimmed);}',
   // 设置页按钮/输入框 — 只用 DSH 原生 --dsw-alias-* 变量，浅/深色由宿主变量自动切换，
   // 不再手写 body[data-ds-dark-theme] 覆盖（此前用的 --border-color/--danger-color
@@ -800,20 +802,20 @@ function PetsSection() {
   var subFieldStyle = { marginLeft: 18, paddingLeft: 12 }
   var appearanceTab = React.createElement('div', null,
     React.createElement(Field, { label: '角色大小', hint: Math.round((v.scale ?? 1) * 100) + '%' },
-      React.createElement('input', { type: 'range', min: 0.5, max: 2, step: 0.05, value: v.scale ?? 1, disabled: !config, onChange: function (e) { writeSlider('scale', Number(e.target.value)) } }),
+      React.createElement('input', { type: 'range', className: 'rm2-pet-settings-slider', min: 0.5, max: 2, step: 0.05, value: v.scale ?? 1, disabled: !config, onChange: function (e) { writeSlider('scale', Number(e.target.value)) } }),
     ),
     React.createElement(Field, { label: '气泡随桌宠同步缩放', hint: v.bubbleScaleSync !== false ? '气泡大小 = 角色大小 × 相对比例' : '气泡使用固定大小，不随角色缩放' },
       React.createElement(Switch, { checked: v.bubbleScaleSync !== false, disabled: !config, onChange: function (val) { write('bubbleScaleSync', val) } }),
     ),
     v.bubbleScaleSync !== false
       ? React.createElement(Field, { label: '气泡相对桌宠的大小', hint: Math.round((v.bubbleScaleRatio ?? 1) * 100) + '%', fieldStyle: subFieldStyle },
-          React.createElement('input', { type: 'range', min: 0.5, max: 2, step: 0.05, value: v.bubbleScaleRatio ?? 1, disabled: !config, onChange: function (e) { writeSlider('bubbleScaleRatio', Number(e.target.value)) } }),
+          React.createElement('input', { type: 'range', className: 'rm2-pet-settings-slider', min: 0.5, max: 2, step: 0.05, value: v.bubbleScaleRatio ?? 1, disabled: !config, onChange: function (e) { writeSlider('bubbleScaleRatio', Number(e.target.value)) } }),
         )
       : React.createElement(Field, { label: '气泡固定大小', hint: Math.round((v.bubbleFixedSize ?? 1) * 100) + '%', fieldStyle: subFieldStyle },
-          React.createElement('input', { type: 'range', min: 0.5, max: 2, step: 0.05, value: v.bubbleFixedSize ?? 1, disabled: !config, onChange: function (e) { writeSlider('bubbleFixedSize', Number(e.target.value)) } }),
+          React.createElement('input', { type: 'range', className: 'rm2-pet-settings-slider', min: 0.5, max: 2, step: 0.05, value: v.bubbleFixedSize ?? 1, disabled: !config, onChange: function (e) { writeSlider('bubbleFixedSize', Number(e.target.value)) } }),
         ),
     React.createElement(Field, { label: '透明度', hint: Math.round((v.opacity ?? 1) * 100) + '%' },
-      React.createElement('input', { type: 'range', min: 0.3, max: 1, step: 0.05, value: v.opacity ?? 1, disabled: !config, onChange: function (e) { writeSlider('opacity', Number(e.target.value)) } }),
+      React.createElement('input', { type: 'range', className: 'rm2-pet-settings-slider', min: 0.3, max: 1, step: 0.05, value: v.opacity ?? 1, disabled: !config, onChange: function (e) { writeSlider('opacity', Number(e.target.value)) } }),
     ),
     React.createElement(Field, { label: '角色左右镜像', hint: v.mirror === true ? '已镜像' : '正常方向' },
       React.createElement(Switch, { checked: v.mirror === true, disabled: !config, onChange: function (val) { write('mirror', val) } }),
