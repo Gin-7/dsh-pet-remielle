@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  DEFAULT_PET_ID,
   PET_MOODS,
   buildRegistry,
   isValidMood,
@@ -131,12 +130,16 @@ test('resolveActive skips disabled and incomplete pets', () => {
   assert.equal(resolveActive(pets, 'a'), 'c')
 })
 
-test('resolveActive falls back to the default id when nothing is showable', () => {
+test('resolveActive returns null when nothing is showable (hide, no default fallback)', () => {
   const pets = [
     { id: 'a', enabled: false, available: true, complete: true },
     { id: 'b', enabled: true, available: true, complete: false },
   ]
-  assert.equal(resolveActive(pets, 'a'), DEFAULT_PET_ID)
+  // 回落 DEFAULT_PET_ID 会把用户刚禁用的宠物原样画回来（issue #34：
+  // 宠物列表开关不生效）——必须返回 null，由客户端整体隐藏。
+  assert.equal(resolveActive(pets, 'a'), null)
+  assert.equal(resolveActive(pets, 'missing-id'), null)
+  assert.equal(resolveActive([], 'a'), null)
 })
 
 test('parseAssetPath accepts well-formed pet assets', () => {

@@ -671,8 +671,9 @@ export function dropSubagentCompletions(completionQueue, isSubagentSession) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getDesktopActive, getWebClients, getActivePet, getStates, getCompletions, getCurrent, getTheme, getSessionTitle }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getBootId, getDesktopActive, getWebClients, getActivePet, getStates, getCompletions, getCurrent, getTheme, getSessionTitle }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
+  const bootIdOf = typeof getBootId === 'function' ? getBootId : () => undefined
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
   const webClientsOf = typeof getWebClients === 'function' ? getWebClients : () => 0
   const activePetOf = typeof getActivePet === 'function' ? getActivePet : () => undefined
@@ -798,7 +799,13 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       // 待机气泡不再重复打开系统浏览器。
       webClients: webClientsOf(),
       desktopMode: config.desktopMode === true,
-      petId: petIdOf() ?? DEFAULT_PET_ID,
+      // 没有任何可显示宠物时 activePetId 为 null（resolveActive 的约定）：
+      // 快照带 petId=undefined（JSON 序列化省略），客户端据此整体隐藏桌宠。
+      // 不能回落 DEFAULT_PET_ID——那会把用户刚禁用的宠物原样画回来（issue #34）。
+      petId: petIdOf() ?? undefined,
+      // 本代插件的代际标识：客户端发现快照里的 bootId 与自己首次见到的不一致，
+      // 说明自己是宿主重挂载后残留的上一代僵尸，立即自拆（issue #34）。
+      bootId: bootIdOf() || undefined,
       // 网页端上报的「用户正在看的会话」；空串=清除，回落为缺失（JSON 序列化时省略该字段）
       currentSessionId: currentOf() || undefined,
       // 网页端上报的宿主主题（'dark' / 'light'）；字段缺失=没有网页在线或上报过期，
@@ -935,6 +942,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   const logger = ctx.logger ?? console
   const settings = createSettingsScope(ctx, config, eventCtx)
   const base = publicConfig(settings.get())
+
+  // 代际标识：每次插件激活（含宿主停用后再启用）都会重新执行 mount，生成新值。
+  // 快照带上它，让页面里上一代残留的僵尸客户端能在下一次轮询时识别
+  // 「宿主已重挂载新实例」并自拆（issue #34：DSH 0.2 live patch 卸载不调用
+  // 客户端清理钩子，单靠 404 连击检测会被快速停用→启用绕过）。
+  const bootId = `boot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
   const resolveCredential = (name) => {
     const cred = eventCtx.credentials ?? ctx.credentials
@@ -1073,6 +1086,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getPulse: () => pulse,
     getConfig: settingsNow,
     getPetId: () => registry.activePetId,
+    getBootId: () => bootId,
     getDesktopActive: () => desktopActive,
     getWebClients: () => (hubRef ? hubRef.webSize : 0),
     getActivePet: () => registry.pets.find((pet) => pet.id === registry.activePetId),
@@ -1671,6 +1685,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     offEvent?.()
     offDisposed?.()
     unwatch()
+    // 告别帧（issue #34）：此刻 SSE 连接还活着、路由尚未被宿主注销，先推
+    // plugin-gone 让页面里所有客户端立即自拆（毫秒级消失），再关流。推不出去
+    // 也没关系——客户端还有 404 藏匿 + 连击自毁 + bootId 代际检测三层兜底。
+    try { hub.notify({ kind: 'plugin-gone' }) } catch { /* dispose 期连接可能已不可用 */ }
     hub.close()
   })
 }

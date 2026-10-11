@@ -163,14 +163,16 @@ export function buildRegistry(discovered, configured, activePetId) {
 /**
  * Resolve the pet to display: the persisted active id when that pet is
  * enabled and complete; otherwise the first enabled complete pet; otherwise
- * the default id (the client falls back to the default sticker set when the
- * resolved pet has no artwork).
+ * null (nothing showable — every pet is disabled, unavailable or incomplete).
+ * Clients hide the pet entirely on null; returning DEFAULT_PET_ID here would
+ * re-show the very pet the user just disabled (issue #34: the pet-list
+ * toggle appears to do nothing).
  */
 export function resolveActive(pets, activePetId) {
   const showable = (pet) => pet.enabled === true && pet.available === true && pet.complete === true
   return (
     pets.find((pet) => pet.id === activePetId && showable(pet))?.id
     ?? pets.find(showable)?.id
-    ?? DEFAULT_PET_ID
+    ?? null
   )
 }

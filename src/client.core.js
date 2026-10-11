@@ -449,15 +449,51 @@ function runSelfUpdate() {
     })
 }
 
+/**
+ * ---------- plugin-gone teardown ----------
+ *
+ * 宿主停用/卸载本插件时，DSH 0.2 的 live patch 卸载不调用客户端的 ctx.effect
+ * 清理钩子——页面里已执行的客户端实例成为僵尸：桌宠 DOM、轮询、SSE 重连、
+ * 主题心跳全部留在页面上；宿主重新启用后再挂载一份新实例，页面上就是两只
+ * 桌宠（issue #34）。ctx.effect 钩子照常注册（宿主若调用更好），但客户端
+ * 不再依赖它：/state 连续 404 = 路由已被宿主注销 = 插件已被停用，客户端
+ * 自行拆除一切。注意区分：连接拒绝/网络错误是宿主网关重启，保持原状等待。
+ */
+var pluginGoneHooks = []
+var pluginGoneDone = false
+function onPluginGone(hook) {
+  if (pluginGoneDone) { try { hook() } catch (e) { /* teardown hooks must not throw */ } return }
+  pluginGoneHooks.push(hook)
+}
+function runPluginGoneTeardown(reason) {
+  if (pluginGoneDone) return
+  pluginGoneDone = true
+  for (var i = 0; i < pluginGoneHooks.length; i++) {
+    try { pluginGoneHooks[i](reason) } catch (e) { /* teardown hooks must not throw */ }
+  }
+}
+
+// 插件被宿主停用时一并拆掉更新 UI 子系统（轮询看门狗与悬浮入口/卡片）。
+// updBubbleEl/updCardEl 是 window 级单例，只隐藏不移除——重新启用插件后
+// 模块重新求值时会复用同一实例。
+onPluginGone(function () {
+  stopUpdateWatchdog()
+  closeUpdateCard()
+  try { updBubbleEl.style.display = 'none' } catch (e) { /* singleton may not exist yet */ }
+})
+
 /** Poll the host state endpoint once; resolves to the snapshot or null. */
+var lastStateHttpStatus = 0
 function fetchState() {
   return fetch(STATE_ENDPOINT, { cache: 'no-store' })
     .then(function (response) {
+      lastStateHttpStatus = response.status
       if (!response.ok) throw new Error('state request failed: ' + response.status)
       return response.json()
     })
     .catch(function () { return null })
 }
+
 
 function fetchJson(url) {
   return fetch(url, { cache: 'no-store' }).then(function (response) {
@@ -2074,6 +2110,22 @@ function mountPet(ctx) {
   /** Single entry point for both polling and the SSE stream. */
   function applySnapshot(snapshot) {
     if (disposed || !snapshot) return
+    // 服务端告别帧：插件 dispose 时在路由注销前经 SSE 推送（issue #34），
+    // 收到即自拆——这是「关闭插件时网页桌宠立即消失」的主路径，毫秒级。
+    if (snapshot.kind === 'plugin-gone') {
+      runPluginGoneTeardown('sse-plugin-gone')
+      return
+    }
+    // 代际检测（issue #34）：快照携带本代插件的 bootId。与首次见到的不一致
+    // = 自己是宿主重挂载后残留的上一代僵尸（停用→再启用时 DSH live patch
+    // 不会调用清理钩子），立即自拆，不等 404 连击。
+    if (snapshot.bootId) {
+      if (seenBootId == null) seenBootId = snapshot.bootId
+      else if (snapshot.bootId !== seenBootId) {
+        runPluginGoneTeardown('boot-changed')
+        return
+      }
+    }
     if (snapshot.kind === 'session-action') {
       if (snapshot.sessionId && snapshot.approve) approveSession(snapshot.sessionId)
       // 桌面悬浮窗点击气泡卡（approve=false）：仅跳转到该对话；完成卡顺带 ack。
@@ -2186,7 +2238,8 @@ function mountPet(ctx) {
       manualOverride = { mood: '03', until: Date.now() + 2000 }
     }
     if (snapshot.state !== 'IDLE') lastTurnEndShown = false
-    var wantHidden = snapshot.enabled === false || snapshot.hidden === true
+    // 宿主已停用插件（快照没有 petId 可显示）：整体隐藏，不再画贴纸
+    var wantHidden = snapshot.enabled === false || snapshot.hidden === true || snapshot.petId == null
     if (wantHidden && !hidden) setHidden(true)
     else if (!wantHidden && hidden) setHidden(false)
     if (wantHidden) return
@@ -2196,10 +2249,13 @@ function mountPet(ctx) {
     schedulePulseFallback(snapshot)
   }
 
-  function poll() {
-    if (disposed) return
-    fetchState().then(applySnapshot)
-  }
+  // /state 连续 404 的判定窗口：5 次 × STABLE_POLL_MS(3s) ≈ 15s。
+  // 太短会被「停用→立刻启用」之间的路由重挂窗口误杀（探针实测该窗口约 6s）；
+  // 太长则僵尸桌宠在停用后可见太久。404 = 路由被注销 = 插件已停用；
+  // 网络错误/连接拒绝 = 宿主网关重启，不算。
+  var stateGoneStreak = 0
+  var STATE_GONE_STREAK_LIMIT = 5
+  var seenBootId = null
 
   /** Subscribe to the host SSE stream; slow the poll down to a fallback. */
   function startStream() {
@@ -2220,6 +2276,12 @@ function mountPet(ctx) {
         return
       }
       applySnapshot(snapshot)
+    }
+    // 连接一断就立刻补一次轮询（issue #34）：插件停用时 hub.close() 掐断 SSE，
+    // onerror 即时触发，配合 404 藏匿把「关插件→桌宠消失」压到一个轮询周期内，
+    // 不必干等下一次 3s 定时轮询。瞬时网络抖动也只是多一次无害的 /state 请求。
+    source.onerror = function () {
+      if (!disposed) poll()
     }
     // EventSource reconnects on its own; the slower poll keeps convergence
     // (registry changes, dead streams) without spamming the server.
@@ -2461,10 +2523,27 @@ function mountPet(ctx) {
     if (!paused && displayedMood !== currentMood) showMood(currentMood)
   }
 
+  // 唯一的 poll（注意：此前文件里曾有两个同名 poll，后者覆盖前者，检测逻辑
+  // 因此成了死代码——issue #34 排障的实修教训，勿再复制 poll 定义）。
   function poll() {
     if (disposed) return
     fetchState().then(function (snapshot) {
-      applySnapshot(snapshot)
+      if (disposed) return
+      if (snapshot) {
+        stateGoneStreak = 0
+        applySnapshot(snapshot)
+        return
+      }
+      if (lastStateHttpStatus === 404) {
+        stateGoneStreak += 1
+        // 首次 404 就先藏匿（不等自毁）：告别帧没送到的兜底，插件停用时
+        // 桌宠秒隐。若是宿主路由重挂的瞬时 404，下一次 200 会按正常快照
+        // 流程（wantHidden=false → setHidden(false)）把桌宠显示回来。
+        if (!hidden) setHidden(true)
+        if (stateGoneStreak >= STATE_GONE_STREAK_LIMIT) runPluginGoneTeardown('state-404')
+        return
+      }
+      stateGoneStreak = 0
     })
   }
 
@@ -2804,7 +2883,14 @@ function mountPet(ctx) {
 
   sync()
 
-  ctx.effect(function () { return function () {
+  // 拆除一切：ctx.effect（宿主正常 dispose 时调用）+ onPluginGone（宿主 0.2
+  // 停用插件不调用 effect 清理钩子，由 /state 404 连击自毁触发，见文件头部
+  // plugin-gone teardown 说明）。两条路都必须幂等：remove/clear 对已清理状态
+  // 是 no-op，这里用 tornDown 兜底保证只跑一遍完整序列。
+  var tornDown = false
+  function teardownPetClient() {
+    if (tornDown) return
+    tornDown = true
     clearReportedCurrentSession()
     clearReportedHostTheme()
     disposed = true
@@ -2842,7 +2928,9 @@ function mountPet(ctx) {
     styleEl.remove()
     root.remove()
     menu.remove()
-  } })
+  }
+  ctx.effect(function () { return teardownPetClient })
+  onPluginGone(teardownPetClient)
 }
 
 /** ---------- plugin settings slots ---------- */
@@ -2854,6 +2942,13 @@ function RemielleBundleConfig(props) {
 }
 
 function registerSettingsSlots(ctx) {
+  // 宿主 0.2 停用插件不调用客户端 effect 清理钩子：slot 注销也挂到
+  // onPluginGone（/state 404 连击自毁），否则设置入口成为僵尸 UI。
+  var slotDisposers = []
+  var trackSlot = function (dispose) {
+    if (typeof dispose === 'function') slotDisposers.push(dispose)
+    return dispose
+  }
   var register = function (slots, scope) {
     if (!slots || typeof slots.inject !== 'function') return
     var effect = function (fn, label) {
@@ -2863,21 +2958,21 @@ function registerSettingsSlots(ctx) {
 
     // DSH 0.1.7+: a bundle owns its configuration on the Plugins page.
     effect(function () { return slots.inject('plugins.bundle.config', function () {
-      return slots.register({
+      return trackSlot(slots.register({
         name: 'plugins.bundle.config',
         key: 'dsh-pet-remielle',
         label: function () { return '蕾米埃尔桌宠' },
         inject: function () { return {} },
-      }, RemielleBundleConfig)
+      }, RemielleBundleConfig))
     }) }, 'dsh-pet-remielle: plugin page')
 
     // 设置页与插件详情页共用同一组件和配置，两个入口同时保留。
     effect(function () { return slots.inject('settings.section', function () {
-      return slots.register({
+      return trackSlot(slots.register({
         name: 'settings.section', id: 'pets', order: 25,
         label: function () { return '宠物管理' },
         inject: function () { return {} },
-      }, PetsSection)
+      }, PetsSection))
     }) }, 'dsh-pet-remielle: settings section')
   }
 
@@ -2889,6 +2984,11 @@ function registerSettingsSlots(ctx) {
   } else {
     register(ctx.slots)
   }
+  onPluginGone(function () {
+    while (slotDisposers.length) {
+      try { slotDisposers.pop()() } catch (e) { /* slot unregister must not block teardown */ }
+    }
+  })
 }
 
 /** ---------- plugin entry ---------- */

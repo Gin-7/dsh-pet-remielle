@@ -140,7 +140,9 @@ test('snapshot top-level fields follow config, desktop state and pet registry', 
   assert.equal(bare.opacity, 1)
   assert.equal(bare.locked, false)
   assert.equal(bare.bubble, true)
-  assert.equal(bare.petId, DEFAULT_PET_ID)
+  // petId 缺省 = 没有任何可显示宠物（resolveActive 返回 null）：快照省略该
+  // 字段，客户端据此整体隐藏——不再回落 DEFAULT_PET_ID（issue #34）。
+  assert.equal(bare.petId, undefined)
 
   assert.equal(snapshotWith({ latest: idle, config: { enabled: false } }).enabled, false)
   // 桌面窗窗口开着时宿主才报 desktopActive

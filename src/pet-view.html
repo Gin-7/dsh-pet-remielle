@@ -1227,9 +1227,10 @@
     }
     lockedNow = snapshot.locked === true
     syncCursor()
-    // 禁用桌宠或隐藏桌宠：隐藏宠物与气泡，并清掉主进程残留的命中矩形与菜单——
+    // 禁用桌宠或隐藏桌宠（含没有任何可显示宠物——快照 petId 缺省，issue #34
+    // 的宠物列表开关）：隐藏宠物与气泡，并清掉主进程残留的命中矩形与菜单——
     // 否则透明窗会在原区域继续拦截桌面点击（菜单开着时还会卡死 forceInteractive）
-    if (snapshot.enabled === false || snapshot.hidden === true) {
+    if (snapshot.enabled === false || snapshot.hidden === true || snapshot.petId == null) {
       imgEl.style.display = 'none'
       bubbleEl.style.display = 'none'
       bubbleStack.style.display = 'none'
