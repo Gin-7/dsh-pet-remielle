@@ -5,10 +5,10 @@
  * directory under assets/pets/<id>/ holding the six mood stickers
  * (01.gif .. 06.gif). The host scans those directories with fs and feeds the
  * discovery into `buildRegistry`, which merges it with the persisted pets
- * config and projects the registry view served to the settings page.
+ * config and projects the registry view served to the plugin configuration page.
  *
  * Adding a pet never touches code: drop six GIFs into assets/pets/<id>/,
- * then flip it on in Settings → 宠物管理.
+ * 然后在「设置 → 宠物管理」或插件详情页启用。
  */
 
 export const PET_MOODS = ['01', '02', '03', '04', '05', '06']
