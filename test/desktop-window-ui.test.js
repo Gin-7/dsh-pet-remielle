@@ -251,22 +251,22 @@ test('in-page and desktop right-click menus keep the same rows, order and write 
   assert.doesNotMatch(html, /menuRow\('用量模式'|menuRow\('切换到网页模式'/)
 })
 
-// 「重置位置」必须同时覆盖页面内坐标与桌面窗坐标，并在桌面端清掉渲染层
-// localStorage 兜底存档——否则下次启动渲染层会拿旧存档 moveTo，把重置撤销。
-test('reset position covers both position stores and clears the localStorage fallback', () => {
+// 「重置位置」要清掉页面内全部位置存档（锚点 + 两套旧存档）与桌面窗坐标，
+// 并清渲染层 localStorage 兜底（否则下次启动 moveTo 会把重置撤销）。
+test('reset position covers every position store and clears the localStorage fallback', () => {
   const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
   const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
   const main = readFileSync(new URL('../src/pet-window.cjs', import.meta.url), 'utf8')
   const preload = readFileSync(new URL('../src/pet-preload.cjs', import.meta.url), 'utf8')
-  const ALL_FOUR = /\{\s*posX: null,\s*posY: null,\s*desktopX: null,\s*desktopY: null\s*\}/
-  assert.match(core, ALL_FOUR, '网页端「重置位置」应清空四个坐标')
+  const ALL_POSITIONS = /\{\s*posX: null,\s*posY: null,\s*posRelX: null,\s*posRelY: null,\s*posAnchorX: null,\s*posGapX: null,\s*posAnchorY: null,\s*posGapY: null,\s*desktopX: null,\s*desktopY: null,?\s*\}/
+  assert.match(core, ALL_POSITIONS, '网页端「重置位置」应清空锚点、两套旧存档与桌面窗坐标')
   // 设置页那枚「重置位置」按钮曾经误打 /desktop/start，按下去反而拉起桌面窗
   assert.doesNotMatch(core, /DESKTOP_ENDPOINT \+ '\/start'/)
   assert.match(html, /localStorage\.removeItem\('dsh-pet-window-pos'\)/)
   assert.match(html, /window\.petBridge\.resetPosition\(\)/)
   assert.match(preload, /resetPosition: \(\) => ipcRenderer\.invoke\('reset-position'\)/)
   assert.match(main, /ipcMain\.handle\('reset-position'/)
-  assert.match(main, ALL_FOUR)
+  assert.match(main, ALL_POSITIONS)
   // 菜单仍开着时点重置：必须先作废 menuBase，否则 closeMenu → menu-restore
   // 会按它把窗口搬回重置前的位置
   assert.match(main, /ipcMain\.handle\('reset-position'[\s\S]{0,200}menuBase = null/)
