@@ -467,73 +467,80 @@ test('late interaction results do not resurrect a completed turn', () => {
   assert.deepEqual(reducer.states(), [])
 })
 
-// 标题折叠：宿主只在 session/title 事件里给标题，插件靠 snapshotEvents() 补历史。
-// 每行一个独立场景，失败时看断言消息即可。
-test('states() folds session titles from the host log', () => {
-  const fold = (sess, events) => {
-    const reducer = new PetReducer()
+// 标题来源：实时 session/title 事件，或注入的 resolveTitle（宿主 sessionTitle 服务）。
+// reducer 不再直接读会话日志——DSH 已弃用同步事件读，恢复会话的标题由服务覆盖。
+test('states() takes session titles from events and the injected resolver', () => {
+  const fold = (sess, events, resolveTitle) => {
+    const reducer = new PetReducer({ resolveTitle })
     collect(reducer, sess, events)
     return reducer.states()[0]?.title
   }
   assert.equal(
-    fold(session('s1', {
-      snapshotEvents: () => [{ type: 'session/title', data: { title: '审查提示框颜色与溢出问题' } }],
-    }), [event('turn/start')]),
+    fold(session('s1'), [event('turn/start')], () => '审查提示框颜色与溢出问题'),
     '审查提示框颜色与溢出问题',
-    '日志里的标题应被折取',
+    '宿主服务给出的标题应被采用',
   )
-  // 恢复的老会话：标题事件在插件加载前就写进日志，取最后一条
+  // 无标题（尚未生成）不产出
+  assert.equal(fold(session('s1'), [event('turn/start')], () => undefined), undefined)
+  // DSH 写入时已按 maxTitleBytes 规范化，插件不再二次截断
+  const long = '标'.repeat(120)
+  assert.equal(fold(session('s1'), [event('turn/start')], () => long), long, '标题应原样保留')
+  // 服务被隔离时访问会抛错，不能让整条消息链断掉
+  const reducer = new PetReducer({ resolveTitle: () => { throw new Error('boom') } })
+  const messages = collect(reducer, session('s1'), [event('turn/start')])
+  assert.ok(messages.length > 0)
+  assert.equal(reducer.states()[0].title, undefined, '解析器抛错时应降级为无标题')
+  // 不得回落到会话日志：snapshotEvents 里即使有标题也不读
   assert.equal(
     fold(session('s1', {
-      snapshotEvents: () => [
-        { type: 'session/title', data: { title: '旧标题' } },
-        { type: 'turn/start' },
-        { type: 'session/title', data: { title: '新标题' } },
-      ],
-    }), [event('turn/start'), event('step/start', {}, 2)]),
-    '新标题',
-    '取日志里最后一条标题',
-  )
-  // DSH 写入时已按 maxTitleBytes 规范化，插件不再二次截断——服务口径与日志口径
-  // 必须一致，否则同一会话的标题长度会随服务是否加载而变。
-  const long = '标'.repeat(120)
-  assert.equal(
-    fold(session('s1', { snapshotEvents: () => [{ type: 'session/title', data: { title: long } }] }), [event('turn/start')]),
-    long,
-    '标题应原样保留',
-  )
-  // session.events 不是宿主 API，不得据此产出标题
-  assert.equal(
-    fold(session('s1', { events: [{ type: 'session/title', data: { title: '不存在的内部字段' } }] }), [event('turn/start')]),
+      snapshotEvents: () => [{ type: 'session/title', data: { title: '日志里的标题' } }],
+    }), [event('turn/start')]),
     undefined,
-    '没有 snapshotEvents() 时不折叠',
+    '弃用的日志读取不得回归',
   )
-  // 宿主抛错不能让整条消息链断掉
-  const reducer = new PetReducer()
-  const messages = collect(reducer, session('s1', { snapshotEvents: () => { throw new Error('boom') } }), [event('turn/start')])
-  assert.ok(messages.length > 0)
-  assert.equal(reducer.states()[0].title, undefined, 'snapshotEvents 抛错时应降级为无标题')
 })
 
-test('states() folds the log once per session and keeps taking later titles', () => {
-  const reducer = new PetReducer()
+test('states() asks the title resolver once per session and keeps taking later titles', () => {
   let calls = 0
-  // 日志里始终没有 session/title（标题尚未生成）：折取不得每个事件都做一遍。
-  const sess = session('s1', { snapshotEvents: () => { calls++; return [{ type: 'turn/start' }] } })
+  const reducer = new PetReducer({ resolveTitle: () => { calls++; return undefined } })
+  const sess = session('s1')
   collect(reducer, sess, [
     event('turn/start'),
     event('step/start', {}, 2),
     event('tool/call', { callId: 'c1', name: 'read' }, 3),
   ])
-  assert.equal(calls, 1)
+  assert.equal(calls, 1, '同一会话只问一次')
 
-  // 折过一次之后，实时 session/title 事件仍要能覆盖
-  const live = new PetReducer()
-  const liveSess = session('s1', { snapshotEvents: () => [{ type: 'session/title', data: { title: '旧标题' } }] })
+  // 解析过一次之后，实时 session/title 事件仍要能覆盖
+  const live = new PetReducer({ resolveTitle: () => '旧标题' })
+  const liveSess = session('s1')
   collect(live, liveSess, [event('turn/start')])
   assert.equal(live.states()[0].title, '旧标题')
   collect(live, liveSess, [event('session/title', { title: '改过的标题' }, 2)])
   assert.equal(live.states()[0].title, '改过的标题')
+})
+
+// 标题服务不可用（返回 null）时保留重试：不能置 titleFolded，否则服务晚挂载/恢复后
+// 标题会永久为空。服务在但没有标题（undefined）则只问一次，避免每条事件折日志。
+test('states() retries the title resolver while the service is unavailable', () => {
+  let calls = 0
+  const reducer = new PetReducer({ resolveTitle: () => { calls++; return null } })
+  collect(reducer, session('s1'), [
+    event('turn/start'),
+    event('step/start', {}, 2),
+    event('tool/call', { callId: 'c1', name: 'read' }, 3),
+  ])
+  assert.equal(calls, 3, '服务不可用时每条事件都应重试')
+  assert.equal(reducer.states()[0].title, undefined)
+
+  let n = 0
+  const late = new PetReducer({ resolveTitle: () => (++n < 3 ? null : '晚到的标题') })
+  collect(late, session('s2'), [
+    event('turn/start'),
+    event('step/start', {}, 2),
+    event('tool/call', { callId: 'c2', name: 'read' }, 3),
+  ])
+  assert.equal(late.states()[0].title, '晚到的标题', '服务恢复后应补上标题')
 })
 
 // 牌叠顺序：需要人处理的会话（审批 > 提问 > ERROR）压过后台工作流，

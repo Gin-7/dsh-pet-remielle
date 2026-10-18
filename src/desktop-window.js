@@ -169,9 +169,9 @@ export class DesktopWindow {
     this.logger = logger
     this.spawnImpl = spawnImpl
     this.onExit = onExit
-    // DSH Desktop 宿主的 desktopBrowserAccess 渲染进程准入头：存在时经 env
-    // 交给 pet-window.cjs 自注入到同源请求（否则宿主未开「浏览器访问」时
-    // 所有请求 403 "forbidden"，桌面窗只见 forbidden 字样）。见该文件注释。
+    // 可选的渲染进程准入头：仅私有/下游 DSH Desktop 构建会提供（公开 DSH 没有
+    // desktopBrowserAccess 服务）。存在时经 env 交给 pet-window.cjs 自注入到
+    // 同源请求；缺失时窗口按普通浏览器直连宿主，公开宿主本就放行。
     this.rendererHeader = rendererHeader && typeof rendererHeader.name === 'string' && rendererHeader.name
       && typeof rendererHeader.value === 'string' && rendererHeader.value
       ? { name: rendererHeader.name, value: rendererHeader.value }

@@ -2,7 +2,7 @@ import { Readable } from 'node:stream'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { apply, applyCompletionAck, clientConfig, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createConfigHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
+import { apply, applyCompletionAck, clientConfig, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createConfigHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID, PET_ID_RE } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -201,6 +201,25 @@ test('config route keeps platformToken write-only while preserving patch updates
   remoteRequest.headers.host = 'evil.example:3080'
   await handler(remoteRequest, remoteHost)
   assert.equal(remoteHost.status, 403)
+})
+
+// DSH 0.2.1 只允许具体绑定字面量：部署绑 LAN IP 时 127.0.0.1 不监听，本机
+// 桌面窗必须能经该地址访问只读端点；跨机客户端仍被拒（严格回环留给更新端点）。
+test('host endpoints admit the bind address only for this machine', async () => {
+  const handler = createConfigHandler({ get: () => ({}), update: async () => {} })
+  const local = request('GET')
+  local.headers.host = '192.168.1.5:3080'
+  local.socket = { remoteAddress: '192.168.1.5', localAddress: '192.168.1.5' }
+  const localRes = responseRecorder()
+  await handler(local, localRes)
+  assert.equal(localRes.status, 200)
+
+  const remote = request('GET')
+  remote.headers.host = '192.168.1.5:3080'
+  remote.socket = { remoteAddress: '192.168.1.20', localAddress: '192.168.1.5' }
+  const remoteRes = responseRecorder()
+  await handler(remote, remoteRes)
+  assert.equal(remoteRes.status, 403)
 })
 
 test('snapshot exposes showBubble=false and pulse expiry', () => {

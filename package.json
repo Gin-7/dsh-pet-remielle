@@ -23,7 +23,8 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22.19"
+    "node": ">=22.19",
+    "dsh": ">=0.1.2-alpha.1 <0.3.0-0"
   },
   "scripts": {
     "build:client": "node scripts/build-client.mjs",

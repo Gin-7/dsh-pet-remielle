@@ -223,3 +223,143 @@ test('disposed client ignores later focus and visibility events', async () => {
   })
   assert.equal(staleRequests.length, 0, 'disposed client must not report or acknowledge its old session')
 })
+
+// 外观滑块/滚轮：本地预览 + 尾值合并写入 + 快照让位。
+// 背景：原实现每个 input/wheel 都发一次 PATCH；单次配置写入 160–500ms 且服务端
+// 串行，拖满一次会排数秒，期间旧快照会把乐观预览打回旧值——用户看到「先到目标
+// → 回原大小 → 再随排队写入逐级变大」。
+test('appearance sliders preview locally, coalesce writes and ignore stale snapshots', () => {
+  const harness = createHarness()
+  harness.send({ ...base, scale: 1, opacity: 1 })
+  const dock = harness.elements.find((el) => el.title === '拖动我 · 点击互动 · 右键菜单')
+  assert.ok(dock, 'dock missing')
+  const open = dock.listeners.get('contextmenu')?.[0]
+  assert.ok(open, 'dock contextmenu missing')
+  open({ preventDefault() {}, stopPropagation() {} })
+
+  const sliders = harness.elements.filter((el) => el.className === 'rm2-pet-menu-slider')
+  assert.equal(sliders.length, 2, 'scale + opacity sliders')
+  const scale = sliders[0]
+  const img = harness.elements.find((el) => el.tag === 'img')
+  const configWrites = () => harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/config'))
+
+  // 两次快速输入：图案立刻到 180%，但还没有发请求
+  scale.value = '1.5'
+  scale.listeners.get('input')[0]({})
+  scale.value = '1.8'
+  scale.listeners.get('input')[0]({})
+  assert.equal(img.style.width, Math.round(180 * 1.8) + 'px', 'local preview applies immediately')
+  assert.equal(configWrites().length, 0, 'writes must be coalesced, not one per input')
+
+  harness.flushTitleTimers()
+  assert.equal(configWrites().length, 1, 'one trailing write')
+  assert.deepEqual(JSON.parse(configWrites()[0].options.body), { scale: 1.8 })
+
+  // 服务器还没确认：旧快照不得把宠物打回旧尺寸
+  harness.send({ ...base, scale: 1 })
+  assert.equal(img.style.width, Math.round(180 * 1.8) + 'px', 'stale snapshot must not shrink the pet')
+
+  // 快照与本地一致后让位；之后跟随服务器值
+  harness.send({ ...base, scale: 1.8 })
+  harness.send({ ...base, scale: 1.2 })
+  assert.equal(img.style.width, Math.round(180 * 1.2) + 'px', 'hold clears once confirmed')
+})
+
+test('wheel zoom accumulates locally instead of re-reading the stale snapshot', () => {
+  const harness = createHarness()
+  harness.send({ ...base, scale: 1 })
+  const dock = harness.elements.find((el) => el.title === '拖动我 · 点击互动 · 右键菜单')
+  const wheel = dock.listeners.get('wheel')?.[0]
+  assert.ok(wheel, 'dock wheel missing')
+  for (let i = 0; i < 3; i++) wheel({ preventDefault() {}, deltaY: -1 })
+  const img = harness.elements.find((el) => el.tag === 'img')
+  assert.equal(img.style.width, Math.round(180 * 1.15) + 'px', 'each notch must build on the local pending value')
+
+  harness.flushTitleTimers()
+  const writes = harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/config'))
+  assert.equal(writes.length, 1, 'three notches coalesce into one write')
+  assert.deepEqual(JSON.parse(writes[0].options.body), { scale: 1.15 })
+})
+
+// 空闲自动收起：空闲超过窗口期后气泡缩向宠物头部淡出；单击宠物展开；
+// 活动会话到达时自动展开。轮询每 0.8/3s 一次，计时不能被快照反复重置。
+test('idle bubble collapses, expands on pet click, and re-expands on activity', () => {
+  const harness = createHarness()
+  const idleSession = { sessionId: 's1', state: 'IDLE', message: '没有任务，我先眯一会儿', detail: 'dsh · 待机中', updatedAt: 1 }
+  harness.send({ ...base, state: 'IDLE', sessions: [idleSession] })
+  const stack = harness.elements.find((el) => el.className === 'rm2-pet-bubbles')
+  assert.ok(stack, 'bubble stack missing')
+  const collapsed = () => String(stack.className).includes('bubble-collapsed')
+
+  assert.equal(collapsed(), false, 'bubble starts expanded')
+  harness.flushTitleTimers()
+  assert.equal(collapsed(), true, 'idle bubble collapses after the idle window')
+
+  const dock = harness.elements.find((el) => el.title === '拖动我 · 点击互动 · 右键菜单')
+  assert.ok(dock, 'dock missing')
+  harness.click(dock)
+  assert.equal(collapsed(), false, 'clicking the pet expands the bubble')
+
+  harness.flushTitleTimers()
+  assert.equal(collapsed(), true, 'expanded idle bubble collapses again after the window')
+  harness.send({
+    ...base,
+    state: 'WORKING',
+    sessions: [{ ...idleSession, state: 'WORKING', phase: 'tool-call', message: '正在干活' }],
+  })
+  assert.equal(collapsed(), false, 'an active session auto-expands the bubble')
+})
+
+// 空闲收起受设置控制：bubbleIdleSec=0 表示常驻（永不收起）。
+test('idle collapse honours the permanent bubbleIdleSec value', () => {
+  const harness = createHarness()
+  const idleSession = { sessionId: 's1', state: 'IDLE', message: '没有任务，我先眯一会儿', detail: 'dsh · 待机中', updatedAt: 1 }
+  harness.send({ ...base, state: 'IDLE', bubbleIdleSec: 0, sessions: [idleSession] })
+  const stack = harness.elements.find((el) => el.className === 'rm2-pet-bubbles')
+  assert.ok(stack, 'bubble stack missing')
+  harness.flushTitleTimers()
+  assert.equal(String(stack.className).includes('bubble-collapsed'), false, 'disabled idle-hide must keep the bubble open')
+})
+
+// 消息气泡滑块是唯一的显隐+收起控件：0=关闭、最右=常驻、中间=收起秒数；
+// 下方保留原有的状态/用量开关与用量模式块；不可见时只停计时，不顺手展开。
+test('message bubble slider unifies visibility and idle timeout', () => {
+  const src = readFileSync(CLIENT_CORE, 'utf8')
+  assert.match(src, /0 = 关闭（状态与用量气泡都隐藏）；中间为空闲收起秒数；最右 = 常驻。/, 'master slider must explain 0 / middle / max')
+  // 写回行为由 test/settings-section.test.js 用假 React 直接驱动滑块断言，
+  // 这里只钉用户可见文案与两端的结构契约，避免重命名/改注释导致误报。
+  assert.match(src, /label: '状态', hint: '在气泡中显示会话状态（阶段\/待办\/进度）。'/, 'status switch keeps its explanation')
+  assert.match(src, /label: '用量', hint: 'DeepSeek 余额与今日消耗（需配置 DEEPSEEK_API_KEY）'/, 'usage switch keeps its explanation')
+  assert.doesNotMatch(src, /label: '空闲收起'/, 'idle timeout lives in the master slider')
+  assert.match(src, /if \(!visible\) \{\n      \/\/ 气泡暂时不可见[\s\S]{0,160}?clearBubbleIdleTimer\(\)\n      return/, 'hidden bubble must only stop the timer')
+})
+
+// 用量页只有单气泡可见、牌叠是 display:none：空闲计时器必须按「当前可见的气泡」
+// 判断，否则永远在 bubbleStack 的判空处 return，收起功能对用量页失效。
+test('idle collapse also fires on the usage-only page', () => {
+  const harness = createHarness()
+  const idleSession = { sessionId: 's1', state: 'IDLE', message: '没有任务，我先眯一会儿', detail: 'dsh · 待机中', updatedAt: 1 }
+  harness.send({
+    ...base,
+    state: 'IDLE',
+    showBubbleStatus: false,
+    showBubbleUsage: true,
+    bubbleIdleSec: 30,
+    sessions: [idleSession],
+  })
+  const single = harness.elements.find((el) => typeof el.className === 'string'
+    && el.className.includes('rm2-pet-bubble') && el.className.includes('top'))
+  assert.ok(single, 'usage single bubble missing')
+  harness.flushTitleTimers()
+  assert.equal(String(single.className).includes('bubble-collapsed'), true, 'usage bubble must collapse on idle')
+})
+
+// 120 是旧 schema 的边界值：与 0 一样按常驻处理，不应按 120 秒计时。
+test('bubbleIdleSec 120 is treated as permanent', () => {
+  const harness = createHarness()
+  const idleSession = { sessionId: 's1', state: 'IDLE', message: '没有任务，我先眯一会儿', detail: 'dsh · 待机中', updatedAt: 1 }
+  harness.send({ ...base, state: 'IDLE', bubbleIdleSec: 120, sessions: [idleSession] })
+  const stack = harness.elements.find((el) => el.className === 'rm2-pet-bubbles')
+  harness.flushTitleTimers()
+  assert.equal(String(stack.className).includes('bubble-collapsed'), false, '120 must mean permanent')
+})
