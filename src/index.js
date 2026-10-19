@@ -695,7 +695,7 @@ export function dropSubagentCompletions(completionQueue, isSubagentSession) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getBootId, getDesktopActive, getWebClients, getActivePet, getStates, getCompletions, getCurrent, getTheme, getSessionTitle }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getBootId, getDesktopActive, getWebClients, getActivePet, getStates, getCompletions, getCurrent, getTheme, getSessionTitle, getProject }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const bootIdOf = typeof getBootId === 'function' ? getBootId : () => undefined
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
@@ -706,6 +706,22 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
   const currentOf = typeof getCurrent === 'function' ? getCurrent : () => undefined
   const themeOf = typeof getTheme === 'function' ? getTheme : () => ''
   const titleOf = typeof getSessionTitle === 'function' ? getSessionTitle : () => undefined
+  const projectOf = typeof getProject === 'function' ? getProject : () => undefined
+  // 工作区标题（用户可改名）由宿主注入；没有则保留 reducer 的 cwd 回退值。
+  const withProject = (entry) => {
+    if (!entry) return entry
+    const sid = entry.targetSessionId || entry.sessionId
+    const project = sid ? projectOf(sid) : undefined
+    if (!project || project === entry.project) return entry
+    const next = { ...entry, project }
+    // reducer 早已把旧的 cwd 名拼进 detail 首段（`project · 阶段`）。只换 project
+    // 字段会出现「悬停提示/背板 tip 是工作区名、卡片第二行还是旧名」，故同步替换。
+    const prefix = typeof entry.project === 'string' && entry.project ? entry.project + ' · ' : ''
+    if (prefix && typeof entry.detail === 'string' && entry.detail.startsWith(prefix)) {
+      next.detail = project + ' · ' + entry.detail.slice(prefix.length)
+    }
+    return next
+  }
   const withTitle = (entry) => {
     if (!entry || entry.title) return entry
     const sid = entry.targetSessionId || entry.sessionId
@@ -794,6 +810,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         planReview: false,
       }))
     }
+    for (let i = 0; i < sessions.length; i += 1) sessions[i] = withProject(sessions[i])
     const currentId = currentOf() || undefined
     sessions.sort((left, right) => compareSessions(left, right, currentId))
     return {
@@ -1156,6 +1173,41 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   // 网页端上报的当前会话：按标签页独立 TTL，宿主退出/页面崩溃后不残留僵尸 id。
   // 快照与「当前会话失败即已读」判定共用这一个口径。
   const currentSessionNow = () => currentSessionStore.current()
+  // 工作区标题来自宿主 workspaceRegistry（用户可在侧边栏改名），不随会话事件
+  // 下发；按会话 cwd 的规范化路径映射，并做短 TTL 缓存，改名后几秒内生效。
+  const WORKSPACE_TITLE_TTL_MS = 3000
+  let workspaceTitles = new Map()
+  let workspaceTitlesAt = 0
+  let workspaceTitlesLoading = false
+  const workspaceKey = (path) => String(path || '').replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase()
+  const refreshWorkspaceTitles = () => {
+    const now = Date.now()
+    if (workspaceTitlesLoading || now - workspaceTitlesAt < WORKSPACE_TITLE_TTL_MS) return
+    workspaceTitlesAt = now
+    let registry
+    try { registry = ctx.get('workspaceRegistry') } catch { registry = undefined }
+    if (!registry || typeof registry.list !== 'function') return
+    workspaceTitlesLoading = true
+    Promise.resolve()
+      .then(() => registry.list())
+      .then((list) => {
+        const next = new Map()
+        for (const workspace of list || []) {
+          if (!workspace || typeof workspace.path !== 'string' || !workspace.title) continue
+          next.set(workspaceKey(workspace.path), String(workspace.title))
+        }
+        workspaceTitles = next
+      })
+      .catch(() => {})
+      .finally(() => { workspaceTitlesLoading = false })
+  }
+  const workspaceTitleOf = (sessionId) => {
+    refreshWorkspaceTitles()
+    let cwd
+    try { cwd = ctx.sessions?.get?.(sessionId)?.header?.cwd } catch { cwd = undefined }
+    if (!cwd) return undefined
+    return workspaceTitles.get(workspaceKey(cwd))
+  }
   const serveState = createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
@@ -1170,6 +1222,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getCurrent: () => currentSessionNow(),
     getTheme: () => (Date.now() - reportedHostThemeAt < HOST_THEME_TTL_MS ? reportedHostTheme : ''),
     getSessionTitle: (sessionId) => readSessionTitle(ctx, sessionId),
+    getProject: (sessionId) => workspaceTitleOf(sessionId),
   })
 
   const hub = createStreamHub({

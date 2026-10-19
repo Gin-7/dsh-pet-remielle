@@ -23,6 +23,8 @@
 - 用量气泡宽度改用与状态牌叠相同的 `bubbleZoomFor` 口径（本地未确认 scale + 高度收紧），不再在缩放拖动期间与另一页宽度不一致。
 - 桌面窗位置回写遇到 `AbortError`（窗口销毁/宿主退出导致的在途请求取消）时降级为静默，不再打错误日志。
 - 修复桌面悬浮窗偶发「已启动但永远不可见」（终端里伴随 `dsh-pet-window: persist position failed: This operation was aborted`，设置里关开一次才恢复）：窗口原先只靠透明窗的 `ready-to-show` 显示，该事件依赖首帧绘制，隐藏的透明窗在宠物图尚未解码、首帧全透明时可能一直不触发，窗口就停在 `show:false`；而此时宿主已把 `desktopActive` 置 true 并隐藏页面宠物，于是两端皆空。现改为 `ready-to-show` / `did-finish-load` / 3 秒硬超时三处共用一个幂等 `showWindow()` 兜底，任一先到即显示。
+- 修复工作区在侧边栏改名后气泡仍显示旧目录名：项目名改取宿主工作区注册表的标题（按会话 cwd 规范化路径映射，3 秒 TTL 缓存），并同步改写卡片第二行的项目前缀；宿主没有该注册表时保留 cwd 回退。
+- 修复会话堆叠角标 `+N` 的底部被背板圆角裁切：角标右移到圆角起点之外（`right:32px`），行高补到 10px，数字不再缺角。
 
 ### Notes
 - 核对结论：公开 DSH 树（含 0.2.1-rc.2 全部 tag、分支与 `git log --all`）没有 `desktopBrowserAccess` 服务。保留的可选渲染进程准入头探测只为兼容私有/下游 Desktop 构建；公开 Desktop 的转发层会删掉 `Origin`/`Sec-Fetch-Site` 并注入宿主 cookie，本插件端点可直接访问。

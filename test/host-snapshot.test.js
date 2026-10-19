@@ -114,6 +114,36 @@ test('snapshot fills session title from getSessionTitle when missing', () => {
   assert.equal(snapshot.sessions[0].project, 'dsh-pet-remielle')
 })
 
+// 工作区改名后，气泡的项目名要来自宿主 workspaceRegistry 的标题；没有该服务
+// （或路径没匹配上）时保留 reducer 的 cwd 回退值。
+test('snapshot prefers the workspace title over the cwd-derived project', () => {
+  const base = {
+    getLatest: () => idle,
+    getPulse: () => null,
+    getConfig: () => ({}),
+    getStates: () => [{
+      sessionId: 's1',
+      state: PetState.THINKING,
+      mood: '04',
+      message: '让我想想最优解是什么',
+      project: 'P-ZNZB-260604_716_YangZhou_1G',
+      // reducer 已把旧项目名拼进 detail 首段：覆盖 project 时必须同步改写前缀，
+      // 否则悬停提示是工作区名、卡片第二行还是旧 cwd 名。
+      detail: 'P-ZNZB-260604_716_YangZhou_1G · 分析阶段',
+      updatedAt: 1,
+    }],
+  }
+  const renamed = createStateSnapshot({
+    ...base,
+    getProject: (sessionId) => sessionId === 's1' ? '716_YangZhou_1G' : undefined,
+  })()
+  assert.equal(renamed.sessions[0].project, '716_YangZhou_1G')
+  assert.equal(renamed.sessions[0].detail, '716_YangZhou_1G · 分析阶段')
+  const fallback = createStateSnapshot(base)()
+  assert.equal(fallback.sessions[0].project, 'P-ZNZB-260604_716_YangZhou_1G')
+  assert.equal(fallback.sessions[0].detail, 'P-ZNZB-260604_716_YangZhou_1G · 分析阶段')
+})
+
 // 快照顶层字段：配置、桌面窗状态、宠物 id、网页订阅数都在这里定型。
 // 缺省值与覆盖值放在一起断言，避免分散在十条一行的用例里。
 test('snapshot top-level fields follow config, desktop state and pet registry', () => {
