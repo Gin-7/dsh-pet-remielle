@@ -465,6 +465,28 @@ test('a bare auto-review prefix falls back to the tool command', () => {
   assert.ok(waiting.detail.includes('pnpm test'), 'empty reason must fall back to the command')
 })
 
+test('auto-review prefix stripping does not depend on the tool name', () => {
+  const cases = [
+    ['bash', 'Auto review denied tool "bash": 需要写文件', '需要写文件'],
+    ['mcp__openviking__read', 'Auto review denied tool "mcp__openviking__read": 需要读取资源: /path', '需要读取资源: /path'],
+    ['read', 'Auto review 拒绝了此调用：需要确认', '需要确认'],
+    ['ops_bash', 'Auto review denied tool "ops_bash"', 'pnpm test'],
+  ]
+  for (const [toolName, reason, expected] of cases) {
+    const reducer = new PetReducer()
+    const sess = session('s1', { header: { cwd: 'C:\\work\\dsh-pet-remielle' } })
+    const messages = collect(reducer, sess, [
+      event('turn/start'),
+      event('tool/call', { callId: 'c', name: toolName, arguments: JSON.stringify({ command: 'pnpm test' }) }, 2),
+      event('approval/asked', { id: 'a1', toolName, callId: 'c', reason }, 3),
+    ])
+    const waiting = messages.filter((m) => m.kind === PetMessageKind.STATE).find((m) => m.phase === 'approval')
+    assert.ok(waiting, toolName + ' approval wait missing')
+    assert.ok(!waiting.detail.includes('Auto review'), toolName + ' leaked the prefix: ' + waiting.detail)
+    assert.ok(waiting.detail.includes(expected), toolName + ' expected "' + expected + '" in ' + waiting.detail)
+  }
+})
+
 test('concurrent question and approval waits retain their independent actions', () => {
   const reducer = new PetReducer()
   const sess = session()

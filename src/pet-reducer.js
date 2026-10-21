@@ -133,9 +133,12 @@ function approvalReason(reason) {
   // 去掉 auto-review 的固定前缀：`Auto review denied tool "ops_bash": 真正原因`。
   // 这段前缀在气泡里只挤占空间，工具名也不提供判断信息（冒号之后才是原因）；
   // 只有前缀、没有原因时返回空串，交给 approvalContent 回落到命令/描述。
-  const autoReview = value.match(/^auto review (?:denied|approved|blocked|flagged)\b[^:]*:\s*(.*)$/iu)
+  // 不依赖具体工具名与动词：任何以 Auto review 开头的机器前缀，只保留第一个冒号
+  // （半角或全角）之后的内容；没有冒号（如「Auto review denied tool "x"」或中文
+  // 「Auto review 拒绝了此调用。」）就整段丢弃，交给下面的命令/描述回落。
+  const autoReview = value.match(/^auto review\b[^:：]*[:：]\s*(.*)$/iu)
   if (autoReview) value = autoReview[1].trim()
-  else if (/^auto review (?:denied|approved|blocked|flagged)\b/iu.test(value)) value = ''
+  else if (/^auto review\b/iu.test(value)) value = ''
   if (!value) return ''
   const match = value.match(/^escalate sandbox to \S+:\s*(.+)$/iu)
   return match ? match[1].trim() : value
