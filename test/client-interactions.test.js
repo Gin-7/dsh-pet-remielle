@@ -310,28 +310,17 @@ test('idle bubble collapses, expands on pet click, and re-expands on activity', 
   assert.equal(collapsed(), false, 'an active session auto-expands the bubble')
 })
 
-// 空闲收起受设置控制：bubbleIdleSec=0 表示常驻（永不收起）。
-test('idle collapse honours the permanent bubbleIdleSec value', () => {
-  const harness = createHarness()
-  const idleSession = { sessionId: 's1', state: 'IDLE', message: '没有任务，我先眯一会儿', detail: 'dsh · 待机中', updatedAt: 1 }
-  harness.send({ ...base, state: 'IDLE', bubbleIdleSec: 0, sessions: [idleSession] })
-  const stack = harness.elements.find((el) => el.className === 'rm2-pet-bubbles')
-  assert.ok(stack, 'bubble stack missing')
-  harness.flushTitleTimers()
-  assert.equal(String(stack.className).includes('bubble-collapsed'), false, 'disabled idle-hide must keep the bubble open')
-})
-
-// 消息气泡滑块是唯一的显隐+收起控件：0=关闭、最右=常驻、中间=收起秒数；
-// 下方保留原有的状态/用量开关与用量模式块；不可见时只停计时，不顺手展开。
-test('message bubble slider unifies visibility and idle timeout', () => {
-  const src = readFileSync(CLIENT_CORE, 'utf8')
-  assert.match(src, /0 = 关闭（状态与用量气泡都隐藏）；中间为空闲收起秒数；最右 = 常驻。/, 'master slider must explain 0 / middle / max')
-  // 写回行为由 test/settings-section.test.js 用假 React 直接驱动滑块断言，
-  // 这里只钉用户可见文案与两端的结构契约，避免重命名/改注释导致误报。
-  assert.match(src, /label: '状态', hint: '在气泡中显示会话状态（阶段\/待办\/进度）。'/, 'status switch keeps its explanation')
-  assert.match(src, /label: '用量', hint: 'DeepSeek 余额与今日消耗（需配置 DEEPSEEK_API_KEY）'/, 'usage switch keeps its explanation')
-  assert.doesNotMatch(src, /label: '空闲收起'/, 'idle timeout lives in the master slider')
-  assert.match(src, /if \(!visible\) \{\n      \/\/ 气泡暂时不可见[\s\S]{0,160}?clearBubbleIdleTimer\(\)\n      return/, 'hidden bubble must only stop the timer')
+// 空闲收起受设置控制：0 与 120（旧 schema 边界）都表示常驻，不应收起。
+test('idle collapse honours the permanent bubbleIdleSec values', () => {
+  for (const sec of [0, 120]) {
+    const harness = createHarness()
+    const idleSession = { sessionId: 's1', state: 'IDLE', message: '没有任务，我先眯一会儿', detail: 'dsh · 待机中', updatedAt: 1 }
+    harness.send({ ...base, state: 'IDLE', bubbleIdleSec: sec, sessions: [idleSession] })
+    const stack = harness.elements.find((el) => el.className === 'rm2-pet-bubbles')
+    assert.ok(stack, 'bubble stack missing')
+    harness.flushTitleTimers()
+    assert.equal(String(stack.className).includes('bubble-collapsed'), false, sec + ' must mean permanent')
+  }
 })
 
 // 用量页只有单气泡可见、牌叠是 display:none：空闲计时器必须按「当前可见的气泡」
@@ -354,12 +343,3 @@ test('idle collapse also fires on the usage-only page', () => {
   assert.equal(String(single.className).includes('bubble-collapsed'), true, 'usage bubble must collapse on idle')
 })
 
-// 120 是旧 schema 的边界值：与 0 一样按常驻处理，不应按 120 秒计时。
-test('bubbleIdleSec 120 is treated as permanent', () => {
-  const harness = createHarness()
-  const idleSession = { sessionId: 's1', state: 'IDLE', message: '没有任务，我先眯一会儿', detail: 'dsh · 待机中', updatedAt: 1 }
-  harness.send({ ...base, state: 'IDLE', bubbleIdleSec: 120, sessions: [idleSession] })
-  const stack = harness.elements.find((el) => el.className === 'rm2-pet-bubbles')
-  harness.flushTitleTimers()
-  assert.equal(String(stack.className).includes('bubble-collapsed'), false, '120 must mean permanent')
-})

@@ -115,9 +115,8 @@ test('readSessionTitle reads only the sessionTitle service', () => {
   ]) {
     assert.equal(readSessionTitle(ctx, 's1'), undefined, '不得回落到会话日志')
   }
-})
 
-test('readSessionTitle is undefined without a live session', () => {
+  // 没有活会话（id 不存在 / context 失活）同样返回 undefined
   assert.equal(readSessionTitle({ sessions: { get: () => undefined } }, 'nope'), undefined)
   assert.equal(readSessionTitle({ get sessions() { throw new Error('inactive context') } }, 's1'), undefined)
 })

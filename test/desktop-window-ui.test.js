@@ -353,10 +353,10 @@ test('host theme uplink is wired end to end between web client and host', () => 
   assert.match(core, /function clearReportedHostTheme\(\)/)
 })
 
-// 两端外观调整必须保持同一套「本地预览 + 尾值合并 + 快照让位」契约：只改一端
-// 会重新出现「先到目标 → 回原大小 → 逐级放大」，而滑块/滚轮行为在两端是同一
-// 功能。这里做源码级钉住（桌面端没有 DOM 测试环境）。
-test('both clients share the visual preview/coalesce/hold contract', () => {
+// 两端外观与空闲收起必须同构：只改一端会重新出现「先到目标 → 回原大小 →
+// 逐级放大」或「一端收起另一端不收」。桌面端没有 DOM 测试环境，这里做源码级
+// 钉住（行为本身由 client-interactions 的用例覆盖）。
+test('both clients share the visual and idle contract', () => {
   const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
   const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
   for (const [name, src] of [['client.core.js', core], ['pet-view.html', html]]) {
@@ -374,12 +374,7 @@ test('both clients share the visual preview/coalesce/hold contract', () => {
   assert.match(html, /for \(const node of \[bubbleStack, bubbleEl\]\)/, 'desktop must collapse the usage bubble too')
   assert.match(core, /syncBubbleIdle\(snapshot, snapshot\.showBubble !== false\)/, 'web balance page must arm idle sync')
   assert.match(html, /syncBubbleIdle\(snapshot, snapshot\.showBubble !== false && \(show \|\| bothOn\)\)/, 'desktop balance page must arm idle sync')
-})
-
-// 空闲收起/单击展开在两端必须同构（桌面端没有 DOM 测试环境，做源码级钉住）。
-test('both clients implement the idle bubble collapse contract', () => {
-  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
-  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  // 空闲收起/单击展开，以及「不可见时只停计时、不顺手展开」
   for (const [name, src] of [['client.core.js', core], ['pet-view.html', html]]) {
     assert.match(src, /var bubbleIdleMs = 60000/, name + ' must define the idle window default')
     assert.match(src, /snapshot\.bubbleIdleSec/, name + ' must honour the configured idle seconds')
@@ -388,5 +383,6 @@ test('both clients implement the idle bubble collapse contract', () => {
     assert.match(src, /__bubbleTitle\.bubbleNeedsEye/, name + ' must share the activity detector')
     assert.match(src, /function expandBubble\(/, name + ' must expand on demand')
     assert.match(src, /if \(bubbleCollapsed\) \{ expandBubble\(\);? ?/, name + ' click must expand first')
+    assert.match(src, /if \(!visible\) \{[\s\S]{0,200}?clearBubbleIdleTimer\(\)[\s\S]{0,120}?return/, name + ' hidden bubble must only stop the timer')
   }
 })
