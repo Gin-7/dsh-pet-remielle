@@ -427,6 +427,44 @@ test('approval/asked -> WAITING, approval/decided restores WORKING', () => {
   assert.equal(tailStates.at(-1).state, PetState.THINKING)
 })
 
+test('approval detail drops the fixed auto-review prefix', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', { header: { cwd: 'C:\\work\\dsh-pet-remielle' } })
+  const messages = collect(reducer, sess, [
+    event('turn/start'),
+    event('tool/call', { callId: 'c', name: 'ops_bash', arguments: JSON.stringify({ command: 'pnpm test' }) }, 2),
+    event('approval/asked', {
+      id: 'a1',
+      toolName: 'ops_bash',
+      callId: 'c',
+      reason: 'Auto review denied tool "ops_bash": 该命令会在 C:\\ 根目录写文件',
+    }, 3),
+  ])
+  const waiting = messages.filter((m) => m.kind === PetMessageKind.STATE).find((m) => m.phase === 'approval')
+  assert.ok(waiting, 'approval wait missing')
+  assert.ok(waiting.detail.includes('该命令会在'), 'the reason after the prefix must survive')
+  assert.ok(!waiting.detail.includes('Auto review'), 'the fixed auto-review prefix must be stripped')
+})
+
+test('a bare auto-review prefix falls back to the tool command', () => {
+  const reducer = new PetReducer()
+  const sess = session('s1', { header: { cwd: 'C:\\work\\dsh-pet-remielle' } })
+  const messages = collect(reducer, sess, [
+    event('turn/start'),
+    event('tool/call', { callId: 'c', name: 'ops_bash', arguments: JSON.stringify({ command: 'pnpm test' }) }, 2),
+    event('approval/asked', {
+      id: 'a1',
+      toolName: 'ops_bash',
+      callId: 'c',
+      reason: 'Auto review denied tool "ops_bash"',
+    }, 3),
+  ])
+  const waiting = messages.filter((m) => m.kind === PetMessageKind.STATE).find((m) => m.phase === 'approval')
+  assert.ok(waiting, 'approval wait missing')
+  assert.ok(!waiting.detail.includes('Auto review'), 'bare prefix must not leak into the bubble')
+  assert.ok(waiting.detail.includes('pnpm test'), 'empty reason must fall back to the command')
+})
+
 test('concurrent question and approval waits retain their independent actions', () => {
   const reducer = new PetReducer()
   const sess = session()

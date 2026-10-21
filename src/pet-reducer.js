@@ -128,7 +128,14 @@ function parseToolArgs(raw) {
 }
 
 function approvalReason(reason) {
-  const value = String(reason ?? '').replace(/\s+/gu, ' ').trim()
+  let value = String(reason ?? '').replace(/\s+/gu, ' ').trim()
+  if (!value) return ''
+  // 去掉 auto-review 的固定前缀：`Auto review denied tool "ops_bash": 真正原因`。
+  // 这段前缀在气泡里只挤占空间，工具名也不提供判断信息（冒号之后才是原因）；
+  // 只有前缀、没有原因时返回空串，交给 approvalContent 回落到命令/描述。
+  const autoReview = value.match(/^auto review (?:denied|approved|blocked|flagged)\b[^:]*:\s*(.*)$/iu)
+  if (autoReview) value = autoReview[1].trim()
+  else if (/^auto review (?:denied|approved|blocked|flagged)\b/iu.test(value)) value = ''
   if (!value) return ''
   const match = value.match(/^escalate sandbox to \S+:\s*(.+)$/iu)
   return match ? match[1].trim() : value
