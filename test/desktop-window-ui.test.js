@@ -386,3 +386,17 @@ test('both clients share the visual and idle contract', () => {
     assert.match(src, /if \(!visible\) \{[\s\S]{0,200}?clearBubbleIdleTimer\(\)[\s\S]{0,120}?return/, name + ' hidden bubble must only stop the timer')
   }
 })
+
+// 桌面窗可见性握手：进程启动后必须等窗口主进程回报 ready 才隐藏页面宠物；6s 未
+// 回报放弃本次启动。下载路径启动失败要清掉 desktop，否则 if (desktop) 永久短路。
+test('desktop window readiness gates desktopActive and cleans up a failed start', () => {
+  const index = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
+  const child = readFileSync(new URL('../src/pet-window.cjs', import.meta.url), 'utf8')
+  assert.match(index, /DESKTOP_READY_TIMEOUT_MS = 6000/)
+  assert.match(index, /const markDesktopReady = \(\) =>/)
+  assert.match(index, /armDesktopReady\(\)/)
+  assert.match(index, /action === 'ready'/)
+  assert.match(index, /下载完成后启动桌面窗失败[\s\S]{0,240}?desktop = undefined/)
+  assert.match(child, /reportDesktopReady/)
+  assert.match(child, /\/desktop\/ready/)
+})

@@ -325,6 +325,14 @@ app.whenReady().then(() => {
   // loopback 来源无需令牌（渲染层相对 fetch 不带 query 也能过即为证明）。
   // 与渲染层写同一坐标，幂等；坐标没变时跳过。
   const hostOrigin = new URL(url).origin
+  // 窗口真正显示后再告诉宿主「可见了」：宿主据此才把 desktopActive 置 true 并隐藏
+  // 页面宠物。失败重试 2 次（本地回环，正常不会失败）。
+  let readyAttempts = 0
+  const reportDesktopReady = () => {
+    readyAttempts += 1
+    fetch(`${hostOrigin}/plugins/dsh-pet-remielle/desktop/ready`, { method: 'POST', body: '{}' })
+      .catch(() => { if (readyAttempts < 3) setTimeout(reportDesktopReady, 800) })
+  }
   let lastSavedPos = null
   // PATCH 宿主 config（/plugins 端点只校验 loopback 来源，无需令牌）。2s 超时
   // 避免网络异常时把调用方挂住。
@@ -633,6 +641,7 @@ app.whenReady().then(() => {
     if (shown || win.isDestroyed()) return
     shown = true
     try { win.show() } catch { /* 窗口销毁竞态 */ }
+    reportDesktopReady()
     // show 时 Electron 可能对超出 workArea 的窗口再做一次 fit 钳制；显示稳定
     // 后重申完整尺寸兜底。
     setTimeout(() => {

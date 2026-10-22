@@ -343,3 +343,14 @@ test('idle collapse also fires on the usage-only page', () => {
   assert.equal(String(single.className).includes('bubble-collapsed'), true, 'usage bubble must collapse on idle')
 })
 
+
+// DSH Desktop 实测过同一渲染器里挂出两只网页宠物（各自 SSE/计时器都活着）：
+// 客户端的 apply 可能被调用多次。挂载必须幂等——第二次 apply 只能留下一只。
+test('a second client apply replaces the pet instead of stacking a duplicate', () => {
+  const harness = createHarness()
+  assert.equal(harness.roots(), 1, 'one pet after the first apply')
+  harness.applyAgain()
+  assert.equal(harness.roots(), 1, 'the second apply must replace the previous pet')
+  harness.applyAgain()
+  assert.equal(harness.roots(), 1, 'apply must stay idempotent')
+})

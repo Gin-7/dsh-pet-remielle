@@ -61,6 +61,8 @@ export const PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 export const ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 export const PET_VIEW_ENDPOINT = '/plugins/dsh-pet-remielle/pet-view'
 export const DESKTOP_ENDPOINT = '/plugins/dsh-pet-remielle/desktop'
+/** 桌面窗从进程启动到回报「已显示」的最长等待（毫秒）；超时即放弃本次启动。 */
+export const DESKTOP_READY_TIMEOUT_MS = 6000
 export const PLUGIN_KEY = 'dsh-pet-remielle'
 export const BALANCE_ENDPOINT = '/plugins/dsh-pet-remielle/balance'
 
@@ -1348,7 +1350,36 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     ctx.inject(['webServer'], (httpCtx) => {
       // ---- desktop pet window (transparent always-on-top Electron) ----
       let desktop = undefined
+      // 桌面窗可见性握手：进程启动 ≠ 用户看得见。desktopActive 只在窗口主进程
+      // POST /desktop/ready 后才置位；超时未回报则放弃本次启动、保留页面宠物，
+      // 避免「网页宠物已隐藏、透明窗又永远不显示」的双端皆无。
+      let desktopReadyTimer
+      let desktopReadyReported = false
+      const clearDesktopReadyTimer = () => {
+        if (desktopReadyTimer !== undefined) clearTimeout(desktopReadyTimer)
+        desktopReadyTimer = undefined
+      }
+      const markDesktopReady = () => {
+        if (!desktop) return false
+        desktopReadyReported = true
+        clearDesktopReadyTimer()
+        if (!desktopActive) { desktopActive = true; hub.broadcast() }
+        return true
+      }
+      const armDesktopReady = () => {
+        clearDesktopReadyTimer()
+        desktopReadyReported = false
+        desktopReadyTimer = setTimeout(() => {
+          desktopReadyTimer = undefined
+          if (desktopActive || !desktop || desktopReadyReported) return
+          logger.warn?.('dsh-pet-remielle: 桌面窗 6 秒内未确认可见，放弃本次启动（保留页面宠物）')
+          stopDesktop('not-ready')
+        }, DESKTOP_READY_TIMEOUT_MS)
+        desktopReadyTimer.unref?.()
+      }
       const stopDesktop = (reason) => {
+        clearDesktopReadyTimer()
+        desktopReadyReported = false
         desktop?.stop(reason)
         desktop = undefined
         if (desktopActive) {
@@ -1407,6 +1438,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         // stop() 先清空旧实例的 child，但旧 Electron 的 exit 事件可能迟到；
         // 只有仍然挂在宿主 desktop 引用上的实例才能清理当前窗口。
         if (desktop !== owner) return
+        clearDesktopReadyTimer()
+        desktopReadyReported = false
         desktop = undefined
         if (desktopActive) { desktopActive = false; hub.broadcast() }
       }
@@ -1447,7 +1480,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             desktop = undefined
             return false
           }
-          if (!desktopActive) { desktopActive = true; hub.broadcast() }
+          armDesktopReady()
           return true
         }
         if (spawnWindow()) return
@@ -1512,8 +1545,16 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             const backend = { kind: 'electron', command: exe, args: [petWindowCjs.href.startsWith('file://') ? fileURLToPath(petWindowCjs) : String(petWindowCjs)] }
             const w = new DesktopWindow({ url, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, backend, posX: settings.get().desktopX, posY: settings.get().desktopY, rendererHeader: desktopRendererHeader })
             desktop = w
-            w.start()
-            if (!desktopActive) { desktopActive = true; hub.broadcast() }
+            try {
+              w.start()
+            } catch (error) {
+              // 启动失败必须清掉 desktop：否则后续 startDesktop 会因 if (desktop) 直接返回，
+              // 用户只能关开一次才恢复。页面宠物保持可见。
+              logger.error?.(`dsh-pet-remielle: 下载完成后启动桌面窗失败：${String(error)}`)
+              desktop = undefined
+              return
+            }
+            armDesktopReady()
           })
           .catch((error) => {
             hub.notify({ protocolVersion: 1, kind: 'download', phase: 'error', text: error.message })
@@ -1776,8 +1817,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             // cancel-download 分支自行响应后必须 return：落到末尾会二次
             // jsonResponse → ERR_HTTP_HEADERS_SENT（实测宿主日志反复告警）。
             else if (action === 'cancel-download') { confirmSent = false; jsonResponse(res, 200, { ok: true }); return }
+            // 窗口主进程 show() 之后回报：宿主据此才把 desktopActive 置 true（隐藏页面宠物）。
+            else if (action === 'ready') { markDesktopReady(); jsonResponse(res, 200, { ok: true, desktopActive }); return }
             else {
-              jsonResponse(res, 400, { ok: false, error: 'expected /desktop/start, /desktop/stop, /desktop/confirm-download, or /desktop/cancel-download' })
+              jsonResponse(res, 400, { ok: false, error: 'expected /desktop/start, /desktop/stop, /desktop/confirm-download, /desktop/cancel-download, or /desktop/ready' })
               return
             }
             jsonResponse(res, 200, { ok: true, desktopActive })

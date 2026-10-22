@@ -35,6 +35,9 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
         },
       }),
       dataset: {},
+      attrs: {},
+      // 显式初始化：proxy 对未知键会返回函数，!node.removed 会恒为 false。
+      removed: false,
       className: '',
       textContent: '',
       parentNode: null,
@@ -50,13 +53,16 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
         if (key === 'remove') return () => {
           if (!target.parentNode) return
           target.parentNode.children = target.parentNode.children.filter((child) => child !== node)
+          // 不清 parentNode：既有用例会在移除后回溯 parentNode 断言兄弟节点；
+          // 用 removed 标记表示已摘除，供 roots/querySelectorAll 过滤。
+          target.removed = true
         }
         if (key === 'addEventListener') return (name, listener) => {
           const listeners = target.listeners.get(name) ?? []
           listeners.push(listener)
           target.listeners.set(name, listeners)
         }
-        if (key === 'setAttribute') return () => {}
+        if (key === 'setAttribute') return (name, value) => { target.attrs[name] = value === undefined ? '' : value }
         if (key === 'contains') return () => true
         if (key === 'getBoundingClientRect') return () => ({ left: 0, top: 0, width: 180, height: 180 })
         if (key === 'scrollWidth' || key === 'offsetWidth') {
@@ -165,6 +171,9 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
     },
     querySelectorAll(sel) {
       if (sel === '[data-conversation-session]') return scopedRoots
+      if (sel === '[data-rm2-pet-root]') {
+        return elements.filter((node) => node.attrs && 'data-rm2-pet-root' in node.attrs && !node.removed)
+      }
       return sel === '[data-approval-key]' ? loosePanels : []
     },
   }
@@ -252,7 +261,7 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
       subscribe(listener) { panelListeners.add(listener); return () => panelListeners.delete(listener) },
     },
   }
-  moduleExports.apply({
+  const makeCtx = () => ({
     slots,
     sessions,
     get(name) {
@@ -266,6 +275,7 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
       return cleanup
     },
   })
+  moduleExports.apply(makeCtx())
 
   function send(snapshot) {
     stream.onmessage({ data: JSON.stringify(snapshot) })
@@ -308,7 +318,7 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
     focused = next
     dispatchWindowEvent(next ? 'focus' : 'blur')
   }
-  return { allowClicks, beacons, card, click, dispatchDocumentEvent, dispatchWindowEvent, dispose: () => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() }, elements, fetches, navigator: navigatorStub, opened, panel: approvalPanel, otherPanel: otherApprovalPanel, select, send, setApprovalDom: (next) => { if (Array.isArray(next.scopedRoots)) scopedRoots = next.scopedRoots; if (Array.isArray(next.loosePanels)) loosePanels = next.loosePanels }, setFocus, setPanelActive, setVisibility, styleWrites, flushTitleTimers }
+  return { allowClicks, applyAgain: () => moduleExports.apply(makeCtx()), roots: () => body.children.filter((child) => child.attrs && 'data-rm2-pet-root' in child.attrs && !child.removed).length, beacons, card, click, dispatchDocumentEvent, dispatchWindowEvent, dispose: () => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() }, elements, fetches, navigator: navigatorStub, opened, panel: approvalPanel, otherPanel: otherApprovalPanel, select, send, setApprovalDom: (next) => { if (Array.isArray(next.scopedRoots)) scopedRoots = next.scopedRoots; if (Array.isArray(next.loosePanels)) loosePanels = next.loosePanels }, setFocus, setPanelActive, setVisibility, styleWrites, flushTitleTimers }
 }
 
 export const base = {
