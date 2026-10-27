@@ -500,8 +500,8 @@ app.whenReady().then(() => {
   // 工作区还高时贴底），与构造后那次补尺寸的结果一致。
   // 必须先清 menuBase 与页面 shift：点这一项时菜单还开着，随后的 closeMenu →
   // menu-restore 会按 menuBase 把窗口搬回重置前的位置，重置就白做了。
-  // posX/posY 一并清空——页面内宠物与桌面窗是两个独立的位置存储，只清一个会让
-  // 「重置位置」在切换模式后失效。
+  // 页面内宠物的位置存档（锚点 + 两套旧存档）也一并清空——两端是两个位置存储，
+  // 只清一个会让「重置位置」在切换模式后失效。
   ipcMain.handle('reset-position', async () => {
     if (!win || win.isDestroyed()) return null
     menuBase = null
@@ -523,7 +523,11 @@ app.whenReady().then(() => {
       applyBounds(next)
     })
     lastSavedPos = null // 允许下一次真实拖动重新存档
-    void patchHostConfig({ posX: null, posY: null, desktopX: null, desktopY: null }, 'reset position')
+    void patchHostConfig({
+      posX: null, posY: null, posRelX: null, posRelY: null,
+      posAnchorX: null, posGapX: null, posAnchorY: null, posGapY: null,
+      desktopX: null, desktopY: null,
+    }, 'reset position')
     return next
   })
 

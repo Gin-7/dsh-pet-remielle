@@ -912,10 +912,14 @@ function PetsSection(props) {
       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
         React.createElement('button', {
           type: 'button', disabled: !config, className: 'rm2-pet-btn',
-          // 旧实现误打 /desktop/start——按「重置位置」反而拉起桌面悬浮窗。
-          // 现在与右键菜单同一语义：四个坐标一次清空（页面内 posX/posY +
-          // 桌面窗 desktopX/desktopY），下次进入桌面模式即回默认落点。
-          onClick: function () { void patchConfigFields({ posX: null, posY: null, desktopX: null, desktopY: null }) },
+          // 与右键菜单同一语义：全部位置存档一次清空
+          onClick: function () {
+            void patchConfigFields({
+              posX: null, posY: null, posRelX: null, posRelY: null,
+              posAnchorX: null, posGapX: null, posAnchorY: null, posGapY: null,
+              desktopX: null, desktopY: null,
+            })
+          },
         }, '重置位置'),
         React.createElement(Switch, { checked: v.locked === true, disabled: !config, onChange: function (val) { write('locked', val) } }),
       ),
@@ -1133,19 +1137,15 @@ function PetsSection(props) {
 /** ---------- floating pet (plain DOM) ---------- */
 
 // 同一页面只允许一只宠物：DSH Desktop 实测会出现「同一渲染器里挂出两个客户端」
-// （切换模式后同页两只网页宠物，各自 SSE/计时器都活着）。挂载前先收尾上一实例，
-// 再兜底清掉任何没有收尾钩子的孤儿 root。
+// （切换模式后同页两只网页宠物，各自 SSE/计时器都活着）。挂载前先调上一实例的
+// 收尾钩子；跨 bundle 副本拿不到包内闭包，再由 sweepStaleInstances() 兜底清节点，
+// 旧实例下次轮询发现世代号过期后自拆（断 SSE、清监听）。
 var activePetTeardown = null
 
 function mountPet(ctx) {
   if (typeof activePetTeardown === 'function') {
     try { activePetTeardown() } catch (e) { /* 旧实例收尾失败不阻断新实例 */ }
     activePetTeardown = null
-  }
-  var orphanRoots = document.querySelectorAll('[data-rm2-pet-root]')
-  for (var orphanIndex = 0; orphanIndex < orphanRoots.length; orphanIndex++) {
-    var orphanNode = orphanRoots[orphanIndex]
-    if (orphanNode.parentNode) orphanNode.parentNode.removeChild(orphanNode)
   }
   function optionalService(name) {
     if (!ctx) return undefined
@@ -1156,6 +1156,21 @@ function mountPet(ctx) {
       return undefined
     }
   }
+  // 一个页面只允许一只宠物：热重载会重新求值本模块，旧实例可能没等到 teardown。
+  // 新实例挂载时清掉旧节点；旧实例下次轮询发现世代过期后自拆（断 SSE、清监听）。
+  var generation = (window.__rm2PetGeneration || 0) + 1
+  window.__rm2PetGeneration = generation
+  function sweepStaleInstances() {
+    var selectors = ['[data-rm2-pet-root]', '[data-rm2-pet-css]', '.rm2-pet-menu', '.rm2-pet-pic', '.rm2-pet-tip', '.rm2-pet-confirm-overlay']
+    for (var i = 0; i < selectors.length; i++) {
+      var nodes = document.querySelectorAll ? document.querySelectorAll(selectors[i]) : []
+      for (var j = 0; j < nodes.length; j++) {
+        var node = nodes[j]
+        if (node && node.parentNode && typeof node.remove === 'function') node.remove()
+      }
+    }
+  }
+  sweepStaleInstances()
   // 余额控制器：幂等加载共享客户端脚本（加载失败时移除失效标签，允许下次重试）
   if (!window.__petBalance && !document.querySelector('script[src*="balance-widget.js"]')) {
     var balanceScript = document.createElement('script')
@@ -1397,6 +1412,47 @@ function mountPet(ctx) {
     dock.style.cursor = lockedNow ? 'default' : petDragging ? 'grabbing' : 'grab'
   }
   var positionRestored = false
+  // ---- 页面内桌宠的位置记忆 ----
+  // 锚点 = 最近的边 + 到它的像素距离（见 src/pet-pos.cjs）。换屏/改窗口后边距不变。
+  var __pos = window.__rm2PetPos
+  if (!__pos) throw new Error('__rm2PetPos is missing: build-client.mjs pet-pos prepend was broken')
+  var posAnchor = null // { sideX, gapX, sideY, gapY } | null（null = 用 CSS 默认落点）
+  function petBoxSize() {
+    var fallback = Math.round(180 * ((lastSnapshot && lastSnapshot.scale) || 1))
+    return { w: root.offsetWidth || fallback, h: root.offsetHeight || fallback }
+  }
+  function viewportSize() {
+    return { w: window.innerWidth || 1280, h: window.innerHeight || 800 }
+  }
+  function placeByAnchor() {
+    if (!posAnchor) return
+    var px = __pos.pxFromAnchor(posAnchor, viewportSize(), petBoxSize())
+    root.style.right = 'auto'
+    root.style.bottom = 'auto'
+    root.style.left = px.x + 'px'
+    root.style.top = px.y + 'px'
+  }
+  /** 把实测落点折算成锚点并回写；`extra` 用于迁移时顺带清旧字段（同一次 PATCH）。 */
+  function saveAnchorAt(px, extra) {
+    posAnchor = __pos.anchorFromPx(px, viewportSize(), petBoxSize())
+    var patch = {
+      posX: Math.round(px.x),
+      posY: Math.round(px.y),
+      posAnchorX: posAnchor.sideX,
+      posGapX: posAnchor.gapX,
+      posAnchorY: posAnchor.sideY,
+      posGapY: posAnchor.gapY,
+    }
+    if (extra) for (var key in extra) patch[key] = extra[key]
+    void patchConfigFields(patch)
+  }
+  // 视口变化后按同一组边距重新落点。拖动中/隐藏中不插手（后者量不到尺寸，等显示时补）。
+  function onViewportResize() {
+    if (!posAnchor || disposed) return
+    if (petDragging || hidden || root.style.display === 'none') return
+    placeByAnchor()
+  }
+  window.addEventListener('resize', onViewportResize)
   var lastTurnEndShown = false
   var intervalId = 0
   var pulseFallbackTimer = 0
@@ -1492,6 +1548,8 @@ function mountPet(ctx) {
     img.style.opacity = String(opacity)
     lockedNow = snapshot.locked === true
     syncPetCursor()
+    // 角色大小变了：按同一组边距重新落点，贴边放大也不会顶出去
+    if (posAnchor && !petDragging && !hidden) placeByAnchor()
   }
 
   var prevBubbleVisible = false
@@ -2450,12 +2508,33 @@ function mountPet(ctx) {
       setHidden(false)
     }
     applyVisuals(snapshot)
-    if (!positionRestored && snapshot.posX != null && snapshot.posY != null) {
-      positionRestored = true
-      root.style.right = 'auto'
-      root.style.bottom = 'auto'
-      root.style.left = snapshot.posX + 'px'
-      root.style.top = snapshot.posY + 'px'
+    if (!positionRestored) {
+      var savedAnchor = __pos.normalizeAnchor({
+        sideX: snapshot.posAnchorX,
+        gapX: snapshot.posGapX,
+        sideY: snapshot.posAnchorY,
+        gapY: snapshot.posGapY,
+      })
+      if (savedAnchor) {
+        positionRestored = true
+        posAnchor = savedAnchor
+        placeByAnchor()
+        // 清掉过时的比例字段，免得它日后被当成迁移依据
+        if (snapshot.posRelX != null || snapshot.posRelY != null) {
+          void patchConfigFields({ posRelX: null, posRelY: null })
+        }
+      } else if (snapshot.posRelX != null && snapshot.posRelY != null) {
+        // 旧存档：比例 → 像素 → 锚点，回写一次并清掉比例
+        positionRestored = true
+        var ratioPx = __pos.pxFromRatio(snapshot.posRelX, snapshot.posRelY, viewportSize(), petBoxSize())
+        saveAnchorAt(ratioPx, { posRelX: null, posRelY: null })
+        placeByAnchor()
+      } else if (snapshot.posX != null && snapshot.posY != null) {
+        // 更旧的绝对像素存档：越界坐标贴回可见范围后转成锚点
+        positionRestored = true
+        saveAnchorAt({ x: snapshot.posX, y: snapshot.posY })
+        placeByAnchor()
+      }
     }
     if (snapshot.petId && snapshot.petId !== currentPetId) {
       currentPetId = snapshot.petId
@@ -2520,13 +2599,17 @@ function mountPet(ctx) {
   }
 
   function resetPos() {
+    posAnchor = null
     root.style.left = ''
     root.style.top = ''
     root.style.right = '20px'
     root.style.bottom = '20px'
-    // 两个位置存储一起清：页面内坐标在 posX/posY，桌面窗坐标在 desktopX/desktopY。
-    // 只清前者会让「重置位置」在切到桌面模式后失效（桌面窗仍停在上次拖到的位置）。
-    void patchConfigFields({ posX: null, posY: null, desktopX: null, desktopY: null })
+    // 全部位置存档一次清空：锚点、两套旧存档、桌面窗坐标
+    void patchConfigFields({
+      posX: null, posY: null, posRelX: null, posRelY: null,
+      posAnchorX: null, posGapX: null, posAnchorY: null, posGapY: null,
+      desktopX: null, desktopY: null,
+    })
     positionRestored = true
   }
 
@@ -2536,6 +2619,8 @@ function mountPet(ctx) {
       root.style.display = 'none'
     } else {
       root.style.display = ''
+      // 显示时量得到真实尺寸，补落点校正隐藏期间用兜底尺寸算出的位置
+      if (posAnchor) placeByAnchor()
     }
     closeMenu()
   }
@@ -2758,6 +2843,8 @@ function mountPet(ctx) {
   // 因此成了死代码——issue #34 排障的实修教训，勿再复制 poll 定义）。
   function poll() {
     if (disposed) return
+    // 世代过期（插件已重新求值）：旧实例自拆，避免页面里残留第二只宠物
+    if (window.__rm2PetGeneration !== generation) { teardownPetClient(); return }
     fetchState().then(function (snapshot) {
       if (disposed) return
       if (snapshot) {
@@ -2814,8 +2901,8 @@ function mountPet(ctx) {
       syncPetCursor()
       if (dragMoved) {
         var r = root.getBoundingClientRect()
-        patchConfig('posX', Math.round(r.left))
-        patchConfig('posY', Math.round(r.top))
+        // 拖动结束：落点折算成锚点存档，之后换屏/改尺寸都按这组边距还原
+        saveAnchorAt({ x: r.left, y: r.top })
       }
     }
     window.addEventListener('pointermove', onMove)
@@ -3130,6 +3217,7 @@ function mountPet(ctx) {
     window.removeEventListener('beforeunload', clearReportedCurrentSession)
     window.removeEventListener('blur', clearReportedCurrentSession)
     window.removeEventListener('focus', onCurrentSessionFocus)
+    window.removeEventListener('resize', onViewportResize)
     document.removeEventListener('visibilitychange', onCurrentSessionVisibilityChange)
     document.removeEventListener('DOMContentLoaded', watchHostTheme)
     window.removeEventListener('pagehide', clearReportedHostTheme)

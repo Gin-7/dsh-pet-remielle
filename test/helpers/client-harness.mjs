@@ -318,7 +318,7 @@ export function createHarness(initialCurrent = 'other', autoSelect = true, snaps
     focused = next
     dispatchWindowEvent(next ? 'focus' : 'blur')
   }
-  return { allowClicks, applyAgain: () => moduleExports.apply(makeCtx()), roots: () => body.children.filter((child) => child.attrs && 'data-rm2-pet-root' in child.attrs && !child.removed).length, beacons, card, click, dispatchDocumentEvent, dispatchWindowEvent, dispose: () => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() }, elements, fetches, navigator: navigatorStub, opened, panel: approvalPanel, otherPanel: otherApprovalPanel, select, send, setApprovalDom: (next) => { if (Array.isArray(next.scopedRoots)) scopedRoots = next.scopedRoots; if (Array.isArray(next.loosePanels)) loosePanels = next.loosePanels }, setFocus, setPanelActive, setVisibility, styleWrites, flushTitleTimers }
+  return { allowClicks, applyAgain: () => moduleExports.apply(makeCtx()), roots: () => body.children.filter((child) => child.attrs && 'data-rm2-pet-root' in child.attrs && !child.removed).length, beacons, card, click, dispatchDocumentEvent, dispatchWindowEvent, dispose: () => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() }, elements, fetches, navigator: navigatorStub, opened, panel: approvalPanel, otherPanel: otherApprovalPanel, select, send, setApprovalDom: (next) => { if (Array.isArray(next.scopedRoots)) scopedRoots = next.scopedRoots; if (Array.isArray(next.loosePanels)) loosePanels = next.loosePanels }, setFocus, setPanelActive, setVisibility, styleWrites, flushTitleTimers, window }
 }
 
 export const base = {
