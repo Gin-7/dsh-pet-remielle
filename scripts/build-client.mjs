@@ -29,6 +29,8 @@ const core = readSrc('client.core.js')
 // 使 window.__rm2SessionOrder 在 client.core.js 执行时已就绪。
 const order = readSrc('session-order.cjs')
 const tip = readSrc('pet-tip.cjs')
+// 页面内桌宠的位置记忆（绝对像素 <-> 相对视口比例）：纯函数，网页端独占
+const petPos = readSrc('pet-pos.cjs')
 // 取 GIF 当前帧（暂停冻结用）：与桌面窗同一份实现，拼在核心代码前
 const gifFrame = readSrc('gif-frame.cjs')
 // 气泡会话卡的标题节流与状态文案（审批 / 计划待审 / 完成）：与桌面窗同一份实现
@@ -43,7 +45,7 @@ const RM_PLUGIN_VERSION = ${JSON.stringify(String(version || '0.0.0'))}
 `
 const footer = 'return module.exports\n} })'
 
-const output = `${banner}${order}\n${tip}\n${gifFrame}\n${bubbleTitle}\n${markdown}\n${core}\n${footer}\n`
+const output = `${banner}${order}\n${tip}\n${petPos}\n${gifFrame}\n${bubbleTitle}\n${markdown}\n${core}\n${footer}\n`
 
 // 拼接顺序护栏：这些共享模块必须排在 client.core.js 之前，否则 core 执行到
 // `window.__rm2Xxx` 的消费端时它们还不存在，早失败守卫会抛错、整个宠物模块失效。
@@ -55,7 +57,7 @@ const mountAt = output.indexOf('function mountPet')
 if (mountAt === -1) {
   throw new Error('build-client: client.core.js 里找不到 mountPet，无法校验拼接顺序')
 }
-for (const marker of ['__rm2SessionOrder', '__rm2PetTip', '__rm2GifFrame', '__rm2BubbleTitle', '__rm2Markdown']) {
+for (const marker of ['__rm2SessionOrder', '__rm2PetTip', '__rm2PetPos', '__rm2GifFrame', '__rm2BubbleTitle', '__rm2Markdown']) {
   // 锚在「模块把实现挂到 global 上」的那次赋值，而不是裸 marker。裸 marker 在
   // client.core.js 的消费端守卫里同样出现（`if (!__md) throw new Error('__rm2Markdown
   // is missing…')`），indexOf 会先命中 core 内部那处，而它恒在 mountPet 之前——
