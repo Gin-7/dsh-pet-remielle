@@ -2,7 +2,7 @@ import { Readable } from 'node:stream'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { apply, applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
+import { advertisedOrigin, apply, applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, listenerOrigin, normalizeHostTheme, publicConfig, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID, PET_ID_RE } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -365,4 +365,32 @@ test('snapshot carries reported host theme and current session only when set', (
   })()
   assert.equal(cleared.currentSessionId, undefined)
   assert.equal('currentSessionId' in JSON.parse(JSON.stringify(cleared)), false)
+})
+
+// 监听地址：DSH 0.2.1 起 webServer 提供 getOrigin()（含 --tls 与具体绑定字面量），
+// 旧宿主没有；写死 127.0.0.1 会让 LAN/HTTPS 部署的桌面窗指向没在监听的地址。
+test('listenerOrigin prefers the host getOrigin and falls back to loopback', () => {
+  assert.equal(listenerOrigin({ webServer: { getOrigin: () => 'https://[::1]:8443' } }, 3080), 'https://[::1]:8443')
+  assert.equal(listenerOrigin({ webServer: { getOrigin: () => 'http://192.168.1.5:3080' } }, 3080), 'http://192.168.1.5:3080')
+  assert.equal(listenerOrigin({ webServer: { getOrigin: () => { throw new Error('unbound') } } }, 3080), 'http://127.0.0.1:3080')
+  assert.equal(listenerOrigin({ webServer: { getOrigin: () => '' } }, 3080), 'http://127.0.0.1:3080')
+  assert.equal(listenerOrigin({ webServer: {} }, 3080), 'http://127.0.0.1:3080')
+  // 半初始化/坏 origin 与无效端口不能拼出 http://127.0.0.1:undefined
+  assert.equal(listenerOrigin({ webServer: { getOrigin: () => 'not a url' } }, 3080), 'http://127.0.0.1:3080')
+  assert.equal(listenerOrigin({ webServer: {} }, undefined), '')
+  assert.equal(listenerOrigin({ webServer: {} }, 0), '')
+  assert.equal(listenerOrigin({ webServer: {} }, 70000), '')
+})
+
+// 对外广告地址：webApp.getAdvertisedUrl()（0.2.1 新增，含 --public-url）优先，
+// 它决定「在浏览器打开 DSH」的落点，与桌面窗加载 pet-view 用的监听 origin 不同。
+test('advertisedOrigin prefers webApp.getAdvertisedUrl', () => {
+  const fallback = 'http://127.0.0.1:3080'
+  assert.equal(
+    advertisedOrigin({ get: () => ({ getAdvertisedUrl: () => 'https://pet.example.com' }) }, fallback),
+    'https://pet.example.com',
+  )
+  assert.equal(advertisedOrigin({ get: () => ({ getAdvertisedUrl: () => '' }) }, fallback), fallback)
+  assert.equal(advertisedOrigin({ get: () => undefined }, fallback), fallback)
+  assert.equal(advertisedOrigin({ get: () => { throw new Error('inactive context') } }, fallback), fallback)
 })

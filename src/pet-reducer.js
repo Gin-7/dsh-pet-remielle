@@ -70,40 +70,29 @@ function normalizeTitle(value) {
 }
 
 /**
- * 从会话日志折出最新标题（取最后一个非空的 `session/title`，与 DSH 的
- * foldSessionTitle 同源）。宿主 Session 的公开快照 API 是 `snapshotEvents()`；
- * `session.events` 并不存在（内部 log 不对外），只认实时事件会漏掉插件加载前
- * 已写入的标题——DSH 重启后恢复运行的老会话就是这样，标题事件不会重放。
+ * 现有会话的标题：先认实时 `session/title` 事件，再问注入的 `resolveTitle`。
  *
- * 权衡（已知的弃用风险）：DSH 在 2026-09-09 的架构说明里把同步读事件
- * （`snapshotEvents` / `eventAt` / `ownEvents`）标为 `@deprecated`，注明
- * 「已有逻辑可暂不迁移，但禁止新增调用」。本函数是 2026-09-15 引入的新调用，
- * 严格说踩了这条约定。当时可用的替代面只有同样被弃用的同步读，或自行从
- * 事件流重放重建标题（后者要自建每会话缓存，成本与收益不匹配）。
- * 后续 DSH 给出正式替代（`session.surface` 之类）时，这里应一并迁过去。
+ * 恢复运行的老会话（DSH 重启后）不会重放标题事件，唯一正确的读法是宿主的
+ * `sessionTitle` 服务——它自己按会话日志折出最新标题。reducer 因此不再直接翻
+ * 会话日志：2026-09-09 起 DSH 把同步读事件（`snapshotEvents`/`eventAt`/
+ * `ownEvents`）标为弃用并禁止新增调用，而 `sessionTitle.get()` 是官方替代。
+ * `resolveTitle` 由宿主侧注入；返回 null 表示「标题服务当前不可用」（未安装、
+ * 停用或被隔离），与 undefined「服务在、但该会话还没有标题」区分：前者不置
+ * titleFolded，后续事件再试一次；后者折过一次就够，避免每条事件都让服务折日志。
  */
-export function titleFromSessionLog(session) {
-  let events
-  try {
-    events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : undefined
-  } catch {
-    return undefined // 折取失败不阻断事件处理与快照构建
-  }
-  if (!Array.isArray(events)) return undefined
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i]?.type !== 'session/title') continue
-    const text = normalizeTitle(events[i]?.data?.title)
-    if (text) return text
-  }
-  return undefined
-}
-
-function conversationTitleOf(session, event) {
+function conversationTitleOf(session, event, resolveTitle) {
   if (event?.type === 'session/title') {
     const text = normalizeTitle(event?.data?.title)
     if (text) return text
   }
-  return titleFromSessionLog(session)
+  if (typeof resolveTitle !== 'function') return null
+  try {
+    const resolved = resolveTitle(session)
+    if (resolved === null) return null
+    return normalizeTitle(resolved) || undefined
+  } catch {
+    return null // 服务被隔离时访问会抛错，不能冒到事件热路径
+  }
 }
 
 /**
@@ -139,7 +128,17 @@ function parseToolArgs(raw) {
 }
 
 function approvalReason(reason) {
-  const value = String(reason ?? '').replace(/\s+/gu, ' ').trim()
+  let value = String(reason ?? '').replace(/\s+/gu, ' ').trim()
+  if (!value) return ''
+  // 去掉 auto-review 的固定前缀：`Auto review denied tool "ops_bash": 真正原因`。
+  // 这段前缀在气泡里只挤占空间，工具名也不提供判断信息（冒号之后才是原因）；
+  // 只有前缀、没有原因时返回空串，交给 approvalContent 回落到命令/描述。
+  // 不依赖具体工具名与动词：任何以 Auto review 开头的机器前缀，只保留第一个冒号
+  // （半角或全角）之后的内容；没有冒号（如「Auto review denied tool "x"」或中文
+  // 「Auto review 拒绝了此调用。」）就整段丢弃，交给下面的命令/描述回落。
+  const autoReview = value.match(/^auto review\b[^:：]*[:：]\s*(.*)$/iu)
+  if (autoReview) value = autoReview[1].trim()
+  else if (/^auto review\b/iu.test(value)) value = ''
   if (!value) return ''
   const match = value.match(/^escalate sandbox to \S+:\s*(.+)$/iu)
   return match ? match[1].trim() : value
@@ -202,8 +201,9 @@ export function moodFor(state, phase) {
 }
 
 export class PetReducer {
-  constructor({ includeSubagents = false } = {}) {
+  constructor({ includeSubagents = false, resolveTitle } = {}) {
     this.includeSubagents = includeSubagents
+    this.resolveTitle = typeof resolveTitle === 'function' ? resolveTitle : undefined
     this.sessions = new Map()
     this.clock = 0
     this.selectedSessionId = undefined
@@ -232,16 +232,18 @@ export class PetReducer {
     record.subagent = subagent
     record.lastSeq = Number(event.seq ?? record.lastSeq)
     record.project = projectNameOf(session) ?? record.project
-    // 标题只可能由 session/title 事件产生：事件本身直接取，日志折取每个会话最多做
-    // 一次（titleFolded 置位）——否则"始终没有标题"的会话会每个事件都全量扫一遍日志
-    // （snapshotEvents 每次 append 后缓存失效，代价是 O(n²)）。改名会派发新的
-    // session/title 事件，仍走第一支更新。
-    // 折取抛错（snapshotEvents 的罕见异常）时也照样置位：这里是每个事件都走的热路径，
-    // 不为了重试反复扫日志——宿主侧 readSessionTitle 是每帧重试，两条口径刻意不同；
-    // 真拿到 session/title 事件时仍会更新。
+    // 标题来源有两个：实时 session/title 事件，或宿主 sessionTitle 服务（覆盖
+    // 恢复会话）。后者每个会话只问一次（titleFolded 置位）——它是每条事件都会
+    // 走的热路径，反复问没有意义；改名会派发新的 session/title 事件，仍走第一支。
+    // 宿主侧 readSessionTitle 则每帧重试，两条口径刻意不同。
     if (event.type === 'session/title' || !record.titleFolded) {
-      record.title = conversationTitleOf(session, event) ?? record.title
-      record.titleFolded = true
+      const nextTitle = conversationTitleOf(session, event, this.resolveTitle)
+      // null = 标题服务当前不可用：保持 titleFolded=false，下一条事件再试；
+      // 服务晚挂载/恢复后，标题仍能补上，而不是永久为空。
+      if (nextTitle !== null) {
+        record.title = nextTitle ?? record.title
+        record.titleFolded = true
+      }
     }
 
     switch (event.type) {

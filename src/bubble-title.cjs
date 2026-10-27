@@ -52,10 +52,16 @@
 
   // 两种方框（堆叠对话卡 / 余额气泡）共用同一宽度规则：取"最宽一行" + 内边距，
   // 下限 BUBBLE_MIN_W、上限 min(440, 视口-24)。返回含内边距的总宽。
-  function bubbleRowWidth(textW) {
+  // availableWidth 由调用方按当前气泡 zoom 折算（视口宽 / zoom），保证缩放后
+  // 气泡的**视觉**宽度仍在视口内——桌面悬浮窗内容固定 400×520，宠物放到 200%
+  // 时气泡 zoom=2，只按逻辑宽度限幅会让 376px 的卡变成 752px 直接被窗口裁掉。
+  function bubbleRowWidth(textW, availableWidth) {
     var win = typeof window !== 'undefined' ? window : null
     var vw = Math.max(150, ((win && win.innerWidth) || 1280) - 24)
-    return Math.min(440, vw, Math.max(BUBBLE_MIN_W, textW + 67))
+    var limit = typeof availableWidth === 'number' && isFinite(availableWidth) && availableWidth > 0
+      ? Math.min(vw, availableWidth)
+      : vw
+    return Math.min(440, limit, Math.max(BUBBLE_MIN_W, textW + 67))
   }
 
   function clearBubbleTitleTimer(el) {
@@ -222,6 +228,41 @@
     el.node.style.display = 'block'
   }
 
+  // ---- 空闲收起 / 气泡宽度的共享口径（两端同构，避免各复制一份魔法数）----
+  // normalizeIdleSec: 0 或 120 = 常驻（统一归 0）；5–115 = 秒数；非法值回落 60。
+  // idleMsOf: 0 → 0（不收起），否则毫秒数。
+  // availableWidthFor: 视口宽 / 气泡 zoom 折算后的逻辑可用宽（下限 150）。
+  // bubbleNeedsEye: 快照里是否有需要用户看的活动（工作中/审批/提问/计划待审/完成）。
+  var IDLE_DEFAULT_SEC = 60
+  var IDLE_MAX_SEC = 120
+  function normalizeIdleSec(sec) {
+    var n = Number(sec)
+    if (!isFinite(n) || n < 0 || n > IDLE_MAX_SEC) return IDLE_DEFAULT_SEC
+    if (n <= 0 || n >= IDLE_MAX_SEC) return 0
+    return Math.min(IDLE_MAX_SEC - 5, Math.max(5, n))
+  }
+  function idleMsOf(sec) {
+    var n = normalizeIdleSec(sec)
+    return n > 0 ? n * 1000 : 0
+  }
+  function availableWidthFor(innerWidth, zoom) {
+    var w = Number(innerWidth) > 0 ? Number(innerWidth) : 1280
+    var z = Number(zoom) > 0 ? Number(zoom) : 1
+    return Math.max(150, w / z - 24)
+  }
+  function bubbleNeedsEye(snapshot) {
+    if (!snapshot) return false
+    if (snapshot.state && snapshot.state !== 'IDLE') return true
+    var sessions = snapshot.sessions || []
+    for (var i = 0; i < sessions.length; i++) {
+      var entry = sessions[i]
+      if (!entry) continue
+      if (entry.approval === true || entry.ask === true || entry.planReview === true
+        || entry.attention === true || entry.completionNotification === true || entry.completed === true) return true
+    }
+    return false
+  }
+
   global.__rm2BubbleTitle = {
     BUBBLE_TITLE_MS: BUBBLE_TITLE_MS,
     BUBBLE_MIN_W: BUBBLE_MIN_W,
@@ -229,6 +270,10 @@
     ensureMeasureEl: ensureMeasureEl,
     measureTextW: measureTextW,
     bubbleRowWidth: bubbleRowWidth,
+    normalizeIdleSec: normalizeIdleSec,
+    idleMsOf: idleMsOf,
+    availableWidthFor: availableWidthFor,
+    bubbleNeedsEye: bubbleNeedsEye,
     clearBubbleTitleTimer: clearBubbleTitleTimer,
     commitBubbleTitle: commitBubbleTitle,
     applyBubbleTitle: applyBubbleTitle,

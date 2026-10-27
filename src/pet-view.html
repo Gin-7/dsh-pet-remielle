@@ -46,6 +46,23 @@
     align-items: center;
     pointer-events: none;
     cursor: default;
+    /* 空闲收起：缩向宠物头部（底边中点）并淡出，单击宠物再展开 */
+    transition: transform .28s ease, opacity .28s ease;
+    transform-origin: 50% 100%;
+  }
+  .rm2-pet-bubbles.bubble-collapsed {
+    transform: translateY(18px) scale(.12);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .rm2-pet-bubbles.bubble-collapsed .rm2-pet-bubble { pointer-events: none; }
+  /* 用量单气泡（不在牌叠里）同样随空闲收起 */
+  .rm2-pet-bubble.bubble-collapsed {
+    transform: translateY(18px) scale(.12);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform .28s ease, opacity .28s ease;
+    transform-origin: 50% 100%;
   }
   .rm2-pet-bubble {
     display: none;
@@ -106,7 +123,9 @@
   .rm2-pet-bubble-completion { display: none; flex: none; width: 16px; height: 16px; margin-right: 13px; border-radius: 50%; background: #35c979; box-shadow: 0 0 0 4px rgba(53,201,121,.18); }
   .rm2-pet-bubble.completed .rm2-pet-bubble-completion { display: inline-flex; }
   .rm2-pet-bubble.idle-placeholder { height: 61px; min-height: 61px; padding-top: 15px; padding-bottom: 15px; }
-  .rm2-pet-bubble-stack-count { display: none; position: absolute; right: 16px; bottom: 0; height: 8px; align-items: center; color: #f0a8c0; font-size: 9px; font-weight: 700; line-height: 8px; }
+  /* 背板只露底部 11px，卡片 overflow:hidden + 29px 圆角：right:16/bottom:0 落在圆弧外会裁字。
+     右移到圆角起点之外（right:32）并给足行高。 */
+  .rm2-pet-bubble-stack-count { display: none; position: absolute; right: 32px; bottom: 0; height: 10px; align-items: center; color: #f0a8c0; font-size: 9px; font-weight: 700; line-height: 10px; }
   .rm2-pet-bubble.summary-backboard .rm2-pet-bubble-stack-count { display: flex; }
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-title,
   .rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,
@@ -544,18 +563,12 @@
     menuEl.appendChild(menuSep())
     // ---- 外观：即时可见，全部就地调 ----
     menuEl.appendChild(menuSliderRow('角色大小', 0.5, 2, (snap && snap.scale) || 1, function (next) {
-      patchConfig({ scale: next })
-      if (lastSnapshot) {
-        lastSnapshot.scale = next
-        apply(lastSnapshot) // live preview: width + offset transform
-      }
+      previewVisual('scale', next)
+      commitVisual('scale', next)
     }))
     menuEl.appendChild(menuSliderRow('透明度', 0.3, 1, (snap && snap.opacity) || 1, function (next) {
-      patchConfig({ opacity: next })
-      if (lastSnapshot) {
-        lastSnapshot.opacity = next
-        apply(lastSnapshot)
-      }
+      previewVisual('opacity', next)
+      commitVisual('opacity', next)
     }))
     menuEl.appendChild(menuRow('左右镜像', snap ? snap.mirror === true : false, function () {
       var next = !(lastSnapshot ? lastSnapshot.mirror === true : false)
@@ -772,6 +785,8 @@
   function endPetDrag() {
     if (window.petBridge && window.petBridge.dragEnd) window.petBridge.dragEnd()
     if (dragState && !dragState.moved) {
+      // 气泡处于「空闲收起」态时，单击宠物只负责展开，不顺手换表情。
+      if (bubbleCollapsed) { expandBubble(); dragState = null; if (!menuOpen) setForceInteractive(false); syncCursor(); return }
       // 单击：随机换心情，与网页宠物一致
       var moods = ['01', '02', '03', '04', '05', '06']
       var current = lastSnapshot ? (lastSnapshot.mood || '06') : '06'
@@ -1072,6 +1087,74 @@
     })
     if (petTipAnchor === el.node) showPetTip(el.node)
   }
+  // ---- 空闲自动收起 / 单击展开（与网页端同构）----
+  var bubbleIdleMs = 60000
+  var bubbleIdleSec = 60
+  var bubbleCollapsed = false
+  var bubbleIdleTimer = 0
+
+  // 与网页端共用同一份判定（src/bubble-title.cjs），避免两端各写一份后漂移。
+  var bubbleNeedsEye = __bubbleTitle.bubbleNeedsEye
+
+  function setBubbleCollapsed(collapsed) {
+    if (bubbleCollapsed === collapsed) return
+    bubbleCollapsed = collapsed
+    // 状态牌叠与用量单气泡共用同一份收起状态（与网页端同构）
+    for (const node of [bubbleStack, bubbleEl]) {
+      if (collapsed) node.classList.add('bubble-collapsed')
+      else node.classList.remove('bubble-collapsed')
+    }
+  }
+
+  function clearBubbleIdleTimer() {
+    if (!bubbleIdleTimer) return
+    clearTimeout(bubbleIdleTimer)
+    bubbleIdleTimer = 0
+  }
+
+  function armBubbleIdleTimer(restart) {
+    if (bubbleCollapsed) return
+    if (bubbleIdleTimer && restart !== true) return
+    clearBubbleIdleTimer()
+    bubbleIdleTimer = setTimeout(function () {
+      bubbleIdleTimer = 0
+      // 用量页时牌叠是 display:none，但单气泡可见——按当前可见的气泡判断
+      var stackHidden = bubbleStack.style.display === 'none'
+      var singleHidden = !bubbleEl || bubbleEl.style.display === 'none'
+      if (stackHidden && singleHidden) return
+      setBubbleCollapsed(true)
+    }, bubbleIdleMs)
+  }
+
+  function expandBubble() {
+    clearBubbleIdleTimer()
+    setBubbleCollapsed(false)
+    armBubbleIdleTimer(true)
+  }
+
+  function syncBubbleIdle(snapshot, visible) {
+    // 秒数来自设置：0 = 常驻（永不收起）；旧宿主缺字段时回落到 60s
+    // 共享口径：0 与 120 都归为常驻，5–115 为秒数，非法值回落 60
+    bubbleIdleSec = __bubbleTitle.normalizeIdleSec(snapshot.bubbleIdleSec)
+    bubbleIdleMs = __bubbleTitle.idleMsOf(bubbleIdleSec)
+    if (!visible) {
+      // 气泡暂时不可见：只停计时，不要顺手展开（否则下次可见时会自己冒出来）
+      clearBubbleIdleTimer()
+      return
+    }
+    if (bubbleIdleSec === 0) {
+      clearBubbleIdleTimer()
+      if (bubbleCollapsed) setBubbleCollapsed(false)
+      return
+    }
+    if (bubbleNeedsEye(snapshot)) {
+      clearBubbleIdleTimer()
+      if (bubbleCollapsed) setBubbleCollapsed(false)
+      return
+    }
+    armBubbleIdleTimer(false)
+  }
+
   function updateBubbles(snapshot) {
     if (!snapshot) return
     var sessions = Array.isArray(snapshot.sessions)
@@ -1149,7 +1232,9 @@
       stackedEl.node.style.maxWidth = ''
       stackedEl.node.style.width = '100%'
     }
-    var deckWidth = bubbleRowWidth(measuredWidth)
+    // 按当前气泡 zoom 折算可用逻辑宽度，避免缩放后视觉宽度超出 400px 窗口被裁
+    var deckZoom = bubbleZoomFor(snapshot, imgEl.offsetHeight)
+    var deckWidth = bubbleRowWidth(measuredWidth, __bubbleTitle.availableWidthFor(window.innerWidth, deckZoom))
     var deckWidthPx = deckWidth + 'px'
     if (bubbleStack.style.width !== deckWidthPx) bubbleStack.style.width = deckWidthPx
     for (var j = 0; j < count; j++) {
@@ -1172,13 +1257,67 @@
     }
     bubbleStack.style.display = snapshot.bubble !== false && count > 0 ? 'flex' : 'none'
     if (count === 0) bubbleStack.style.width = ''
+    syncBubbleIdle(snapshot, snapshot.bubble !== false && count > 0)
+  }
+
+  // ---- 外观字段（scale/opacity）：本地预览 + 尾值合并写入 + 快照让位（与网页端同构）----
+  // 滑块/滚轮每个 input/wheel 都发一次 PATCH 时，单次配置写入 160–500ms 且串行，
+  // 拖满一次会排 5–8 秒；期间旧快照会把乐观预览打回旧值，随后再随排队写入逐级放大。
+  // 现在输入只改本地预览，200ms 尾值合并成一次写入；写入被快照确认前（或 1.5s 超时前）
+  // 旧快照不得覆盖本地目标值。
+  var VISUAL_COMMIT_MS = 200
+  var VISUAL_HOLD_MS = 1500
+  var visualTimers = {}
+  var visualHold = {}
+
+  // 只在超时后交还快照。注意不能「值相等就清 hold」：本地预览自己也会走
+  // apply()，那样预览刚一应用就把 hold 清掉，随后到达的旧快照立刻把图案打回。
+  function resolveVisual(field, serverValue) {
+    var hold = visualHold[field]
+    if (!hold) return serverValue
+    if (Date.now() > hold.until) { delete visualHold[field]; return serverValue }
+    return hold.value
+  }
+
+  function previewVisual(field, value) {
+    visualHold[field] = { value: value, until: Date.now() + VISUAL_HOLD_MS }
+    if (!lastSnapshot) return
+    lastSnapshot = Object.assign({}, lastSnapshot)
+    lastSnapshot[field] = value
+    apply(lastSnapshot)
+  }
+
+  function commitVisual(field, value) {
+    var pending = visualTimers[field]
+    if (pending) clearTimeout(pending)
+    visualTimers[field] = setTimeout(function () {
+      delete visualTimers[field]
+      patchConfig({ [field]: value })
+    }, VISUAL_COMMIT_MS)
+  }
+
+  /**
+   * 气泡 zoom：与桌宠同一份「本地未确认值」，再按窗口高度收紧。
+   * 卡片高度固定 91 逻辑像素，宠物放大后必须仍能放进 520 高的窗口，否则气泡
+   * 顶部会被窗口裁掉；宽度由 bubbleRowWidth 的 availableWidth 另行限幅。
+   */
+  function bubbleZoomFor(snapshot, petHeight) {
+    var scale = resolveVisual('scale', snapshot.scale || 1)
+    var zoom = __tip.bubbleZoomOf(Object.assign({}, snapshot, { scale: scale }))
+    var viewH = window.innerHeight || 0
+    if (viewH > 0 && petHeight > 0) {
+      // 16=气泡区 margin-bottom；卡片自身 13px margin 随 zoom 缩放，按 91+13=104 折算
+      var avail = viewH - petHeight - 16
+      if (avail > 0) zoom = Math.min(zoom, Math.max(0.3, avail / 104))
+    }
+    return zoom
   }
 
   function applyTransform(mood, snapshot) {
-    var scale = snapshot.scale || 1
+    var scale = resolveVisual('scale', snapshot.scale || 1)
     imgEl.style.width = Math.round(180 * scale) + 'px'
     // 气泡缩放口径与网页端共用 pet-tip.cjs 的 bubbleZoomOf（同步/固定两模式）
-    var bubbleZoom = __tip.bubbleZoomOf(snapshot)
+    var bubbleZoom = bubbleZoomFor(snapshot, imgEl.offsetHeight)
     bubbleEl.style.zoom = String(bubbleZoom)
     bubbleStack.style.zoom = String(bubbleZoom)
     imgEl.style.transform = snapshot.mirror === true ? 'scaleX(-1)' : ''
@@ -1289,6 +1428,8 @@
       bubbleEl.classList.add('rm2-bubble-balance')
       show = show && !!balanceFrame && balanceFrame.kind === 'balance'
       bubbleEl.style.display = (show || bothOn) ? 'block' : 'none'
+      // 用量页可见时同样参与空闲收起（与状态牌叠共用收起源）
+      syncBubbleIdle(snapshot, snapshot.showBubble !== false && (show || bothOn))
       if (show) {
         titleEl.textContent = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
         titleEl.style.color = ''
@@ -1296,7 +1437,9 @@
         var titleText = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
         var detailText = (balanceFrame.detail || '') + ' · ' + (balanceFrame.period || '')
         var maxTextW = Math.max(measureTextW(titleEl, titleText), measureTextW(detailEl, detailText))
-        bubbleEl.style.width = bubbleRowWidth(maxTextW) + 'px'
+        // 与状态牌叠同一口径：本地未确认的 scale + 按窗口高度收紧
+        var balanceZoom = bubbleZoomFor(snapshot, imgEl.offsetHeight)
+        bubbleEl.style.width = bubbleRowWidth(maxTextW, __bubbleTitle.availableWidthFor(window.innerWidth, balanceZoom)) + 'px'
       } else {
         titleEl.textContent = '余额加载中…'
         detailEl.textContent = ''
@@ -1309,7 +1452,7 @@
       imgEl.dataset.mood = mood
     }
     applyTransform(mood, snapshot)
-    imgEl.style.opacity = String(snapshot.opacity ?? 1)
+    imgEl.style.opacity = String(resolveVisual('opacity', snapshot.opacity ?? 1))
     schedulePulseFallback(snapshot)
     reportHitRects()
   }
@@ -1493,13 +1636,12 @@
     e.preventDefault()
     if (!lastSnapshot) return
     var delta = e.deltaY < 0 ? 0.05 : -0.05
-    var next = Math.min(2, Math.max(0.5, (lastSnapshot.scale || 1) + delta))
+    // 以本地未确认值为基数，避免快速滚动时每格都从旧服务器值 +0.05
+    var held = visualHold.scale
+    var next = Math.min(2, Math.max(0.5, (held ? held.value : (lastSnapshot.scale || 1)) + delta))
     next = Math.round(next * 20) / 20
-    fetch('/plugins/dsh-pet-remielle/config', {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ scale: next }),
-    }).catch(function () {})
+    previewVisual('scale', next)
+    commitVisual('scale', next)
   }, { passive: false })
 
   // Remember the window position across restarts.

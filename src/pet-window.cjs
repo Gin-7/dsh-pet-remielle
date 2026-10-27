@@ -104,12 +104,12 @@ if (!url) {
 }
 
 app.whenReady().then(() => {
-  // DSH Desktop 宿主给 WebServer 的所有路由（含本插件的 pet-view 与宿主 API）
-  // 套了 desktopBrowserAccess 准入：仅带渲染进程专属头的请求被认定为自身渲染
-  // 进程放行，其余视为普通浏览器——宿主未开启「浏览器访问」时一律 403
-  // "forbidden"（现象：桌面窗弹出后宠物消失、只剩 forbidden 字样）。本窗口是
-  // 独立 Electron 进程，宿主只给自家渲染进程注入，因此自行在 session 上给
-  // 同源请求补头；头名/值由宿主上下文经 env 传入，未提供时不装（普通 web 宿主）。
+  // 可选的渲染进程准入头，只为私有/下游 DSH Desktop 构建保留。
+  //
+  // 核对结论：公开 DSH（含 0.2.1-rc.2 的全部 tag、分支与 git 历史）都没有
+  // desktopBrowserAccess 服务；公开 Desktop 的转发层 web-document.ts 会删掉
+  // Origin / Sec-Fetch-Site 并注入宿主 cookie，本插件的回环 + Host 同源守卫
+  // 因此直接放行。头名/值仍由宿主上下文经 env 传入，未提供时不装（普通 web 宿主）。
   const rendererHeaderName = process.env.DSH_PET_RENDERER_HEADER_NAME
   const rendererHeaderValue = process.env.DSH_PET_RENDERER_HEADER_VALUE
   let carrierOrigin = ''
@@ -325,6 +325,14 @@ app.whenReady().then(() => {
   // loopback 来源无需令牌（渲染层相对 fetch 不带 query 也能过即为证明）。
   // 与渲染层写同一坐标，幂等；坐标没变时跳过。
   const hostOrigin = new URL(url).origin
+  // 窗口真正显示后再告诉宿主「可见了」：宿主据此才把 desktopActive 置 true 并隐藏
+  // 页面宠物。失败重试 2 次（本地回环，正常不会失败）。
+  let readyAttempts = 0
+  const reportDesktopReady = () => {
+    readyAttempts += 1
+    fetch(`${hostOrigin}/plugins/dsh-pet-remielle/desktop/ready`, { method: 'POST', body: '{}' })
+      .catch(() => { if (readyAttempts < 3) setTimeout(reportDesktopReady, 800) })
+  }
   let lastSavedPos = null
   // PATCH 宿主 config（/plugins 端点只校验 loopback 来源，无需令牌）。2s 超时
   // 避免网络异常时把调用方挂住。
@@ -339,6 +347,9 @@ app.whenReady().then(() => {
     }).then((res) => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
     }).catch((err) => {
+      // 窗口/页面销毁（宿主退出、插件卸载、窗口关闭）会让在途请求以 AbortError
+      // 结束，这是预期路径，不刷错误日志；其余失败仍要可见。
+      if (err && (err.name === 'AbortError' || /aborted/i.test(String(err.message)))) return
       console.error(`dsh-pet-window: ${label} failed: ${err.message}`)
     }).finally(() => clearTimeout(timer))
   }
@@ -619,8 +630,18 @@ app.whenReady().then(() => {
   })
   win.webContents.on('did-fail-load', (_e, code, desc, furl) => console.log('[pet] FAIL:', code, desc, furl))
   win.webContents.on('console-message', (_e, level, msg) => console.log('[pet-console]', level, String(msg).slice(0, 160)))
-  win.once('ready-to-show', () => {
-    win.show()
+  // 统一显示入口。透明窗的 ready-to-show 并不保证触发：实测同一台机器连续启动
+  // 会出现一次不触发，窗口停在 show:false 永远不可见——宿主那边 desktopActive
+  // 已经置 true、页面宠物被隐藏，用户看到的是「桌面模式没有出现，关开一次才好」。
+  // 该事件依赖首帧绘制，而隐藏的透明窗在页面首帧为全透明（宠物图尚未解码）时
+  // 可能一直不产生帧，于是永远等不到。故页面加载完成与一个硬超时各兜一次，
+  // 三处共用同一个 once 语义的 showWindow；透明窗先显示不会有白底闪烁。
+  let shown = false
+  const showWindow = () => {
+    if (shown || win.isDestroyed()) return
+    shown = true
+    try { win.show() } catch { /* 窗口销毁竞态 */ }
+    reportDesktopReady()
     // show 时 Electron 可能对超出 workArea 的窗口再做一次 fit 钳制；显示稳定
     // 后重申完整尺寸兜底。
     setTimeout(() => {
@@ -630,7 +651,12 @@ app.whenReady().then(() => {
         win.setBounds({ x: lx, y: ly, width: petW, height: petH })
       } catch { /* 窗口销毁竞态，忽略 */ }
     }, 250)
+  }
+  win.once('ready-to-show', showWindow)
+  win.webContents.once('did-finish-load', () => {
+    setTimeout(showWindow, 250)
   })
+  setTimeout(showWindow, 3000)
   win.on('closed', () => {
     stopHitTimer()
     app.quit()

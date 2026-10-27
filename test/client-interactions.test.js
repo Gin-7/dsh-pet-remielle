@@ -223,3 +223,134 @@ test('disposed client ignores later focus and visibility events', async () => {
   })
   assert.equal(staleRequests.length, 0, 'disposed client must not report or acknowledge its old session')
 })
+
+// 外观滑块/滚轮：本地预览 + 尾值合并写入 + 快照让位。
+// 背景：原实现每个 input/wheel 都发一次 PATCH；单次配置写入 160–500ms 且服务端
+// 串行，拖满一次会排数秒，期间旧快照会把乐观预览打回旧值——用户看到「先到目标
+// → 回原大小 → 再随排队写入逐级变大」。
+test('appearance sliders preview locally, coalesce writes and ignore stale snapshots', () => {
+  const harness = createHarness()
+  harness.send({ ...base, scale: 1, opacity: 1 })
+  const dock = harness.elements.find((el) => el.title === '拖动我 · 点击互动 · 右键菜单')
+  assert.ok(dock, 'dock missing')
+  const open = dock.listeners.get('contextmenu')?.[0]
+  assert.ok(open, 'dock contextmenu missing')
+  open({ preventDefault() {}, stopPropagation() {} })
+
+  const sliders = harness.elements.filter((el) => el.className === 'rm2-pet-menu-slider')
+  assert.equal(sliders.length, 2, 'scale + opacity sliders')
+  const scale = sliders[0]
+  const img = harness.elements.find((el) => el.tag === 'img')
+  const configWrites = () => harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/config'))
+
+  // 两次快速输入：图案立刻到 180%，但还没有发请求
+  scale.value = '1.5'
+  scale.listeners.get('input')[0]({})
+  scale.value = '1.8'
+  scale.listeners.get('input')[0]({})
+  assert.equal(img.style.width, Math.round(180 * 1.8) + 'px', 'local preview applies immediately')
+  assert.equal(configWrites().length, 0, 'writes must be coalesced, not one per input')
+
+  harness.flushTitleTimers()
+  assert.equal(configWrites().length, 1, 'one trailing write')
+  assert.deepEqual(JSON.parse(configWrites()[0].options.body), { scale: 1.8 })
+
+  // 服务器还没确认：旧快照不得把宠物打回旧尺寸
+  harness.send({ ...base, scale: 1 })
+  assert.equal(img.style.width, Math.round(180 * 1.8) + 'px', 'stale snapshot must not shrink the pet')
+
+  // 快照与本地一致后让位；之后跟随服务器值
+  harness.send({ ...base, scale: 1.8 })
+  harness.send({ ...base, scale: 1.2 })
+  assert.equal(img.style.width, Math.round(180 * 1.2) + 'px', 'hold clears once confirmed')
+})
+
+test('wheel zoom accumulates locally instead of re-reading the stale snapshot', () => {
+  const harness = createHarness()
+  harness.send({ ...base, scale: 1 })
+  const dock = harness.elements.find((el) => el.title === '拖动我 · 点击互动 · 右键菜单')
+  const wheel = dock.listeners.get('wheel')?.[0]
+  assert.ok(wheel, 'dock wheel missing')
+  for (let i = 0; i < 3; i++) wheel({ preventDefault() {}, deltaY: -1 })
+  const img = harness.elements.find((el) => el.tag === 'img')
+  assert.equal(img.style.width, Math.round(180 * 1.15) + 'px', 'each notch must build on the local pending value')
+
+  harness.flushTitleTimers()
+  const writes = harness.fetches.filter(({ url }) => String(url).endsWith('/plugins/dsh-pet-remielle/config'))
+  assert.equal(writes.length, 1, 'three notches coalesce into one write')
+  assert.deepEqual(JSON.parse(writes[0].options.body), { scale: 1.15 })
+})
+
+// 空闲自动收起：空闲超过窗口期后气泡缩向宠物头部淡出；单击宠物展开；
+// 活动会话到达时自动展开。轮询每 0.8/3s 一次，计时不能被快照反复重置。
+test('idle bubble collapses, expands on pet click, and re-expands on activity', () => {
+  const harness = createHarness()
+  const idleSession = { sessionId: 's1', state: 'IDLE', message: '没有任务，我先眯一会儿', detail: 'dsh · 待机中', updatedAt: 1 }
+  harness.send({ ...base, state: 'IDLE', sessions: [idleSession] })
+  const stack = harness.elements.find((el) => el.className === 'rm2-pet-bubbles')
+  assert.ok(stack, 'bubble stack missing')
+  const collapsed = () => String(stack.className).includes('bubble-collapsed')
+
+  assert.equal(collapsed(), false, 'bubble starts expanded')
+  harness.flushTitleTimers()
+  assert.equal(collapsed(), true, 'idle bubble collapses after the idle window')
+
+  const dock = harness.elements.find((el) => el.title === '拖动我 · 点击互动 · 右键菜单')
+  assert.ok(dock, 'dock missing')
+  harness.click(dock)
+  assert.equal(collapsed(), false, 'clicking the pet expands the bubble')
+
+  harness.flushTitleTimers()
+  assert.equal(collapsed(), true, 'expanded idle bubble collapses again after the window')
+  harness.send({
+    ...base,
+    state: 'WORKING',
+    sessions: [{ ...idleSession, state: 'WORKING', phase: 'tool-call', message: '正在干活' }],
+  })
+  assert.equal(collapsed(), false, 'an active session auto-expands the bubble')
+})
+
+// 空闲收起受设置控制：0 与 120（旧 schema 边界）都表示常驻，不应收起。
+test('idle collapse honours the permanent bubbleIdleSec values', () => {
+  for (const sec of [0, 120]) {
+    const harness = createHarness()
+    const idleSession = { sessionId: 's1', state: 'IDLE', message: '没有任务，我先眯一会儿', detail: 'dsh · 待机中', updatedAt: 1 }
+    harness.send({ ...base, state: 'IDLE', bubbleIdleSec: sec, sessions: [idleSession] })
+    const stack = harness.elements.find((el) => el.className === 'rm2-pet-bubbles')
+    assert.ok(stack, 'bubble stack missing')
+    harness.flushTitleTimers()
+    assert.equal(String(stack.className).includes('bubble-collapsed'), false, sec + ' must mean permanent')
+  }
+})
+
+// 用量页只有单气泡可见、牌叠是 display:none：空闲计时器必须按「当前可见的气泡」
+// 判断，否则永远在 bubbleStack 的判空处 return，收起功能对用量页失效。
+test('idle collapse also fires on the usage-only page', () => {
+  const harness = createHarness()
+  const idleSession = { sessionId: 's1', state: 'IDLE', message: '没有任务，我先眯一会儿', detail: 'dsh · 待机中', updatedAt: 1 }
+  harness.send({
+    ...base,
+    state: 'IDLE',
+    showBubbleStatus: false,
+    showBubbleUsage: true,
+    bubbleIdleSec: 30,
+    sessions: [idleSession],
+  })
+  const single = harness.elements.find((el) => typeof el.className === 'string'
+    && el.className.includes('rm2-pet-bubble') && el.className.includes('top'))
+  assert.ok(single, 'usage single bubble missing')
+  harness.flushTitleTimers()
+  assert.equal(String(single.className).includes('bubble-collapsed'), true, 'usage bubble must collapse on idle')
+})
+
+
+// DSH Desktop 实测过同一渲染器里挂出两只网页宠物（各自 SSE/计时器都活着）：
+// 客户端的 apply 可能被调用多次。挂载必须幂等——第二次 apply 只能留下一只。
+test('a second client apply replaces the pet instead of stacking a duplicate', () => {
+  const harness = createHarness()
+  assert.equal(harness.roots(), 1, 'one pet after the first apply')
+  harness.applyAgain()
+  assert.equal(harness.roots(), 1, 'the second apply must replace the previous pet')
+  harness.applyAgain()
+  assert.equal(harness.roots(), 1, 'apply must stay idempotent')
+})

@@ -69,3 +69,32 @@ test('the measure node attaches once the body exists, and only once', () => {
     globalThis.document = withBody
   }
 })
+
+// 空闲收起与气泡宽度：两端共用的纯口径（此前是 client.core.js / pet-view.html
+// 各写一份，魔法数重复且已出现过用量页宽度分叉）。
+test('idle seconds normalize to permanent (0 or 120) with a 5–115 range', () => {
+  assert.equal(card.normalizeIdleSec(0), 0, '0 = 常驻')
+  assert.equal(card.normalizeIdleSec(120), 0, '120 = 常驻（旧 schema 边界值）')
+  assert.equal(card.normalizeIdleSec(30), 30)
+  assert.equal(card.normalizeIdleSec(3), 5, '低于下限归 5')
+  assert.equal(card.normalizeIdleSec(999), 60, '越界回落默认 60')
+  assert.equal(card.normalizeIdleSec(undefined), 60)
+  assert.equal(card.idleMsOf(0), 0)
+  assert.equal(card.idleMsOf(30), 30000)
+})
+
+test('available width folds the viewport by bubble zoom with a floor', () => {
+  assert.equal(card.availableWidthFor(1280, 1), 1256)
+  assert.equal(card.availableWidthFor(400, 2), 176)
+  assert.equal(card.availableWidthFor(400, 100), 150)
+  assert.equal(card.availableWidthFor(0, 0), 1256)
+})
+
+test('bubbleNeedsEye covers working and attention states', () => {
+  assert.equal(card.bubbleNeedsEye(null), false)
+  assert.equal(card.bubbleNeedsEye({ state: 'IDLE', sessions: [] }), false)
+  assert.equal(card.bubbleNeedsEye({ state: 'WORKING' }), true)
+  assert.equal(card.bubbleNeedsEye({ state: 'IDLE', sessions: [{ approval: true }] }), true)
+  assert.equal(card.bubbleNeedsEye({ state: 'IDLE', sessions: [{ completed: true }] }), true)
+  assert.equal(card.bubbleNeedsEye({ state: 'IDLE', sessions: [{}] }), false)
+})

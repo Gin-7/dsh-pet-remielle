@@ -20,7 +20,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Schema from '@deepseek-ai/schemastery'
-import { PetReducer, isSubagent, titleFromSessionLog } from './pet-reducer.js'
+import { PetReducer, isSubagent } from './pet-reducer.js'
 import { PetMessageKind, PetState, createMessage } from './protocol.js'
 import { DesktopWindow } from './desktop-window.js'
 import { electronArtifact, ensureElectronRuntime, missingRuntimeFiles } from './electron-fetch.mjs'
@@ -49,7 +49,7 @@ import { TURN_WATCHDOG_INTERVAL_MS, createTurnWatchdog } from './turn-watchdog.j
 const { compareSessions } = createRequire(import.meta.url)('./session-order.cjs')
 
 export const name = 'dsh-pet-remielle'
-export const inject = ['sessions', 'credentials']
+export const inject = ['sessions']
 export const CONFIG_ENDPOINT = '/plugins/dsh-pet-remielle/config'
 export const STATE_ENDPOINT = '/plugins/dsh-pet-remielle/state'
 export const STREAM_ENDPOINT = '/plugins/dsh-pet-remielle/stream'
@@ -61,6 +61,8 @@ export const PETS_ENDPOINT = '/plugins/dsh-pet-remielle/pets'
 export const ASSETS_PREFIX = '/plugins/dsh-pet-remielle/assets'
 export const PET_VIEW_ENDPOINT = '/plugins/dsh-pet-remielle/pet-view'
 export const DESKTOP_ENDPOINT = '/plugins/dsh-pet-remielle/desktop'
+/** 桌面窗从进程启动到回报「已显示」的最长等待（毫秒）；超时即放弃本次启动。 */
+export const DESKTOP_READY_TIMEOUT_MS = 6000
 export const PLUGIN_KEY = 'dsh-pet-remielle'
 export const BALANCE_ENDPOINT = '/plugins/dsh-pet-remielle/balance'
 
@@ -77,6 +79,7 @@ export const Config = Schema.object({
   bubbleScaleSync: Schema.boolean().default(true).description('消息气泡随桌宠同步缩放（关闭后气泡使用固定大小）').volatile(),
   bubbleScaleRatio: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡相对桌宠的大小（同步缩放时生效，1 = 与桌宠等比）').volatile(),
   bubbleFixedSize: Schema.number().min(0.5).max(2).step(0.05).default(1).description('气泡固定大小（不随桌宠同步缩放时生效，1 = 基准大小）').volatile(),
+  bubbleIdleSec: Schema.number().min(0).max(120).step(5).default(60).description('气泡空闲多少秒后自动收起（0 或 120 = 常驻永不收起；5–115 秒）').volatile(),
   opacity: Schema.number().min(0.3).max(1).step(0.05).default(1).role('slider').description('透明度').volatile(),
   locked: Schema.boolean().default(false).description('锁定位置（禁止拖动）').volatile(),
   paused: Schema.boolean().default(false).description('暂停动画').volatile(),
@@ -103,6 +106,7 @@ export const defaults = Object.freeze({
   bubbleScaleSync: true,
   bubbleScaleRatio: 1,
   bubbleFixedSize: 1,
+  bubbleIdleSec: 60,
   opacity: 1,
   locked: false,
   paused: false,
@@ -130,6 +134,7 @@ export function publicConfig(config = {}) {
     bubbleScaleSync: config.bubbleScaleSync ?? defaults.bubbleScaleSync,
     bubbleScaleRatio: config.bubbleScaleRatio ?? defaults.bubbleScaleRatio,
     bubbleFixedSize: config.bubbleFixedSize ?? defaults.bubbleFixedSize,
+    bubbleIdleSec: config.bubbleIdleSec ?? defaults.bubbleIdleSec,
     opacity: config.opacity ?? defaults.opacity,
     locked: config.locked ?? defaults.locked,
     paused: config.paused ?? defaults.paused,
@@ -221,9 +226,16 @@ function jsonResponse(res, status, body) {
   res.end(payload)
 }
 
-/** Loopback + same-origin guard shared by every host endpoint. */
+/**
+ * 同机 + 同源守卫，供全部宿主端点复用。
+ *
+ * DSH 0.2.1 起监听地址只能是具体字面量（wildcard 在加载期被拒），部署可以绑
+ * LAN IP，此时 127.0.0.1 根本不监听——只认回环会让本机桌面窗也连不上。这里
+ * 额外接受「连接自身的本地地址」，即仅限本机经该绑定地址建立的连接；跨机 LAN
+ * 客户端仍被拒，带副作用的更新端点另用严格回环（见 self-update.js）。
+ */
 function localOnly(req, res) {
-  if (localHostOk(req)) return true
+  if (localHostOk(req, { allowLocalAddress: true })) return true
   jsonResponse(res, 403, { error: 'local access only' })
   return false
 }
@@ -249,7 +261,7 @@ async function readJsonBody(req) {
 export const CONFIG_PATCH_FIELDS = Object.freeze([
   'enabled', 'scale', 'mirror', 'bubbleScaleSync', 'bubbleScaleRatio', 'bubbleFixedSize',
   'opacity', 'locked', 'paused', 'hidden', 'includeSubagents', 'showBubble', 'showBubbleStatus',
-  'showBubbleUsage', 'usageMode', 'platformToken', 'desktopMode', 'posX', 'posY',
+  'showBubbleUsage', 'usageMode', 'platformToken', 'bubbleIdleSec', 'desktopMode', 'posX', 'posY',
   'desktopX', 'desktopY',
 ])
 
@@ -613,11 +625,35 @@ export function createAssetsHandler(petsRoot) {
 }
 
 /**
- * 一个会话的标题：优先 `sessionTitle` 服务的权威口径；服务未加载或被隔离时，
- * cordis 的属性访问会直接抛错（可选链拦不住），静默失败就等于没标题——那就回落
- * 到直接折会话日志。插件加载前已写入标题的老会话（DSH 重启后恢复运行的会话）
- * 不会重放 `session/title` 事件，标题只在日志里。
+ * 一个会话的标题，只读宿主 `sessionTitle` 服务的权威口径。
+ *
+ * 该服务覆盖恢复运行的老会话：DSH 重启后不会重放 `session/title` 事件，但
+ * `get()` 内部按会话日志折出最新标题，插件不必再自行翻日志。2026-09-09 起
+ * DSH 已把同步读事件（`snapshotEvents`/`eventAt`/`ownEvents`）标为弃用并
+ * 禁止新增调用，原先的日志折取回退因此下线；服务不在（非 DSH 宿主）时宁缺标题。
+ * cordis 属性访问在被隔离时会直接抛错，可选链拦不住，故整体 try/catch。
  */
+function sessionTitleOf(ctx, session) {
+  if (!session) return undefined
+  let get
+  try {
+    get = ctx.sessionTitle?.get
+  } catch {
+    return null // 服务被隔离：视为不可用，允许事件热路径稍后重试
+  }
+  // 服务未安装/已停用（例如 profile 停用了 session-title）：返回 null 表示
+  // 「不可用」，与「服务在、但会话还没有标题」的 undefined 区分开，调用方据此
+  // 决定是否保留后续重试机会。
+  if (typeof get !== 'function') return null
+  try {
+    const title = get.call(ctx.sessionTitle, session)?.title
+    return title ? String(title).trim() || undefined : undefined
+  } catch {
+    return null // 调用期异常（context 失活等）：同样允许重试
+  }
+}
+
+/** `sessionTitleOf` 的按 id 取 Session 版本。 */
 export function readSessionTitle(ctx, sessionId) {
   let session
   try {
@@ -625,18 +661,8 @@ export function readSessionTitle(ctx, sessionId) {
   } catch {
     return undefined
   }
-  if (!session) return undefined
-  try {
-    const title = ctx.sessionTitle?.get?.(session)?.title
-    const text = title ? String(title).trim() : ''
-    if (text) return text
-  } catch { /* 服务不可用：继续走日志折取 */ }
-  // 折取本身也可能抛（`snapshotEvents()` 的实现细节），不能让异常冒到快照构建。
-  try {
-    return titleFromSessionLog(session)
-  } catch {
-    return undefined
-  }
+  const title = sessionTitleOf(ctx, session)
+  return title === null ? undefined : title
 }
 
 /**
@@ -671,7 +697,7 @@ export function dropSubagentCompletions(completionQueue, isSubagentSession) {
  * `petId` (the active pet) rides along so the client can resolve sticker
  * URLs; it resolves through the registry, not the raw config.
  */
-export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getBootId, getDesktopActive, getWebClients, getActivePet, getStates, getCompletions, getCurrent, getTheme, getSessionTitle }) {
+export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, getBootId, getDesktopActive, getWebClients, getActivePet, getStates, getCompletions, getCurrent, getTheme, getSessionTitle, getProject }) {
   const petIdOf = typeof getPetId === 'function' ? getPetId : () => DEFAULT_PET_ID
   const bootIdOf = typeof getBootId === 'function' ? getBootId : () => undefined
   const desktopActiveOf = typeof getDesktopActive === 'function' ? getDesktopActive : () => false
@@ -682,6 +708,22 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
   const currentOf = typeof getCurrent === 'function' ? getCurrent : () => undefined
   const themeOf = typeof getTheme === 'function' ? getTheme : () => ''
   const titleOf = typeof getSessionTitle === 'function' ? getSessionTitle : () => undefined
+  const projectOf = typeof getProject === 'function' ? getProject : () => undefined
+  // 工作区标题（用户可改名）由宿主注入；没有则保留 reducer 的 cwd 回退值。
+  const withProject = (entry) => {
+    if (!entry) return entry
+    const sid = entry.targetSessionId || entry.sessionId
+    const project = sid ? projectOf(sid) : undefined
+    if (!project || project === entry.project) return entry
+    const next = { ...entry, project }
+    // reducer 早已把旧的 cwd 名拼进 detail 首段（`project · 阶段`）。只换 project
+    // 字段会出现「悬停提示/背板 tip 是工作区名、卡片第二行还是旧名」，故同步替换。
+    const prefix = typeof entry.project === 'string' && entry.project ? entry.project + ' · ' : ''
+    if (prefix && typeof entry.detail === 'string' && entry.detail.startsWith(prefix)) {
+      next.detail = project + ' · ' + entry.detail.slice(prefix.length)
+    }
+    return next
+  }
   const withTitle = (entry) => {
     if (!entry || entry.title) return entry
     const sid = entry.targetSessionId || entry.sessionId
@@ -770,6 +812,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
         planReview: false,
       }))
     }
+    for (let i = 0; i < sessions.length; i += 1) sessions[i] = withProject(sessions[i])
     const currentId = currentOf() || undefined
     sessions.sort((left, right) => compareSessions(left, right, currentId))
     return {
@@ -787,6 +830,7 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       showBubble: config.showBubble !== false,
       showBubbleStatus: config.showBubbleStatus !== false,
       showBubbleUsage: config.showBubbleUsage === true,
+      bubbleIdleSec: config.bubbleIdleSec ?? defaults.bubbleIdleSec,
       usageMode: config.usageMode ?? 'ledger',
       // platformToken 不进 /state 快照：快照经 SSE 广播给所有订阅者（任意网页标签
       // 页、桌面窗），明文带令牌等于把平台凭证散给每个连上快照的页面。
@@ -938,6 +982,47 @@ function sseHeaders(res) {
   })
 }
 
+/**
+ * 本机监听器的 origin。
+ *
+ * DSH 0.2.1 起 `webServer` 暴露 `getOrigin()`：协议（含 `--tls`）、绑定地址的
+ * URL 形式与端口都由宿主给出。此前插件写死 `http://127.0.0.1:<port>`，一旦部署
+ * 绑到 `::1`、LAN 字面量或 HTTPS 监听，桌面悬浮窗就指向一个没在监听（或协议
+ * 不对）的地址。旧宿主没有该方法时回落原值。
+ * @param httpCtx - 提供 webServer 的宿主上下文。
+ * @param port - webServer 监听端口（旧宿主回退用）。
+ */
+export function listenerOrigin(httpCtx, port) {
+  try {
+    const origin = httpCtx?.webServer?.getOrigin?.()
+    if (typeof origin === 'string' && origin) {
+      // 宿主半初始化时可能给出半成品；只接受可解析的 http(s) origin。
+      try {
+        const url = new URL(origin)
+        if ((url.protocol === 'http:' || url.protocol === 'https:') && url.host) return origin
+      } catch { /* 解析失败：走端口回退 */ }
+    }
+  } catch { /* 未绑定或旧宿主无此方法 */ }
+  const fallbackPort = Number(port)
+  if (!Number.isInteger(fallbackPort) || fallbackPort <= 0 || fallbackPort > 65535) return ''
+  return `http://127.0.0.1:${fallbackPort}`
+}
+
+/**
+ * 宿主对外广告的应用 URL：优先 `webApp.getAdvertisedUrl()`（0.2.1 新增，
+ * 已含 `--public-url`，无则回落到监听地址），供「在浏览器打开 DSH」使用。
+ * 注意它与监听 origin 不是一回事：桌面窗加载 pet-view 必须走监听地址。
+ * @param httpCtx - 宿主上下文。
+ * @param fallback - 无 webApp 服务时的回落值。
+ */
+export function advertisedOrigin(httpCtx, fallback) {
+  try {
+    const advertised = httpCtx?.get?.('webApp')?.getAdvertisedUrl?.()
+    if (typeof advertised === 'string' && advertised) return advertised
+  } catch { /* 旧宿主无 webApp */ }
+  return fallback
+}
+
 function mount(ctx, config = {}, eventCtx = ctx) {
   const logger = ctx.logger ?? console
   const settings = createSettingsScope(ctx, config, eventCtx)
@@ -950,7 +1035,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   const bootId = `boot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
   const resolveCredential = (name) => {
-    const cred = eventCtx.credentials ?? ctx.credentials
+    let cred
+    try {
+      cred = eventCtx.credentials ?? ctx.credentials
+    } catch {
+      return Promise.resolve(null) // 可选服务：未挂载/被隔离时余额降级
+    }
     if (!cred || typeof cred.resolve !== 'function') return Promise.resolve(null)
     try {
       return cred.resolve(name)
@@ -967,7 +1057,11 @@ function mount(ctx, config = {}, eventCtx = ctx) {
 
   const petsRoot = fileURLToPath(new URL('../assets/pets/', import.meta.url))
 
-  const reducer = new PetReducer({ includeSubagents: base.includeSubagents === true })
+  const reducer = new PetReducer({
+    includeSubagents: base.includeSubagents === true,
+    // 标题的唯一来源：宿主 sessionTitle 服务（含恢复会话）。reducer 不再读会话日志。
+    resolveTitle: (session) => sessionTitleOf(ctx, session),
+  })
   let latest = createMessage(PetMessageKind.STATE, {
     state: PetState.IDLE,
     mood: '06',
@@ -1081,6 +1175,41 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   // 网页端上报的当前会话：按标签页独立 TTL，宿主退出/页面崩溃后不残留僵尸 id。
   // 快照与「当前会话失败即已读」判定共用这一个口径。
   const currentSessionNow = () => currentSessionStore.current()
+  // 工作区标题来自宿主 workspaceRegistry（用户可在侧边栏改名），不随会话事件
+  // 下发；按会话 cwd 的规范化路径映射，并做短 TTL 缓存，改名后几秒内生效。
+  const WORKSPACE_TITLE_TTL_MS = 3000
+  let workspaceTitles = new Map()
+  let workspaceTitlesAt = 0
+  let workspaceTitlesLoading = false
+  const workspaceKey = (path) => String(path || '').replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase()
+  const refreshWorkspaceTitles = () => {
+    const now = Date.now()
+    if (workspaceTitlesLoading || now - workspaceTitlesAt < WORKSPACE_TITLE_TTL_MS) return
+    workspaceTitlesAt = now
+    let registry
+    try { registry = ctx.get('workspaceRegistry') } catch { registry = undefined }
+    if (!registry || typeof registry.list !== 'function') return
+    workspaceTitlesLoading = true
+    Promise.resolve()
+      .then(() => registry.list())
+      .then((list) => {
+        const next = new Map()
+        for (const workspace of list || []) {
+          if (!workspace || typeof workspace.path !== 'string' || !workspace.title) continue
+          next.set(workspaceKey(workspace.path), String(workspace.title))
+        }
+        workspaceTitles = next
+      })
+      .catch(() => {})
+      .finally(() => { workspaceTitlesLoading = false })
+  }
+  const workspaceTitleOf = (sessionId) => {
+    refreshWorkspaceTitles()
+    let cwd
+    try { cwd = ctx.sessions?.get?.(sessionId)?.header?.cwd } catch { cwd = undefined }
+    if (!cwd) return undefined
+    return workspaceTitles.get(workspaceKey(cwd))
+  }
   const serveState = createStateSnapshot({
     getLatest: () => latest,
     getPulse: () => pulse,
@@ -1095,6 +1224,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     getCurrent: () => currentSessionNow(),
     getTheme: () => (Date.now() - reportedHostThemeAt < HOST_THEME_TTL_MS ? reportedHostTheme : ''),
     getSessionTitle: (sessionId) => readSessionTitle(ctx, sessionId),
+    getProject: (sessionId) => workspaceTitleOf(sessionId),
   })
 
   const hub = createStreamHub({
@@ -1215,14 +1345,41 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   void refreshRegistry()
 
   if (typeof ctx.inject === 'function') {
-    // 只注入 webServer。写上 connection 会让整个回调（内含全部 20 条路由注册）
+    // 只注入 webServer。写上 connection 会让整个回调（内含全部 21 条路由注册）
     // 在没有该服务的宿主上不执行，插件静默全瘫——见下方 dshWebUrl 的说明。
     ctx.inject(['webServer'], (httpCtx) => {
-      const port = httpCtx.webServer.port
-
       // ---- desktop pet window (transparent always-on-top Electron) ----
       let desktop = undefined
+      // 桌面窗可见性握手：进程启动 ≠ 用户看得见。desktopActive 只在窗口主进程
+      // POST /desktop/ready 后才置位；超时未回报则放弃本次启动、保留页面宠物，
+      // 避免「网页宠物已隐藏、透明窗又永远不显示」的双端皆无。
+      let desktopReadyTimer
+      let desktopReadyReported = false
+      const clearDesktopReadyTimer = () => {
+        if (desktopReadyTimer !== undefined) clearTimeout(desktopReadyTimer)
+        desktopReadyTimer = undefined
+      }
+      const markDesktopReady = () => {
+        if (!desktop) return false
+        desktopReadyReported = true
+        clearDesktopReadyTimer()
+        if (!desktopActive) { desktopActive = true; hub.broadcast() }
+        return true
+      }
+      const armDesktopReady = () => {
+        clearDesktopReadyTimer()
+        desktopReadyReported = false
+        desktopReadyTimer = setTimeout(() => {
+          desktopReadyTimer = undefined
+          if (desktopActive || !desktop || desktopReadyReported) return
+          logger.warn?.('dsh-pet-remielle: 桌面窗 6 秒内未确认可见，放弃本次启动（保留页面宠物）')
+          stopDesktop('not-ready')
+        }, DESKTOP_READY_TIMEOUT_MS)
+        desktopReadyTimer.unref?.()
+      }
       const stopDesktop = (reason) => {
+        clearDesktopReadyTimer()
+        desktopReadyReported = false
         desktop?.stop(reason)
         desktop = undefined
         if (desktopActive) {
@@ -1230,33 +1387,46 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           hub.broadcast()
         }
       }
-      const origin = `http://127.0.0.1:${port}`
-      const desktopUrl = `${origin}${PET_VIEW_ENDPOINT}`
+      // origin 惰性求值：webServer 可能还没完成 listen（getOrigin 会 throw、port 也
+      // 未定义）。只在真正建窗时取；取不到就明确放弃本次启动，不拿坏 URL 去 loadURL。
+      const localOrigin = () => listenerOrigin(httpCtx, httpCtx.webServer.port)
+      const desktopUrl = () => {
+        const base = localOrigin()
+        return base ? `${base}${PET_VIEW_ENDPOINT}` : ''
+      }
       // DSH 0.1.2-alpha.1 起 Web 壳根路径要带进程 token，走 connection 的
       // authenticatedUrl。connection 是**可选依赖**：上一版把它写进
       // ctx.inject(['webServer', 'connection'])，而 cordis 的 inject 要所有服务
-      // 都可用才执行回调——这一整个块里包着全部 20 条 webServer.register，于是
+      // 都可用才执行回调——这一整个块里包着全部 21 条 webServer.register，于是
       // 宿主一旦没有 connection 服务，插件不是某个端点坏，而是整条路由表都不
       // 注册，且没有任何报错。commit 的本意只是让 desktop url 带 token，不该
       // gate 整张表，故这里改回只注入 webServer，connection 走 get() 取。
       // 同时保留容错：authenticatedUrl 抛错时回落裸 origin，别让一次取 URL
       // 的异常把整个桌面窗启动流程带走。
+      //
+      // 基址优先用宿主广告的 URL（webApp.getAdvertisedUrl，含 --public-url）：
+      // 「在浏览器打开 DSH」要打开的正是这个地址；桌面窗自己加载 pet-view 则
+      // 必须用监听 origin，两者不可混用。
       const dshWebUrl = () => {
+        const base = advertisedOrigin(httpCtx, localOrigin())
+        if (!base) return ''
         try {
           const connection = httpCtx.get('connection')
           return typeof connection?.authenticatedUrl === 'function'
-            ? connection.authenticatedUrl(origin)
-            : origin
+            ? connection.authenticatedUrl(base)
+            : base
         } catch (error) {
-          logger.warn?.(`dsh-pet-remielle: dshWebUrl() 失败，回落 origin（${String(error)}）`)
-          return origin
+          logger.warn?.(`dsh-pet-remielle: dshWebUrl() 失败，回落 ${base}（${String(error)}）`)
+          return base
         }
       }
-      // DSH Desktop 宿主给 WebServer 所有路由套了 desktopBrowserAccess 准入
-      // （仅带渲染进程专属头的请求放行，未开「浏览器访问」时其余一律 403
-      // "forbidden"）。独立桌宠 Electron 窗口必须从宿主上下文取 rendererHeader
-      // 交给窗口进程自注入（pet-window.cjs，与 DSH Desktop 自家渲染进程同
-      // 机制）；普通 web 宿主无此服务，get 返回 undefined 即跳过。
+      // 下游 DSH Desktop 构建（issue #24 报告的 `forbidden`）曾被判定为
+      // `desktopBrowserAccess` 渲染进程准入。核对结论：公开 DSH 树（含
+      // 0.2.1-rc.2 全部 tag、全部分支与 git 历史）都没有这个服务；公开 Desktop
+      // 的转发层 web-document.ts 反而会删掉 Origin/Sec-Fetch-Site 并注入宿主
+      // cookie，本插件的回环 + Host 同源守卫因此直接放行。此处保留可选探测仅为
+      // 兼容私有/下游 Desktop 构建：拿到 rendererHeader 就交给窗口进程自注入，
+      // 普通宿主 get 返回 undefined 即跳过。
       let desktopRendererHeader = null
       try {
         const access = httpCtx.get('desktopBrowserAccess')
@@ -1268,6 +1438,8 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         // stop() 先清空旧实例的 child，但旧 Electron 的 exit 事件可能迟到；
         // 只有仍然挂在宿主 desktop 引用上的实例才能清理当前窗口。
         if (desktop !== owner) return
+        clearDesktopReadyTimer()
+        desktopReadyReported = false
         desktop = undefined
         if (desktopActive) { desktopActive = false; hub.broadcast() }
       }
@@ -1279,11 +1451,22 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         // verified desktopMode flipped to true, so skip this guard —
         // settings.get() may still reflect the OLD value at this point.
         if (!allowFetch && settings.get().desktopMode === false) return
+        // 没有监听 origin 时直接放弃本次启动：这与「没有 Electron 后端」不同，
+        // 不能落到下面的下载确认分支（否则会引导用户下载运行时，装完仍起不了窗）。
+        if (!desktopUrl()) {
+          logger.error?.('dsh-pet-remielle: webServer 尚未就绪（无监听 origin），本次不启动桌面窗')
+          return
+        }
         /** Create a DesktopWindow, attach it, and broadcast state. */
         const spawnWindow = () => {
+          const url = desktopUrl()
+          if (!url) {
+            logger.error?.('dsh-pet-remielle: webServer 尚未就绪（无监听 origin），本次不启动桌面窗')
+            return false
+          }
           let w
           try {
-            w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, posX: settings.get().desktopX, posY: settings.get().desktopY, rendererHeader: desktopRendererHeader })
+            w = new DesktopWindow({ url, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, posX: settings.get().desktopX, posY: settings.get().desktopY, rendererHeader: desktopRendererHeader })
           } catch (error) {
             logger.error?.(`dsh-pet-remielle: 创建桌面窗失败：${String(error)}`)
             return false
@@ -1297,7 +1480,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             desktop = undefined
             return false
           }
-          if (!desktopActive) { desktopActive = true; hub.broadcast() }
+          armDesktopReady()
           return true
         }
         if (spawnWindow()) return
@@ -1351,12 +1534,27 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             // Open the window directly using the known path instead of
             // relying on resolveBackend() which re-scans and may not
             // find the freshly installed runtime in time.
+            const url = desktopUrl()
+            if (!url) {
+              logger.error?.('dsh-pet-remielle: webServer 尚未就绪（无监听 origin），下载完成后不启动桌面窗')
+              downloading = false
+              confirmSent = false
+              return
+            }
             const petWindowCjs = new URL('../src/pet-window.cjs', import.meta.url)
             const backend = { kind: 'electron', command: exe, args: [petWindowCjs.href.startsWith('file://') ? fileURLToPath(petWindowCjs) : String(petWindowCjs)] }
-            const w = new DesktopWindow({ url: desktopUrl, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, backend, posX: settings.get().desktopX, posY: settings.get().desktopY, rendererHeader: desktopRendererHeader })
+            const w = new DesktopWindow({ url, webUrl: dshWebUrl(), logger, onExit: onDesktopExit, backend, posX: settings.get().desktopX, posY: settings.get().desktopY, rendererHeader: desktopRendererHeader })
             desktop = w
-            w.start()
-            if (!desktopActive) { desktopActive = true; hub.broadcast() }
+            try {
+              w.start()
+            } catch (error) {
+              // 启动失败必须清掉 desktop：否则后续 startDesktop 会因 if (desktop) 直接返回，
+              // 用户只能关开一次才恢复。页面宠物保持可见。
+              logger.error?.(`dsh-pet-remielle: 下载完成后启动桌面窗失败：${String(error)}`)
+              desktop = undefined
+              return
+            }
+            armDesktopReady()
           })
           .catch((error) => {
             hub.notify({ protocolVersion: 1, kind: 'download', phase: 'error', text: error.message })
@@ -1404,19 +1602,29 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         return bubbleTitleJs
       }
 
+      // 单条路由注册失败（例如下游插件已占用同一路径）不能拖垮整张表：逐条隔离，
+      // 失败只记日志并跳过该条，其余端点照常注册。
+      const registerRoute = (route) => {
+        try {
+          return httpCtx.webServer.register(route)
+        } catch (error) {
+          logger.error?.(`dsh-pet-remielle: 路由注册失败 ${route?.path ?? '?'}：${String(error)}`)
+          return () => {}
+        }
+      }
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: CONFIG_ENDPOINT, handler: createConfigHandler(settings) }),
+        () => registerRoute({ kind: 'exact', path: CONFIG_ENDPOINT, handler: createConfigHandler(settings) }),
         'dsh-pet-remielle: local settings endpoint',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: STATE_ENDPOINT, handler: async (req, res) => {
+        () => registerRoute({ kind: 'exact', path: STATE_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return
           jsonResponse(res, 200, serveState())
         } }),
         'dsh-pet-remielle: local state endpoint',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({
+        () => registerRoute({
           kind: 'exact',
           path: COMPLETION_ACK_ENDPOINT,
           handler: createCompletionAckHandler({
@@ -1430,7 +1638,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: completion notification acknowledgement',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({
+        () => registerRoute({
           kind: 'exact',
           path: SESSION_OPEN_ENDPOINT,
           handler: createSessionOpenHandler({
@@ -1445,7 +1653,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: desktop session open/approve bridge',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({
+        () => registerRoute({
           kind: 'exact',
           path: SESSION_CURRENT_ENDPOINT,
           handler: createSessionCurrentHandler({
@@ -1461,7 +1669,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: web client current-session uplink',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({
+        () => registerRoute({
           kind: 'exact',
           path: THEME_ENDPOINT,
           handler: createThemeHandler({
@@ -1478,7 +1686,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: web client host-theme uplink',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: BALANCE_ENDPOINT, handler: async (req, res) => {
+        () => registerRoute({ kind: 'exact', path: BALANCE_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return
           try {
             const payload = await balanceService.getBalance(settings.get().usageMode)
@@ -1490,7 +1698,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: balance endpoint',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: STREAM_ENDPOINT, handler: async (req, res) => {
+        () => registerRoute({ kind: 'exact', path: STREAM_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return
           sseHeaders(res)
           // 订阅者类型入 hub：?client=pet（桌宠窗口）不参与 delivered 计数，
@@ -1516,7 +1724,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: local state stream endpoint',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: PET_VIEW_ENDPOINT, handler: async (req, res) => {
+        () => registerRoute({ kind: 'exact', path: PET_VIEW_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return
           const html = await readPetView()
           res.writeHead(200, {
@@ -1528,7 +1736,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: pet window view',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/balance-widget.js', handler: async (req, res) => {
+        () => registerRoute({ kind: 'exact', path: '/plugins/dsh-pet-remielle/balance-widget.js', handler: async (req, res) => {
           if (!localOnly(req, res)) return
           const js = await readBalanceWidget()
           res.writeHead(200, {
@@ -1540,7 +1748,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: balance bubble client script',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/session-order.js', handler: async (req, res) => {
+        () => registerRoute({ kind: 'exact', path: '/plugins/dsh-pet-remielle/session-order.js', handler: async (req, res) => {
           if (!localOnly(req, res)) return
           const js = await readSessionOrder()
           res.writeHead(200, {
@@ -1552,7 +1760,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: shared bubble order script',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/pet-tip.js', handler: async (req, res) => {
+        () => registerRoute({ kind: 'exact', path: '/plugins/dsh-pet-remielle/pet-tip.js', handler: async (req, res) => {
           if (!localOnly(req, res)) return
           const js = await readPetTip()
           res.writeHead(200, {
@@ -1564,7 +1772,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: shared pet tip script',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/gif-frame.js', handler: async (req, res) => {
+        () => registerRoute({ kind: 'exact', path: '/plugins/dsh-pet-remielle/gif-frame.js', handler: async (req, res) => {
           if (!localOnly(req, res)) return
           const js = await readGifFrame()
           res.writeHead(200, {
@@ -1576,7 +1784,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: shared gif frame script',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: '/plugins/dsh-pet-remielle/bubble-title.js', handler: async (req, res) => {
+        () => registerRoute({ kind: 'exact', path: '/plugins/dsh-pet-remielle/bubble-title.js', handler: async (req, res) => {
           if (!localOnly(req, res)) return
           const js = await readBubbleTitle()
           res.writeHead(200, {
@@ -1588,7 +1796,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: shared bubble card script',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({
+        () => registerRoute({
           kind: 'prefix',
           path: DESKTOP_ENDPOINT,
           handler: async (req, res) => {
@@ -1609,8 +1817,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
             // cancel-download 分支自行响应后必须 return：落到末尾会二次
             // jsonResponse → ERR_HTTP_HEADERS_SENT（实测宿主日志反复告警）。
             else if (action === 'cancel-download') { confirmSent = false; jsonResponse(res, 200, { ok: true }); return }
+            // 窗口主进程 show() 之后回报：宿主据此才把 desktopActive 置 true（隐藏页面宠物）。
+            else if (action === 'ready') { markDesktopReady(); jsonResponse(res, 200, { ok: true, desktopActive }); return }
             else {
-              jsonResponse(res, 400, { ok: false, error: 'expected /desktop/start, /desktop/stop, /desktop/confirm-download, or /desktop/cancel-download' })
+              jsonResponse(res, 400, { ok: false, error: 'expected /desktop/start, /desktop/stop, /desktop/confirm-download, /desktop/cancel-download, or /desktop/ready' })
               return
             }
             jsonResponse(res, 200, { ok: true, desktopActive })
@@ -1619,7 +1829,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: desktop window start/stop/confirm-download',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({
+        () => registerRoute({
           kind: 'prefix',
           path: PETS_ENDPOINT,
           handler: createPetsHandler({ settings, refreshRegistry }),
@@ -1627,7 +1837,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: pets registry endpoint',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({
+        () => registerRoute({
           kind: 'prefix',
           path: ASSETS_PREFIX,
           handler: createAssetsHandler(petsRoot),
@@ -1655,19 +1865,19 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         },
       })
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: CHECK_ENDPOINT, handler: checkHandler }),
+        () => registerRoute({ kind: 'exact', path: CHECK_ENDPOINT, handler: checkHandler }),
         'dsh-pet-remielle: version check endpoint',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: UPDATE_ENDPOINT, handler: updateHandler }),
+        () => registerRoute({ kind: 'exact', path: UPDATE_ENDPOINT, handler: updateHandler }),
         'dsh-pet-remielle: one-click update endpoint',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: PROGRESS_ENDPOINT, handler: progressHandler }),
+        () => registerRoute({ kind: 'exact', path: PROGRESS_ENDPOINT, handler: progressHandler }),
         'dsh-pet-remielle: live update progress endpoint',
       )
       httpCtx.effect(
-        () => httpCtx.webServer.register({ kind: 'exact', path: INFO_ENDPOINT, handler: infoHandler }),
+        () => registerRoute({ kind: 'exact', path: INFO_ENDPOINT, handler: infoHandler }),
         'dsh-pet-remielle: install info endpoint',
       )
       httpCtx.effect(() => () => {
@@ -1695,7 +1905,21 @@ function mount(ctx, config = {}, eventCtx = ctx) {
 
 export function apply(ctx, config = {}) {
   if (typeof ctx.inject === 'function') {
-    ctx.inject(['settings'], (settingsCtx) => mount(settingsCtx, config, ctx))
+    // settings 是可选能力：未就绪时不能把整个插件（含全部路由）一起 gate 掉。
+    // 正常路径仍等 settings 就绪；超时后按本地配置 scope 降级挂载。
+    let mounted = false
+    const start = (settingsCtx) => {
+      if (mounted) return
+      mounted = true
+      mount(settingsCtx ?? ctx, config, ctx)
+    }
+    ctx.inject(['settings'], (settingsCtx) => start(settingsCtx))
+    const timer = setTimeout(() => {
+      if (mounted) return
+      ctx.logger?.warn?.('dsh-pet-remielle: settings 服务未就绪，降级为本地配置挂载')
+      start(ctx)
+    }, 5000)
+    timer.unref?.()
     return
   }
   mount(ctx, config)

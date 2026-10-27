@@ -96,39 +96,29 @@ const idle = createMessage(PetMessageKind.STATE, {
 })
 
 
-// 会话标题读取：sessionTitle 服务口径优先，服务不可用时回落会话日志折取
-// （宿主 Session 的公开 API 是 snapshotEvents()，不是 session.events）。
-function logSession(...titles) {
-  return { snapshotEvents: () => titles.map((title) => ({ type: 'session/title', data: { title } })) }
-}
-
-test('readSessionTitle prefers the service and folds the log on every fallback', () => {
+// 会话标题只读宿主 sessionTitle 服务：它自己折会话日志，覆盖 DSH 重启后恢复的
+// 老会话。DSH 已弃用同步事件读（snapshotEvents），插件不得再自行翻日志。
+test('readSessionTitle reads only the sessionTitle service', () => {
+  const session = { header: { id: 's1' } }
   assert.equal(readSessionTitle({
-    sessions: { get: (id) => (id === 's1' ? logSession('日志里的标题') : undefined) },
+    sessions: { get: (id) => (id === 's1' ? session : undefined) },
     sessionTitle: { get: () => ({ title: '  服务口径标题  ' }) },
   }, 's1'), '服务口径标题')
 
-  // cordis 上服务未加载/被隔离时属性访问会抛错，可选链拦不住，必须整体兜住
-  assert.equal(readSessionTitle({
-    sessions: { get: () => logSession('旧标题', '日志里的标题') },
-    get sessionTitle() { throw new Error('cannot get property "sessionTitle" without inject') },
-  }, 's1'), '日志里的标题')
-
-  const session = logSession('日志里的标题')
-  for (const unusable of [undefined, { title: '   ' }]) {
-    assert.equal(
-      readSessionTitle({ sessions: { get: () => session }, sessionTitle: { get: () => unusable } }, 's1'),
-      '日志里的标题',
-      '服务拿不到可用标题时应回落日志',
-    )
+  // 服务不可用/无可用标题：宁缺标题，也不得回落到弃用的日志读取
+  for (const ctx of [
+    // cordis 上服务未加载/被隔离时属性访问会直接抛错，可选链拦不住
+    { sessions: { get: () => session }, get sessionTitle() { throw new Error('cannot get property "sessionTitle" without inject') } },
+    { sessions: { get: () => session }, sessionTitle: { get: () => undefined } },
+    { sessions: { get: () => session }, sessionTitle: { get: () => ({ title: '   ' }) } },
+    { sessions: { get: () => ({ snapshotEvents: () => [{ type: 'session/title', data: { title: '日志里的标题' } }] }) } },
+  ]) {
+    assert.equal(readSessionTitle(ctx, 's1'), undefined, '不得回落到会话日志')
   }
-})
 
-test('readSessionTitle is undefined without a live session or a usable title', () => {
+  // 没有活会话（id 不存在 / context 失活）同样返回 undefined
   assert.equal(readSessionTitle({ sessions: { get: () => undefined } }, 'nope'), undefined)
-  assert.equal(readSessionTitle({ sessions: { get: () => logSession() } }, 's1'), undefined)
   assert.equal(readSessionTitle({ get sessions() { throw new Error('inactive context') } }, 's1'), undefined)
-  assert.equal(readSessionTitle({ sessions: { get: () => ({ snapshotEvents: () => { throw new Error('boom') } }) } }, 's1'), undefined)
 })
 
 test('createSettingsScope reads volatile refs and disposes the profile presentation', async () => {  const writes = []

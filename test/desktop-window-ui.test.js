@@ -224,6 +224,9 @@ test('in-page and desktop right-click menus keep the same rows, order and write 
       const chunk = body.slice(at, i + 1 < marks.length ? marks[i + 1] : body.length)
       const found = new Set()
       for (const m of chunk.matchAll(/patchConfig(?:Fields)?\(\s*'([A-Za-z]+)'/g)) found.add(m[1])
+      // 外观滑块/滚轮改为「本地预览 + 尾值合并写入」，写回入口是 commitVisual(field)，
+      // 语义不变（该行仍写回这个配置键），解析时一并认。
+      for (const m of chunk.matchAll(/commitVisual\(\s*'([A-Za-z]+)'/g)) found.add(m[1])
       for (const m of chunk.matchAll(/patchConfig(?:Fields)?\(\s*\{([\s\S]*?)\}/g)) {
         for (const k of m[1].matchAll(/([A-Za-z]+)\s*:/g)) found.add(k[1])
       }
@@ -348,4 +351,52 @@ test('host theme uplink is wired end to end between web client and host', () => 
   assert.match(core, /attributeFilter: \['data-ds-dark-theme'\]/)
   // 网页关闭后清空上报，桌面窗回落系统主题
   assert.match(core, /function clearReportedHostTheme\(\)/)
+})
+
+// 两端外观与空闲收起必须同构：只改一端会重新出现「先到目标 → 回原大小 →
+// 逐级放大」或「一端收起另一端不收」。桌面端没有 DOM 测试环境，这里做源码级
+// 钉住（行为本身由 client-interactions 的用例覆盖）。
+test('both clients share the visual and idle contract', () => {
+  const core = readFileSync(new URL('../src/client.core.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../src/pet-view.html', import.meta.url), 'utf8')
+  for (const [name, src] of [['client.core.js', core], ['pet-view.html', html]]) {
+    assert.match(src, /VISUAL_COMMIT_MS = 200/, name + ' must coalesce writes')
+    assert.match(src, /VISUAL_HOLD_MS = 1500/, name + ' must hold the local value')
+    assert.match(src, /function resolveVisual\(/, name + ' must resolve held values')
+    assert.match(src, /function previewVisual\(/, name + ' must preview locally')
+    assert.match(src, /function commitVisual\(/, name + ' must commit coalesced')
+  }
+  // 滚轮以本地未确认值为基数，避免快速滚动时每格都从旧服务器值 +0.05
+  assert.match(core, /var held = visualHold\.scale/)
+  assert.match(html, /var held = visualHold\.scale/)
+  // 用量单气泡与状态牌叠共用收起源（空闲收起对两种气泡都生效）
+  assert.match(core, /for \(const node of \[bubbleStack, bubble\]\)/, 'web must collapse the usage bubble too')
+  assert.match(html, /for \(const node of \[bubbleStack, bubbleEl\]\)/, 'desktop must collapse the usage bubble too')
+  assert.match(core, /syncBubbleIdle\(snapshot, snapshot\.showBubble !== false\)/, 'web balance page must arm idle sync')
+  assert.match(html, /syncBubbleIdle\(snapshot, snapshot\.showBubble !== false && \(show \|\| bothOn\)\)/, 'desktop balance page must arm idle sync')
+  // 空闲收起/单击展开，以及「不可见时只停计时、不顺手展开」
+  for (const [name, src] of [['client.core.js', core], ['pet-view.html', html]]) {
+    assert.match(src, /var bubbleIdleMs = 60000/, name + ' must define the idle window default')
+    assert.match(src, /snapshot\.bubbleIdleSec/, name + ' must honour the configured idle seconds')
+    assert.match(src, /__bubbleTitle\.normalizeIdleSec\(/, name + ' must share the 0/120 permanent rule')
+    assert.match(src, /\.bubble-collapsed/, name + ' must ship the collapse style')
+    assert.match(src, /__bubbleTitle\.bubbleNeedsEye/, name + ' must share the activity detector')
+    assert.match(src, /function expandBubble\(/, name + ' must expand on demand')
+    assert.match(src, /if \(bubbleCollapsed\) \{ expandBubble\(\);? ?/, name + ' click must expand first')
+    assert.match(src, /if \(!visible\) \{[\s\S]{0,200}?clearBubbleIdleTimer\(\)[\s\S]{0,120}?return/, name + ' hidden bubble must only stop the timer')
+  }
+})
+
+// 桌面窗可见性握手：进程启动后必须等窗口主进程回报 ready 才隐藏页面宠物；6s 未
+// 回报放弃本次启动。下载路径启动失败要清掉 desktop，否则 if (desktop) 永久短路。
+test('desktop window readiness gates desktopActive and cleans up a failed start', () => {
+  const index = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
+  const child = readFileSync(new URL('../src/pet-window.cjs', import.meta.url), 'utf8')
+  assert.match(index, /DESKTOP_READY_TIMEOUT_MS = 6000/)
+  assert.match(index, /const markDesktopReady = \(\) =>/)
+  assert.match(index, /armDesktopReady\(\)/)
+  assert.match(index, /action === 'ready'/)
+  assert.match(index, /下载完成后启动桌面窗失败[\s\S]{0,240}?desktop = undefined/)
+  assert.match(child, /reportDesktopReady/)
+  assert.match(child, /\/desktop\/ready/)
 })

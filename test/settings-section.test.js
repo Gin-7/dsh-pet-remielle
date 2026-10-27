@@ -321,3 +321,44 @@ test('friendlyUpdateError turns a stalled update into a short actionable hint', 
   assert.ok(!timedOut.includes('npmmirror'), '不得再给出镜像方案')
   assert.equal(sandbox.__f('EPERM: resource busy'), 'EPERM: resource busy\n\n💡 建议手动更新。', '普通错误追加一句手动更新建议')
 })
+
+// 消息气泡滑块的写回行为：0=关闭、中间=秒数、120=常驻；两个内容开关都关时
+// 从 0 拉回非 0 必须同时恢复「状态」，否则 showBubble=true 但没有任何内容可显示。
+test('message-bubble slider writes the expected fields', async () => {
+  const cases = [
+    { value: 0, config: { showBubble: true, bubbleIdleSec: 30, showBubbleStatus: true }, expected: { showBubble: false } },
+    { value: 30, config: { showBubble: true, bubbleIdleSec: 60, showBubbleStatus: true }, expected: { showBubble: true, bubbleIdleSec: 30 } },
+    { value: 120, config: { showBubble: true, bubbleIdleSec: 60, showBubbleStatus: true }, expected: { showBubble: true, bubbleIdleSec: 0 } },
+    {
+      value: 30,
+      config: { showBubble: false, bubbleIdleSec: 30, showBubbleStatus: false, showBubbleUsage: false },
+      expected: { showBubble: true, bubbleIdleSec: 30, showBubbleStatus: true },
+    },
+  ]
+  for (const entry of cases) {
+    const { sandbox } = loadPetsSection()
+    const writes = []
+    sandbox.fetch = (url, options) => {
+      writes.push({ url: String(url), body: options && options.body })
+      return Promise.resolve({ ok: true, json: async () => ({ ok: true }) })
+    }
+    const fresh = makeReact({ tab: 'behavior', data: null, config: entry.config, updMsg: null })
+    sandbox.React = fresh.React
+    sandbox.require = (name) => {
+      if (name === 'react') return fresh.React
+      throw new Error('require ' + name)
+    }
+    const tree = sandbox.PetsSection()
+    let slider
+    walk(tree, (node) => {
+      if (slider) return
+      if (node.type === 'input' && node.props && node.props.type === 'range' && node.props.max === 120) slider = node
+    })
+    assert.ok(slider, 'master bubble slider missing')
+    slider.props.onChange({ target: { value: String(entry.value) } })
+    await new Promise((resolve) => setTimeout(resolve, 320))
+    const configWrites = writes.filter((w) => w.url.includes('/config'))
+    assert.equal(configWrites.length, 1, 'value ' + entry.value + ' must coalesce into one write')
+    assert.deepEqual(JSON.parse(configWrites[0].body), entry.expected)
+  }
+})

@@ -195,7 +195,14 @@ var CSS = [
   'body[data-ds-dark-theme] .rm2-pet-menu-sep{background:rgba(255,150,185,.25);}',
   // 堆叠会话卡（状态页）
   '.rm2-pet-bubbles{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:16px;width:fit-content;max-width:min(440px,calc(100vw - 24px));display:flex;flex-direction:column;align-items:center;pointer-events:none;cursor:default;}',
-  '.rm2-pet-bubbles .rm2-pet-bubble{position:relative;bottom:auto;left:auto;transform:none;margin:0;box-sizing:border-box;width:fit-content;min-width:200px;max-width:min(440px,calc(100vw - 24px));height:91px;min-height:91px;padding:16px 27px 16px 40px;border-radius:29px;corner-shape:round!important;text-align:left;box-shadow:0 11px 32px rgba(190,70,110,.22);transition:width .18s ease,opacity .18s ease;}',
+  // 空闲收起：气泡缩向宠物头部并淡出（transform-origin 在底边中点，即宠物头顶一侧），
+  // 单击宠物再展开；展开/收起都走同一条 transition，收起后保持 DOM 以便就地展开。
+  '.rm2-pet-bubbles{transition:transform .28s ease,opacity .28s ease;transform-origin:50% 100%;}',
+  '.rm2-pet-bubbles.bubble-collapsed{transform:translateX(-50%) translateY(18px) scale(.12);opacity:0;pointer-events:none;}',
+  '.rm2-pet-bubbles.bubble-collapsed .rm2-pet-bubble{pointer-events:none;}',
+  // 用量单气泡（不在牌叠里）同样随空闲收起：保留自身的 translateX(-50%) 居中
+  '.rm2-pet-bubble.bubble-collapsed{transform:translateX(-50%) translateY(18px) scale(.12);opacity:0;pointer-events:none;transition:transform .28s ease,opacity .28s ease;transform-origin:50% 100%;}',
+'.rm2-pet-bubbles .rm2-pet-bubble{position:relative;bottom:auto;left:auto;transform:none;margin:0;box-sizing:border-box;width:fit-content;min-width:200px;max-width:min(440px,calc(100vw - 24px));height:91px;min-height:91px;padding:16px 27px 16px 40px;border-radius:29px;corner-shape:round!important;text-align:left;box-shadow:0 11px 32px rgba(190,70,110,.22);transition:width .18s ease,opacity .18s ease;}',
   '.rm2-pet-bubbles .rm2-pet-bubble::after{display:none;}',
   '.rm2-pet-bubbles .rm2-pet-bubble{pointer-events:auto;cursor:pointer;}',
   '.rm2-pet-bubble-header{display:flex;align-items:center;min-width:0;min-height:29px;}',
@@ -206,7 +213,10 @@ var CSS = [
   '.rm2-pet-bubble-completion{display:none;flex:none;width:16px;height:16px;margin-right:13px;border-radius:50%;corner-shape:round!important;background:#35c979;box-shadow:0 0 0 4px rgba(53,201,121,.18);}',
   '.rm2-pet-bubble.completed .rm2-pet-bubble-completion{display:inline-flex;}',
   '.rm2-pet-bubble.idle-placeholder{height:61px;min-height:61px;padding-top:15px;padding-bottom:15px;}',
-  '.rm2-pet-bubble-stack-count{display:none;position:absolute;right:16px;bottom:0;height:8px;align-items:center;color:#f0a8c0;font-size:9px;font-weight:700;line-height:8px;}',
+  // 背板右下角只露出底部 11px，且卡片 overflow:hidden + 29px 圆角：原来 right:16/bottom:0
+  // 正好落在圆弧外，数字底边被裁。右移到圆角起点之外（right:32）并留 10px 行高，
+  // 保证整块落在可见直边里。
+  '.rm2-pet-bubble-stack-count{display:none;position:absolute;right:32px;bottom:0;height:10px;align-items:center;color:#f0a8c0;font-size:9px;font-weight:700;line-height:10px;}',
   '.rm2-pet-bubble.summary-backboard .rm2-pet-bubble-stack-count{display:flex;}',
   '.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-title,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-detail,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-action,.rm2-pet-bubbles .rm2-pet-bubble:not(.top) .rm2-pet-bubble-completion{visibility:hidden;}',
   '.rm2-pet-bubble.top{border-color:#b03a60;box-shadow:0 8px 24px rgba(190,70,110,.22);}',
@@ -736,11 +746,21 @@ function PetsSection(props) {
     setConfig(function (prev) { return Object.assign({}, prev, {[key]: val}) })
     void patchConfig(key, val)
   }
-  var writeSlider = function (key, val) {
-    setConfig(function (prev) { return Object.assign({}, prev, {[key]: val}) })
+  // 通用「本地即时更新 + 250ms 合并写入」：单字段滑块与多字段（消息气泡要一次写
+  // showBubble/bubbleIdleSec/showBubbleStatus）共用同一套去抖，避免两处各写一份。
+  var writeFieldsDebounced = function (key, fields) {
+    setConfig(function (prev) { return Object.assign({}, prev, fields) })
     var pending = sliderTimers.current.get(key)
     if (pending) clearTimeout(pending)
-    sliderTimers.current.set(key, setTimeout(function () { sliderTimers.current.delete(key); void patchConfig(key, val) }, 250))
+    sliderTimers.current.set(key, setTimeout(function () {
+      sliderTimers.current.delete(key)
+      void patchConfigFields(fields)
+    }, 250))
+  }
+  var writeSlider = function (key, val) {
+    var fields = {}
+    fields[key] = val
+    writeFieldsDebounced(key, fields)
   }
   var sectionStyle = { display: 'grid', gap: 10, padding: embedded ? '0 2px' : '4px 2px', fontSize: 13, color: 'var(--dsw-alias-label-primary, #172347)' }
   var tabs = [
@@ -852,6 +872,38 @@ function PetsSection(props) {
             React.createElement(AddPetForm, { refresh: refresh }),
           ),
   )
+  // 消息气泡滑块：0 = 关闭（状态与用量都隐藏）；中间 = 空闲收起秒数；最右 = 常驻。
+  // 用一个控件同时表达「显示/关闭 + 收起时间」，与页面内右键菜单的滑块语义一致。
+  var BUBBLE_SLIDER_MAX = 120
+  function bubbleMasterValue(current) {
+    if (current.showBubble === false) return 0
+    var sec = Number(current.bubbleIdleSec)
+    // 0 与 120 都视为常驻：120 是旧 schema 允许的边界值，统一解释避免「显示 115
+    // 秒但实际按 120 秒计时」的分叉。
+    if (!isFinite(sec) || sec <= 0 || sec >= BUBBLE_SLIDER_MAX) return BUBBLE_SLIDER_MAX
+    return Math.min(BUBBLE_SLIDER_MAX - 5, Math.max(5, sec))
+  }
+  function bubbleMasterLabel(current) {
+    var value = bubbleMasterValue(current)
+    if (value === 0) return '关闭'
+    if (value === BUBBLE_SLIDER_MAX) return '常驻'
+    return value + ' 秒'
+  }
+  function writeBubbleMaster(value) {
+    // 本地先更新（滑块与右侧标签跟手），写回合并成一次请求，避免拖到 0 时排在
+    // 几十个串行写入之后才生效。
+    var fields
+    if (value === 0) {
+      fields = { showBubble: false }
+    } else {
+      fields = { showBubble: true, bubbleIdleSec: value === BUBBLE_SLIDER_MAX ? 0 : value }
+      // 两个内容开关都关着时，从 0 拖回非 0 需要同时恢复「状态」——否则 showBubble
+      // 虽然是 true，但没有可显示的内容，滑块显示秒数却看不到气泡。
+      if (v.showBubbleStatus === false && v.showBubbleUsage !== true) fields.showBubbleStatus = true
+    }
+    writeFieldsDebounced('bubbleMaster', fields)
+  }
+
   var behaviorTab = React.createElement('div', null,
     React.createElement(Field, { label: '启用桌宠', hint: '关闭后宠物立即隐藏。' },
       React.createElement(Switch, { checked: v.enabled !== false, disabled: !config, onChange: function (val) { write('enabled', val) } }),
@@ -877,21 +929,27 @@ function PetsSection(props) {
     React.createElement(Field, { label: '响应子 Agent', hint: '默认只跟随顶层任务，避免状态过度跳动。' },
       React.createElement(Switch, { checked: v.includeSubagents === true, disabled: !config, onChange: function (val) { write('includeSubagents', val) } }),
     ),
-    // ---- 消息气泡 ----
-    React.createElement(Field, { label: '消息气泡', hint: '开启后可在宠物上方显示气泡；子项控制气泡内容（多开时可翻页）。' },
-      React.createElement(Switch, { checked: v.showBubble !== false, disabled: !config, onChange: function (val) {
-        // 总开关关闭→全部子开关关闭；总开关开启→全部子开关打开，回到状态页
-        write('showBubble', val)
-        if (!val) { write('showBubbleStatus', false); write('showBubbleUsage', false) }
-        else {
-          write('showBubbleStatus', true); write('showBubbleUsage', true)
-          // 气泡从关到开的页面重置由宠物视图的 updateBubble 处理
-        }
-      } }),
+    // ---- 消息气泡（显示开关 + 空闲收起时间合一）----
+    React.createElement(Field, {
+      label: '消息气泡',
+      hint: React.createElement(React.Fragment, null,
+        '0 = 关闭（状态与用量气泡都隐藏）；中间为空闲收起秒数；最右 = 常驻。',
+        React.createElement('br'),
+        '单击宠物可展开，有活动会话自动展开。',
+      ),
+    },
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        React.createElement('span', { style: { minWidth: 42, textAlign: 'right', fontSize: 12, opacity: 0.75 } }, bubbleMasterLabel(v)),
+        React.createElement('input', {
+          type: 'range', className: 'rm2-pet-settings-slider', min: 0, max: 120, step: 5,
+          value: bubbleMasterValue(v), disabled: !config, style: { flex: 1 },
+          onChange: function (e) { writeBubbleMaster(Number(e.target.value)) },
+        }),
+      ),
     ),
     // 气泡子项（始终展开）
     React.createElement('div', { style: { marginLeft: 20, display: 'grid', gap: 8 } },
-      React.createElement(Field, { label: '状态', hint: '在气泡中显示会话状态（阶段/待办/进度）' },
+      React.createElement(Field, { label: '状态', hint: '在气泡中显示会话状态（阶段/待办/进度）。' },
         React.createElement(Switch, { checked: v.showBubbleStatus !== false, disabled: !config, onChange: function (val) {
           write('showBubbleStatus', val)
           if (val) write('showBubble', true)
@@ -1074,7 +1132,21 @@ function PetsSection(props) {
 
 /** ---------- floating pet (plain DOM) ---------- */
 
+// 同一页面只允许一只宠物：DSH Desktop 实测会出现「同一渲染器里挂出两个客户端」
+// （切换模式后同页两只网页宠物，各自 SSE/计时器都活着）。挂载前先收尾上一实例，
+// 再兜底清掉任何没有收尾钩子的孤儿 root。
+var activePetTeardown = null
+
 function mountPet(ctx) {
+  if (typeof activePetTeardown === 'function') {
+    try { activePetTeardown() } catch (e) { /* 旧实例收尾失败不阻断新实例 */ }
+    activePetTeardown = null
+  }
+  var orphanRoots = document.querySelectorAll('[data-rm2-pet-root]')
+  for (var orphanIndex = 0; orphanIndex < orphanRoots.length; orphanIndex++) {
+    var orphanNode = orphanRoots[orphanIndex]
+    if (orphanNode.parentNode) orphanNode.parentNode.removeChild(orphanNode)
+  }
   function optionalService(name) {
     if (!ctx) return undefined
     try {
@@ -1336,13 +1408,85 @@ function mountPet(ctx) {
     img.style.transform = snapshot && snapshot.mirror === true ? 'scaleX(-1)' : ''
   }
 
+  // ---- 外观字段（scale/opacity）：本地预览 + 尾值合并写入 + 快照让位 ----
+  // 菜单滑块/滚轮原先每个 input/wheel 都发一次 PATCH。单次配置写入 160–500ms 且
+  // 服务端串行，一次拖满会排 5–8 秒；期间任何旧快照/轮询都会把乐观预览打回旧值，
+  // 随后又随排队写入逐级放大（「先到目标 → 回原大小 → 慢慢变大」）。现在：
+  //   ① 输入只改本地预览，200ms 尾值合并成一次 PATCH；
+  //   ② 写入被快照确认前（或 1.5s 超时前），旧快照不得覆盖本地目标值。
+  var VISUAL_COMMIT_MS = 200
+  var VISUAL_HOLD_MS = 1500
+  var visualTimers = {}
+  var visualHold = {}
+
+  /** 快照值 vs 本地未确认值：确认前用本地，超时后交还快照。 */
+  function resolveVisual(field, serverValue) {
+    var hold = visualHold[field]
+    if (!hold) return serverValue
+    if (Date.now() > hold.until) { delete visualHold[field]; return serverValue }
+    return hold.value
+  }
+
+  /**
+   * 服务端快照到达时结算未确认值：一致（写入已生效）或超时就交还快照。
+   * 只在网络快照（SSE/轮询）里调用——本地预览/重绘也会走 applySnapshot，
+   * 若在那里结算，预览自己就会把 hold 清掉，随后旧快照立刻打回旧值。
+   */
+  function settleVisual(snapshot) {
+    for (var i = 0; i < 2; i++) {
+      var field = i === 0 ? 'scale' : 'opacity'
+      var hold = visualHold[field]
+      if (!hold) continue
+      var incoming = field === 'scale' ? (snapshot.scale ?? 1) : (snapshot.opacity ?? 1)
+      if (Date.now() > hold.until || Math.abs(Number(incoming) - hold.value) < 1e-6) delete visualHold[field]
+    }
+  }
+
+  /** 立即本地预览（改 lastSnapshot 并重绘一次），同时登记未确认值。 */
+  function previewVisual(field, value) {
+    visualHold[field] = { value: value, until: Date.now() + VISUAL_HOLD_MS }
+    if (!lastSnapshot) return
+    lastSnapshot = { ...lastSnapshot, [field]: value }
+    applyVisuals(lastSnapshot)
+  }
+
+  /** 尾值合并：连续输入只保留最后一次，200ms 后发一个 PATCH。 */
+  function commitVisual(field, value) {
+    var pending = visualTimers[field]
+    if (pending) window.clearTimeout(pending)
+    visualTimers[field] = window.setTimeout(function () {
+      delete visualTimers[field]
+      void patchConfig(field, value)
+    }, VISUAL_COMMIT_MS)
+  }
+
+  /**
+   * 气泡 zoom：与桌宠同一份「本地未确认值」，再按视口高度收紧。
+   * - 用原始快照的 scale 会让气泡在快速缩放后反复放大-缩回（图案有 hold 不抖，
+   *   气泡却跟着旧广播抖几次），所以先过 resolveVisual；
+   * - 卡片高度固定 91 逻辑像素，缩放后必须仍在宠物上方放得下（桌面窗 400×520），
+   *   宽度由 bubbleRowWidth 的 availableWidth 另行限幅，这里只限高。
+   */
+  function bubbleZoomFor(snapshot, petHeight) {
+    var scale = resolveVisual('scale', snapshot.scale ?? 1)
+    var zoom = __tip.bubbleZoomOf({ ...snapshot, scale: scale })
+    var viewH = window.innerHeight || 0
+    if (viewH > 0 && petHeight > 0) {
+      // 20=root 底距, 16=气泡区 margin-bottom；卡片自身 13px margin 在 zoom 内会
+      // 一起缩放，故按 91 + 13 = 104 折算，避免高倍时顶部多出约 13px 被裁。
+      var avail = viewH - 20 - petHeight - 16
+      if (avail > 0) zoom = Math.min(zoom, Math.max(0.3, avail / 104))
+    }
+    return zoom
+  }
+
   function applyVisuals(snapshot) {
-    var scale = snapshot.scale ?? 1
-    var opacity = snapshot.opacity ?? 1
+    var scale = resolveVisual('scale', snapshot.scale ?? 1)
+    var opacity = resolveVisual('opacity', snapshot.opacity ?? 1)
     img.style.width = Math.round(180 * scale) + 'px'
     applyMirror(snapshot)
     // 气泡缩放口径与桌面端共用 pet-tip.cjs 的 bubbleZoomOf（同步/固定两模式）
-    var bubbleZoom = __tip.bubbleZoomOf(snapshot)
+    var bubbleZoom = bubbleZoomFor(snapshot, img.offsetHeight)
     bubble.style.zoom = String(bubbleZoom)
     bubbleStack.style.zoom = String(bubbleZoom)
     img.style.opacity = String(opacity)
@@ -1789,6 +1933,82 @@ function mountPet(ctx) {
     for (var i = 0; i < text.length; i++) total += text.charCodeAt(i)
     return Math.abs(total)
   }
+  // ---- 空闲自动收起 / 单击展开 ----
+  // 宠物空闲超过一段时间后气泡自动缩回头部并淡出；单击宠物从收起处展开；
+  // 有活动会话（工作中/审批/提问/计划审核/完成提醒）时自动展开。
+  var bubbleIdleMs = 60000
+  var bubbleIdleSec = 60
+  var bubbleCollapsed = false
+  var bubbleIdleTimer = 0
+
+  /** 快照里是否存在需要用户看的活动（工作中或任一会话待处理/完成）。 */
+  // 与桌面端共用同一份判定（src/bubble-title.cjs），避免两端各写一份后漂移。
+  var bubbleNeedsEye = __bubbleTitle.bubbleNeedsEye
+
+  function setBubbleCollapsed(collapsed) {
+    if (bubbleCollapsed === collapsed) return
+    bubbleCollapsed = collapsed
+    // 状态牌叠与用量单气泡共用同一份收起状态：两者都是"气泡"，其中一个可见时
+    // 空闲收起对它们生效；点击宠物展开对当前可见的那个生效。
+    for (const node of [bubbleStack, bubble]) {
+      if (collapsed) node.classList.add('bubble-collapsed')
+      else node.classList.remove('bubble-collapsed')
+    }
+  }
+
+  function clearBubbleIdleTimer() {
+    if (!bubbleIdleTimer) return
+    window.clearTimeout(bubbleIdleTimer)
+    bubbleIdleTimer = 0
+  }
+
+  /** 已在计时就不重置：轮询每 0.8/3s 一次，重置会让计时永远不触发。 */
+  function armBubbleIdleTimer(restart) {
+    if (bubbleCollapsed) return
+    if (bubbleIdleTimer && restart !== true) return
+    clearBubbleIdleTimer()
+    bubbleIdleTimer = window.setTimeout(function () {
+      bubbleIdleTimer = 0
+      // 用量页时牌叠是 display:none，但单气泡可见——必须按「当前可见的气泡」判断，
+      // 否则用量页的计时器永远在这里 return，收起功能失效。
+      var stackHidden = bubbleStack.style.display === 'none'
+      var singleHidden = !bubble || bubble.style.display === 'none'
+      if (stackHidden && singleHidden) return
+      setBubbleCollapsed(true)
+    }, bubbleIdleMs)
+  }
+
+  function expandBubble() {
+    clearBubbleIdleTimer()
+    setBubbleCollapsed(false)
+    armBubbleIdleTimer(true)
+  }
+
+  /** 每次刷新牌叠时同步收起状态：活动→展开，无气泡→复位，空闲→保证计时在跑。 */
+  function syncBubbleIdle(snapshot, visible) {
+    // 秒数来自设置：0 = 常驻（永不收起）；旧宿主缺字段时回落到 60s
+    // 共享口径：0 与 120 都归为常驻，5–115 为秒数，非法值回落 60
+    bubbleIdleSec = __bubbleTitle.normalizeIdleSec(snapshot.bubbleIdleSec)
+    bubbleIdleMs = __bubbleTitle.idleMsOf(bubbleIdleSec)
+    if (!visible) {
+      // 气泡暂时不可见（没有可显示的卡）：只停计时，不要顺手展开——否则下一次
+      // 可见时气泡会「自己冒出来」，然后又要等一个周期才收起。
+      clearBubbleIdleTimer()
+      return
+    }
+    if (bubbleIdleSec === 0) {
+      clearBubbleIdleTimer()
+      if (bubbleCollapsed) setBubbleCollapsed(false)
+      return
+    }
+    if (bubbleNeedsEye(snapshot)) {
+      clearBubbleIdleTimer()
+      if (bubbleCollapsed) setBubbleCollapsed(false)
+      return
+    }
+    armBubbleIdleTimer(false)
+  }
+
   function updateBubbles(snapshot) {
     if (!snapshot) return
     // A present sessions[] is authoritative even when empty. Falling back to
@@ -1951,7 +2171,10 @@ function mountPet(ctx) {
       bubbleEl.node.style.maxWidth = ''
       bubbleEl.node.style.width = '100%'
     }
-    var deckWidth = bubbleRowWidth(measuredWidth)
+    // 按当前气泡 zoom 折算可用逻辑宽度：zoom=2 时 400px 视口只剩 176px 逻辑宽，
+    // 否则卡的视觉宽度会翻倍、被窗口/视口裁掉（桌面悬浮窗固定 400×520）。
+    var deckZoom = bubbleZoomFor(snapshot, img.offsetHeight)
+    var deckWidth = bubbleRowWidth(measuredWidth, __bubbleTitle.availableWidthFor(window.innerWidth, deckZoom))
     var deckWidthPx = deckWidth + 'px'
     if (bubbleStack.style.width !== deckWidthPx) bubbleStack.style.width = deckWidthPx
     for (var j = 0; j < count; j++) {
@@ -1975,6 +2198,7 @@ function mountPet(ctx) {
     }
     bubbleStack.style.display = snapshot.bubble !== false && count > 0 ? 'flex' : 'none'
     if (count === 0) bubbleStack.style.width = ''
+    syncBubbleIdle(snapshot, snapshot.bubble !== false && count > 0)
   }
   // Follow the user's current conversation so its bubble ranks on top of
   // same-priority peers (the "which dialog is on top" rule).
@@ -2076,6 +2300,8 @@ function mountPet(ctx) {
       // 即使暂无余额数据也显示气泡容器（至少保留圆点，供切回状态页）
       // 单开用量且余额帧未就绪时也保留容器（显示“余额加载中…”），不再整泡消失
       bubble.style.display = 'block'
+      // 用量页可见时同样参与空闲收起（与状态牌叠共用收起源）
+      syncBubbleIdle(snapshot, snapshot.showBubble !== false)
       if (show) {
         bubbleTitle.textContent = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
         bubbleTitle.style.color = ''
@@ -2090,7 +2316,10 @@ function mountPet(ctx) {
         var titleText = (balanceFrame.label || 'DeepSeek 余额') + '  ' + (balanceFrame.amount || '--')
         var detailText = (balanceFrame.detail || '') + ' · ' + (balanceFrame.period || '')
         var maxTextW = Math.max(measureTextW(bubbleTitle, titleText), measureTextW(bubbleDetail, detailText))
-        bubble.style.width = bubbleRowWidth(maxTextW) + 'px'
+        // 与状态牌叠同一口径：本地未确认的 scale + 按视口高度收紧，避免用量页
+        // 在缩放拖动期间用旧快照算宽度、与另一页宽度不一致。
+        var balanceZoom = bubbleZoomFor(snapshot, img.offsetHeight)
+        bubble.style.width = bubbleRowWidth(maxTextW, __bubbleTitle.availableWidthFor(window.innerWidth, balanceZoom)) + 'px'
       } else {
         bubbleTitle.textContent = '余额加载中…'
         bubbleDetail.textContent = ''
@@ -2108,8 +2337,9 @@ function mountPet(ctx) {
   }
 
   /** Single entry point for both polling and the SSE stream. */
-  function applySnapshot(snapshot) {
+  function applySnapshot(snapshot, fromServer) {
     if (disposed || !snapshot) return
+    if (fromServer) settleVisual(snapshot)
     // 服务端告别帧：插件 dispose 时在路由注销前经 SSE 推送（issue #34），
     // 收到即自拆——这是「关闭插件时网页桌宠立即消失」的主路径，毫秒级。
     if (snapshot.kind === 'plugin-gone') {
@@ -2275,7 +2505,7 @@ function mountPet(ctx) {
       } catch (err) {
         return
       }
-      applySnapshot(snapshot)
+      applySnapshot(snapshot, true)
     }
     // 连接一断就立刻补一次轮询（issue #34）：插件停用时 hub.close() 掐断 SSE，
     // onerror 即时触发，配合 404 藏匿把「关插件→桌宠消失」压到一个轮询周期内，
@@ -2360,7 +2590,8 @@ function mountPet(ctx) {
   // Per-mood alignment offset (legacy, kept for API compat). Since all GIFs
   // are now the same size, this just sets a consistent width.
   function applyOffset(mood) {
-    var scale = (lastSnapshot && lastSnapshot.scale) || 1
+    // 与 applyVisuals 同一口径：写入被快照确认前，旧快照的 scale 不得把宽度打回去。
+    var scale = resolveVisual('scale', (lastSnapshot && lastSnapshot.scale) || 1)
     img.style.width = Math.round(180 * scale) + 'px'
     applyMirror(lastSnapshot)
   }
@@ -2531,7 +2762,7 @@ function mountPet(ctx) {
       if (disposed) return
       if (snapshot) {
         stateGoneStreak = 0
-        applySnapshot(snapshot)
+        applySnapshot(snapshot, true)
         return
       }
       if (lastStateHttpStatus === 404) {
@@ -2594,6 +2825,8 @@ function mountPet(ctx) {
 
   dock.addEventListener('click', function () {
     if (dragMoved) return
+    // 气泡处于「空闲收起」态时，单击宠物只负责展开，不顺手换表情。
+    if (bubbleCollapsed) { expandBubble(); return }
     var candidates = MOOD_ORDER.filter(function (m) { return m !== currentMood })
     var pick = candidates[Math.floor(Math.random() * candidates.length)]
     manualOverride = { mood: pick, until: Date.now() + 1800 }
@@ -2647,9 +2880,13 @@ function mountPet(ctx) {
     e.preventDefault()
     if (!lastSnapshot) return
     var delta = e.deltaY < 0 ? 0.05 : -0.05
-    var next = Math.min(2, Math.max(0.5, (lastSnapshot.scale ?? 1) + delta))
+    // 以本地未确认值为基数：否则快速滚动时每格都拿旧的服务器值 +0.05，
+    // 发出去的是一串几乎相同的值（图案要等快照回来才动）。
+    var held = visualHold.scale
+    var next = Math.min(2, Math.max(0.5, (held ? held.value : (lastSnapshot.scale ?? 1)) + delta))
     next = Math.round(next * 20) / 20
-    void patchConfig('scale', next)
+    previewVisual('scale', next)
+    commitVisual('scale', next)
   }, { passive: false })
 
   // ---- context menu ----
@@ -2731,18 +2968,12 @@ function mountPet(ctx) {
     menu.appendChild(makeSep())
     // ---- 外观：即时可见，全部就地调 ----
     menu.appendChild(makeSliderRow('角色大小', 0.5, 2, (snap && snap.scale) || 1, function (next) {
-      void patchConfig('scale', next)
-      if (lastSnapshot) {
-        lastSnapshot.scale = next
-        applyOffset(currentMood)
-      }
+      previewVisual('scale', next)
+      commitVisual('scale', next)
     }))
     menu.appendChild(makeSliderRow('透明度', 0.3, 1, (snap && snap.opacity) || 1, function (next) {
-      void patchConfig('opacity', next)
-      if (lastSnapshot) {
-        lastSnapshot.opacity = next
-        applyVisuals(lastSnapshot)
-      }
+      previewVisual('opacity', next)
+      commitVisual('opacity', next)
     }))
     menu.appendChild(makeToggleRow('左右镜像', snap ? snap.mirror === true : false, function () {
       var next = !(lastSnapshot ? lastSnapshot.mirror === true : false)
@@ -2891,6 +3122,7 @@ function mountPet(ctx) {
   function teardownPetClient() {
     if (tornDown) return
     tornDown = true
+    if (activePetTeardown === teardownPetClient) activePetTeardown = null
     clearReportedCurrentSession()
     clearReportedHostTheme()
     disposed = true
@@ -2920,6 +3152,10 @@ function mountPet(ctx) {
     if (pulseFallbackTimer) window.clearTimeout(pulseFallbackTimer)
     if (updatePollTimer) window.clearInterval(updatePollTimer)
     if (desktopHideTimer) { window.clearTimeout(desktopHideTimer); desktopHideTimer = null }
+    for (const field of Object.keys(visualTimers)) window.clearTimeout(visualTimers[field])
+    visualTimers = {}
+    visualHold = {}
+    clearBubbleIdleTimer()
     for (const el of bubbleEls.values()) clearBubbleTitleTimer(el)
     bubbleEls.clear()
     try { picStop() } catch (e) { /* ignore */ }
@@ -2931,6 +3167,14 @@ function mountPet(ctx) {
   }
   ctx.effect(function () { return teardownPetClient })
   onPluginGone(teardownPetClient)
+  activePetTeardown = teardownPetClient
+  // 诊断入口：控制台 __rm2Pet.roots() 正常应为 1；出现两只时先看它。
+  try {
+    window.__rm2Pet = {
+      roots: function () { return document.querySelectorAll('[data-rm2-pet-root]').length },
+      bootId: function () { return seenBootId },
+    }
+  } catch (e) { /* 非浏览器环境 */ }
 }
 
 /** ---------- plugin settings slots ---------- */
@@ -3002,6 +3246,6 @@ function apply(ctx) {
 
 module.exports = {
   name: 'dsh-pet-remielle-client',
-  inject: ['slots', 'sessions'],
+  inject: ['sessions'],
   apply: apply,
 }
