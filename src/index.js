@@ -181,7 +181,9 @@ function readConfig(config = {}) {
 }
 
 export function createSettingsScope(ctx, config = {}, eventCtx = ctx) {
-  const forms = ctx.settings
+  // settings 是可选的（静态 inject 只有 sessions），属性访问在未 inject 时会抛，
+  // 必须走 ctx.get()：降级挂载与「settings 尚未就绪」的路径都会走到这里。
+  const forms = hostService(ctx, 'settings')
   const get = () => readConfig(config)
   if (typeof forms?.register === 'function') {
     const scope = forms.register(PLUGIN_KEY, Config, { base: publicConfig(get()), applies: 'live' })
@@ -631,22 +633,44 @@ export function createAssetsHandler(petsRoot) {
  * `get()` 内部按会话日志折出最新标题，插件不必再自行翻日志。2026-09-09 起
  * DSH 已把同步读事件（`snapshotEvents`/`eventAt`/`ownEvents`）标为弃用并
  * 禁止新增调用，原先的日志折取回退因此下线；服务不在（非 DSH 宿主）时宁缺标题。
- * cordis 属性访问在被隔离时会直接抛错，可选链拦不住，故整体 try/catch。
+ * 服务读取统一走 `hostService()`：cordis 的属性访问在未 inject 时会直接抛错，
+ * 可选链拦不住，只有 `ctx.get(name)` 能安全读到可选服务。
  */
+
+/**
+ * 读一个宿主服务。
+ *
+ * cordis 里 `ctx.foo` 只在 `foo` 对当前上下文可见（已 inject 或已 provide）时才是
+ * 服务；否则属性访问直接抛 `cannot get property "foo" without inject`，可选链拦
+ * 不住。本插件把 settings / credentials / sessionTitle 都当可选能力，静态 inject
+ * 只声明 sessions，所以这些服务必须走 `ctx.get(name)`。纯对象 mock 与旧宿主没有
+ * `get()` 时才回落到属性访问。取不到时统一返回 null，调用方据此降级。
+ */
+export function hostService(ctx, name) {
+  if (typeof ctx?.get === 'function') {
+    try {
+      return ctx.get(name) ?? null
+    } catch {
+      return null
+    }
+  }
+  try {
+    return ctx?.[name] ?? null
+  } catch {
+    return null
+  }
+}
+
 function sessionTitleOf(ctx, session) {
   if (!session) return undefined
-  let get
-  try {
-    get = ctx.sessionTitle?.get
-  } catch {
-    return null // 服务被隔离：视为不可用，允许事件热路径稍后重试
-  }
+  const service = hostService(ctx, 'sessionTitle')
+  const get = service?.get
   // 服务未安装/已停用（例如 profile 停用了 session-title）：返回 null 表示
   // 「不可用」，与「服务在、但会话还没有标题」的 undefined 区分开，调用方据此
   // 决定是否保留后续重试机会。
   if (typeof get !== 'function') return null
   try {
-    const title = get.call(ctx.sessionTitle, session)?.title
+    const title = get.call(service, session)?.title
     return title ? String(title).trim() || undefined : undefined
   } catch {
     return null // 调用期异常（context 失活等）：同样允许重试
@@ -1035,13 +1059,10 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   const bootId = `boot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
   const resolveCredential = (name) => {
-    let cred
-    try {
-      cred = eventCtx.credentials ?? ctx.credentials
-    } catch {
-      return Promise.resolve(null) // 可选服务：未挂载/被隔离时余额降级
-    }
-    if (!cred || typeof cred.resolve !== 'function') return Promise.resolve(null)
+    // credentials 是可选的（静态 inject 只有 sessions），属性访问在未 inject 时
+    // 会抛 `cannot get property "credentials" without inject`，必须走 ctx.get()。
+    const cred = hostService(eventCtx, 'credentials') ?? hostService(ctx, 'credentials')
+    if (!cred || typeof cred.resolve !== 'function') return Promise.resolve(null) // 可选服务：未挂载/被隔离时余额降级
     try {
       return cred.resolve(name)
     } catch (err) {
@@ -1911,7 +1932,13 @@ export function apply(ctx, config = {}) {
     const start = (settingsCtx) => {
       if (mounted) return
       mounted = true
-      mount(settingsCtx ?? ctx, config, ctx)
+      try {
+        mount(settingsCtx ?? ctx, config, ctx)
+      } catch (err) {
+        // 降级路径（settings 未就绪，或宿主缺其它可选服务）会走到这里：异常绝不能
+        // 落进 setTimeout 变成未捕获异常——那会比 base 的「静默不挂载」更糟。
+        ctx.logger?.error?.(`dsh-pet-remielle: 挂载失败 ${err?.message ?? err}`)
+      }
     }
     ctx.inject(['settings'], (settingsCtx) => start(settingsCtx))
     const timer = setTimeout(() => {

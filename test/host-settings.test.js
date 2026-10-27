@@ -2,7 +2,7 @@ import { Readable } from 'node:stream'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { apply, applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
+import { apply, applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, hostService, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID, PET_ID_RE } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -119,6 +119,31 @@ test('readSessionTitle reads only the sessionTitle service', () => {
   // 没有活会话（id 不存在 / context 失活）同样返回 undefined
   assert.equal(readSessionTitle({ sessions: { get: () => undefined } }, 'nope'), undefined)
   assert.equal(readSessionTitle({ get sessions() { throw new Error('inactive context') } }, 's1'), undefined)
+})
+
+// cordis 的真实形态：未 inject 的服务只能用 ctx.get() 读，属性访问会抛
+// `cannot get property "x" without inject`（可选链拦不住）。插件曾用属性访问读
+// sessionTitle / credentials，结果会话标题与余额凭据在所有宿主上恒为空（PR #35
+// 的 blocker），这里把「get 优先」钉死。
+test('hostService reads optional services through ctx.get', () => {
+  const session = { header: { id: 's1' } }
+  const titleService = { get: () => ({ title: 'ctx.get 口径' }) }
+  const ctx = {
+    sessions: { get: (id) => (id === 's1' ? session : undefined) },
+    get: (name) => (name === 'sessionTitle' ? titleService : undefined),
+    get sessionTitle() { throw new Error('cannot get property "sessionTitle" without inject') },
+  }
+  assert.equal(hostService(ctx, 'sessionTitle'), titleService)
+  assert.equal(readSessionTitle(ctx, 's1'), 'ctx.get 口径')
+
+  // ctx.get 抛错 / 返回 undefined ⇒ 服务不可用，不向上冒泡
+  assert.equal(hostService({ get() { throw new Error('inactive context') } }, 'credentials'), null)
+  assert.equal(hostService({ get: () => undefined }, 'credentials'), null)
+
+  // 没有 ctx.get 的旧宿主与纯对象 mock：回落属性访问，读不到就是 null
+  assert.equal(hostService({ settings: { ok: true } }, 'settings').ok, true)
+  assert.equal(hostService({ get sessionTitle() { throw new Error('isolated') } }, 'sessionTitle'), null)
+  assert.equal(hostService({}, 'credentials'), null)
 })
 
 test('createSettingsScope reads volatile refs and disposes the profile presentation', async () => {  const writes = []
