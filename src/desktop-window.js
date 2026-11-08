@@ -4,15 +4,14 @@
  *
  * Electron backends, in preference order:
  *   1. DSH_PET_ELECTRON env var override.
- *   2. The bundled Electron runtime (vendor/electron-<platform>-<arch>,
- *      resolved per-platform/arch via electronArtifact, fetched on demand)
- *      — so every user (plain web DSH host included) gets the same floating
- *      window with browser-engine GIF animation.
- *   3. npm global install (`npm install -g electron`) — find via
+ *   2. 包外运行时缓存 runtimeCacheDir()（v<版本>-<platform>-<arch>）——插件
+ *      自更新不会再清掉它，所以升级后无需重新下载。
+ *   3. 旧 vendor/electron-<platform>-<arch>（升级兼容；迁移失败时仍可用）。
+ *   4. npm global install (`npm install -g electron`) — find via
  *      `npm prefix -g` → node_modules/electron/dist/.
- *   4. The dsh binary root (derived from process.argv[1]) →
+ *   5. The dsh binary root (derived from process.argv[1]) →
  *      node_modules/electron/dist/ or desktop/node_modules/electron/dist/.
- *   5. cwd fallback — the profile directory's own node_modules, or a local
+ *   6. cwd fallback — the profile directory's own node_modules, or a local
  *      dev checkout that has electron in its tree.
  *
  * Configuration travels via environment variables (DSH_PET_URL /
@@ -25,7 +24,7 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runtimeTarget, electronBinaryIn, isUsableElectronRoot } from './electron-fetch.mjs'
+import { runtimeTarget, electronBinaryIn, isUsableElectronRoot, runtimeCacheDir } from './electron-fetch.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -76,41 +75,51 @@ function getNpmGlobalPrefix() {
 }
 
 /**
- * Candidate Electron backends, in preference order. Platform and cwd are
- * injectable for tests.
+ * Candidate Electron backends, in preference order. Platform, cwd, env and the
+ * discovered roots are injectable for tests.
  * @returns `[{ kind: 'electron', command, args }]`.
  */
-export function backendCandidates({ platform = process.platform, cwd = process.cwd(), arch = process.arch } = {}) {
+export function backendCandidates({
+  platform = process.platform,
+  cwd = process.cwd(),
+  arch = process.arch,
+  env = process.env,
+  legacyVendorRoot = resolve(here, '..', 'vendor', runtimeTarget(platform, arch).folder),
+  npmGlobalPrefix = getNpmGlobalPrefix(),
+  dshRoot = findDshRoot(cwd),
+} = {}) {
   const candidates = []
   const args = [resolve(here, 'pet-window.cjs')]
 
   // --- 1. DSH_PET_ELECTRON env var override (highest priority) ---
-  if (process.env.DSH_PET_ELECTRON) {
-    candidates.push({ kind: 'electron', command: process.env.DSH_PET_ELECTRON, args })
+  if (env.DSH_PET_ELECTRON) {
+    candidates.push({ kind: 'electron', command: env.DSH_PET_ELECTRON, args })
   }
 
-  // --- 2. Bundled vendor runtime (ships with the plugin, resolved per platform/arch) ---
+  // --- 2. 包外运行时缓存（插件更新不会清掉） ---
   // 发现候选一律做完整性校验（issue #24）：exe-only 残缺目录必须跳过，让调用方
   // 走 ensureElectronRuntime 的自动重装，而不是永远启动残缺运行时。
-  const bundledRoot = resolve(here, '..', 'vendor', runtimeTarget(platform, arch).folder)
-  const bundled = electronBinaryIn(bundledRoot, platform, arch)
-  if (isUsableElectronRoot(bundledRoot, platform)) {
-    candidates.push({ kind: 'electron', command: bundled, args })
+  const cachedRoot = runtimeCacheDir({ platform, arch, env })
+  if (isUsableElectronRoot(cachedRoot, platform)) {
+    candidates.push({ kind: 'electron', command: electronBinaryIn(cachedRoot, platform, arch), args })
   }
 
-  // --- 3. npm global install — user ran `npm install -g electron` somewhere ---
-  const npmPrefix = getNpmGlobalPrefix()
-  if (npmPrefix) {
-    const globalRoot = resolve(npmPrefix, 'node_modules', 'electron', 'dist')
+  // --- 3. 旧 vendor 运行时（升级兼容：还没迁移或迁移失败时继续可用） ---
+  if (isUsableElectronRoot(legacyVendorRoot, platform)) {
+    candidates.push({ kind: 'electron', command: electronBinaryIn(legacyVendorRoot, platform, arch), args })
+  }
+
+  // --- 4. npm global install — user ran `npm install -g electron` somewhere ---
+  if (npmGlobalPrefix) {
+    const globalRoot = resolve(npmGlobalPrefix, 'node_modules', 'electron', 'dist')
     const globalElectron = electronBinaryIn(globalRoot, platform, arch)
     if (isUsableElectronRoot(globalRoot, platform)) {
       candidates.push({ kind: 'electron', command: globalElectron, args })
     }
   }
 
-  // --- 4. dsh binary root (from process.argv[1]) — the harness or any
+  // --- 5. dsh binary root (from process.argv[1]) — the harness or any
   //     sibling project that happens to have electron in its node_modules ---
-  const dshRoot = findDshRoot(cwd)
   if (dshRoot) {
     for (const base of [
       resolve(dshRoot, 'node_modules', 'electron', 'dist'),
@@ -123,7 +132,7 @@ export function backendCandidates({ platform = process.platform, cwd = process.c
     }
   }
 
-  // --- 5. cwd fallback — profile directory or local dev checkout ---
+  // --- 6. cwd fallback — profile directory or local dev checkout ---
   for (const base of [
     resolve(cwd, 'desktop/node_modules/electron/dist'),
     resolve(cwd, 'node_modules/electron/dist'),

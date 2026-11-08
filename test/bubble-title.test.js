@@ -20,9 +20,13 @@ test('plan summary is taken after the marker, never the project prefix', () => {
 })
 
 test('card tip copy picks one branch per state', () => {
-  assert.equal(card.tipTextOf({ planReview: true, planSummary: '推理面板改材质' }), '计划待审：推理面板改材质，点击打开同意执行/要求修改')
-  assert.equal(card.tipTextOf({ planReview: true }), '计划待审，点击打开同意执行/要求修改')
+  assert.equal(card.tipTextOf({ planReview: true, planSummary: '推理面板改材质' }), '计划待审：推理面板改材质，点一下跳过去看看呢')
+  assert.equal(card.tipTextOf({ planReview: true }), '计划待审，点一下跳过去看看呢')
   assert.equal(card.tipTextOf({ approval: true, detailShown: '· workspace · rm -rf /' }), '· workspace · rm -rf /')
+  assert.equal(card.tipTextOf({ ask: true, askSummary: '要继续吗？' }), '提问：要继续吗？，点一下跳过去看看呢')
+  assert.equal(card.tipTextOf({ ask: true }), '有个问题要问你，点一下跳过去看看呢')
+  assert.equal(card.tipTextOf({ current: true }), '就在这儿呢~')
+  assert.equal(card.tipTextOf({ current: true, ask: true, askSummary: '还要继续吗？' }), '提问：还要继续吗？（就在这儿呢）')
   assert.equal(card.tipTextOf({ completed: true }), '完成啦~ 点击查看结果哦')
   assert.equal(card.tipTextOf({ attention: true }), '轮到你啦，点击跳到这里处理呢')
   assert.equal(card.tipTextOf({}), '点击跳到这里看一下~')

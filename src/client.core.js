@@ -33,6 +33,7 @@ var CHECK_ENDPOINT = '/plugins/dsh-pet-remielle/check'
 var UPDATE_ENDPOINT = '/plugins/dsh-pet-remielle/update'
 var PROGRESS_ENDPOINT = '/plugins/dsh-pet-remielle/update-progress'
 var INFO_ENDPOINT = '/plugins/dsh-pet-remielle/info'
+var RUNTIME_ENDPOINT = '/plugins/dsh-pet-remielle/runtime'
 var DEFAULT_PET_ID = 'remielle'
 
 // `require` is provided by the module-loader factory wrapper.
@@ -672,6 +673,30 @@ function AddPetForm(props) {
   )
 }
 
+/** 人类可读的字节数（运行时占用展示用）。 */
+function formatBytes(bytes) {
+  var n = Number(bytes)
+  if (!isFinite(n) || n <= 0) return '0 B'
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  if (n < 1024 * 1024 * 1024) return (n / 1048576).toFixed(1) + ' MB'
+  return (n / 1073741824).toFixed(2) + ' GB'
+}
+
+/** Latest client plugin context; the credential UI needs services outside the section closure. */
+var pluginCtx = null
+var PLATFORM_TOKEN_REF = 'DEEPSEEK_PLATFORM_TOKEN'
+
+/** Resolve ctx.remote.credentials without hard-requiring the DSH API remote. */
+function credentialsService() {
+  if (!pluginCtx || typeof pluginCtx.get !== 'function') return undefined
+  try {
+    return pluginCtx.get('remote.credentials') || (pluginCtx.get('remote') && pluginCtx.get('remote').credentials)
+  } catch (e) {
+    return undefined
+  }
+}
+
 function PetsSection(props) {
   var embedded = props && props.embedded === true
   var tabState = React.useState('appearance')
@@ -702,6 +727,126 @@ function PetsSection(props) {
   var updMsgState = React.useState(null)    // 'checking' | 'latest' | 'error:...' | null
   var updMsg = updMsgState[0]
   var setUpdMsg = updMsgState[1]
+  // 平台令牌存 DSH 凭据中心：describe 只回状态不回值，设置/清除都是一次显式提交。
+  var credState = React.useState(null)          // { available, configured, source, writable }
+  var credential = credState[0]
+  var setCredential = credState[1]
+  var credBusyState = React.useState(false)
+  var credBusy = credBusyState[0]
+  var setCredBusy = credBusyState[1]
+  var credErrorState = React.useState(null)
+  var credError = credErrorState[0]
+  var setCredError = credErrorState[1]
+  var credValueState = React.useState('')
+  var credValue = credValueState[0]
+  var setCredValue = credValueState[1]
+  var refreshCredential = function () {
+    var creds = credentialsService()
+    if (!creds || typeof creds.describe !== 'function') { setCredential({ available: false }); return }
+    creds.describe([PLATFORM_TOKEN_REF]).then(function (result) {
+      var value = result && result.ok === true ? result.value : undefined
+      if (!value) { setCredential({ available: false }); return }
+      var view = value[PLATFORM_TOKEN_REF] || value
+      setCredential({
+        available: true,
+        configured: view.configured === true,
+        source: view.source,
+        writable: view.writable !== false,
+      })
+    }).catch(function () { setCredential({ available: false }) })
+  }
+  // Remote 调用的失败是 {ok:false, error} 结果而不是 rejection，必须显式检查，
+  // 否则写入被拒时也会清空输入并当作成功（transport 故障才会 reject）。
+  var credentialFailure = function (result, fallback) {
+    return (result && result.error && result.error.message) || fallback
+  }
+  var saveCredential = function () {
+    var creds = credentialsService()
+    var value = String(credValue || '').trim()
+    if (!creds || typeof creds.set !== 'function' || !value || credBusy) return
+    setCredBusy(true)
+    setCredError(null)
+    creds.set(PLATFORM_TOKEN_REF, value).then(function (result) {
+      if (!result || result.ok !== true) {
+        setCredBusy(false)
+        setCredError(credentialFailure(result, '写入凭据中心失败'))
+        return
+      }
+      setCredValue('')
+      setCredBusy(false)
+      refreshCredential()
+    }).catch(function (error) {
+      setCredBusy(false)
+      setCredError((error && error.message) || '写入凭据中心失败')
+    })
+  }
+  var clearCredential = function () {
+    var creds = credentialsService()
+    if (!creds || typeof creds.unset !== 'function' || credBusy) return
+    setCredBusy(true)
+    setCredError(null)
+    creds.unset(PLATFORM_TOKEN_REF).then(function (result) {
+      if (!result || result.ok !== true) {
+        setCredBusy(false)
+        setCredError(credentialFailure(result, '清除凭据失败'))
+        return
+      }
+      setCredBusy(false)
+      refreshCredential()
+    }).catch(function (error) {
+      setCredBusy(false)
+      setCredError((error && error.message) || '清除凭据失败')
+    })
+  }
+  // 桌面运行时：缓存目录与 userData 目录的路径/占用，及其清理。
+  var runtimeState = React.useState(null)        // { cache:{path,bytes,files,exists}, userData:{...}, desktopRunning }
+  var runtime = runtimeState[0]
+  var setRuntime = runtimeState[1]
+  var runtimeBusyState = React.useState('')      // '' | 'cache' | 'userData'
+  var runtimeBusy = runtimeBusyState[0]
+  var setRuntimeBusy = runtimeBusyState[1]
+  var runtimeMsgState = React.useState(null)     // { tone:'ok'|'error', text }
+  var runtimeMsg = runtimeMsgState[0]
+  var setRuntimeMsg = runtimeMsgState[1]
+  var refreshRuntime = function () {
+    fetch(RUNTIME_ENDPOINT, { cache: 'no-store' })
+      .then(function (response) { return response.ok ? response.json() : null })
+      .then(function (payload) { if (payload && payload.ok !== false) setRuntime(payload) })
+      .catch(function () { /* 运行时信息拿不到就不显示，不打扰用户 */ })
+  }
+  var clearRuntimeDir = function (target) {
+    if (!runtime || runtimeBusy) return
+    setRuntimeBusy(target)
+    setRuntimeMsg(null)
+    fetch(RUNTIME_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: target }),
+    })
+      .then(function (response) { return response.json() })
+      .then(function (payload) {
+        setRuntimeBusy('')
+        if (!payload || payload.ok === false) {
+          setRuntimeMsg({ tone: 'error', text: (payload && payload.error) || '清理失败' })
+          return
+        }
+        if (payload.cache) setRuntime(payload)
+        var freed = payload.result && payload.result.freedBytes ? payload.result.freedBytes : 0
+        setRuntimeMsg({ tone: 'ok', text: '已清理 ' + formatBytes(freed) })
+      })
+      .catch(function () { setRuntimeBusy(''); setRuntimeMsg({ tone: 'error', text: '清理请求失败' }) })
+  }
+  React.useEffect(function () {
+    if (tab === 'desktop') refreshRuntime()
+  }, [tab])
+  React.useEffect(function () { refreshCredential() }, [])
+  React.useEffect(function () {
+    var remote = pluginCtx && typeof pluginCtx.get === 'function' ? pluginCtx.get('remote') : undefined
+    if (!remote || typeof remote.$on !== 'function') return undefined
+    return remote.$on('credentials/reference-updated', function (ref) {
+      if (ref === PLATFORM_TOKEN_REF) refreshCredential()
+    })
+  }, [])
   var currentVersion = (typeof RM_PLUGIN_VERSION !== 'undefined' ? RM_PLUGIN_VERSION : '?')
   var checkUpdate = function () {
     if (updChecking) return
@@ -994,27 +1139,84 @@ function PetsSection(props) {
         ),
         React.createElement('p', { style: { margin: 0, opacity: v.showBubbleUsage === true ? 0.5 : 0.25, fontSize: 11 } },
           v.usageMode === 'token'
-            ? '直连平台用量接口，精确。令牌优先用下方配置，留空则回落到 DSH 凭据服务。'
+            ? '直连平台用量接口，精确。令牌存放在 DSH 凭据中心（DEEPSEEK_PLATFORM_TOKEN）。'
             : '记账靠余额差值累计，有误差，免令牌。'
         ),
         // 令牌配置（仅 token 模式且用量开启时显示）
         v.usageMode === 'token'
-          ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-              React.createElement('input', {
-                type: 'password',
-                value: v.platformToken || '',
-                disabled: !config || v.showBubbleUsage !== true,
-                placeholder: v.platformTokenConfigured ? '已配置令牌（重新输入以替换）' : 'DEEPSEEK_PLATFORM_TOKEN',
-                onChange: function (e) { write('platformToken', e.target.value) },
-                className: 'rm2-pet-input',
-                style: { flex: 1 },
-              }),
-            )
+          ? credential && credential.available
+            ? React.createElement('div', { style: { display: 'grid', gap: 6 } },
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+                  React.createElement('span', {
+                    style: { fontSize: 12, padding: '2px 8px', borderRadius: 999, background: credential.configured ? 'rgba(46,139,87,.14)' : 'rgba(128,128,128,.16)' },
+                  }, credential.configured
+                    ? '凭据中心：已配置' + (credential.source ? '（' + credential.source + '）' : '')
+                    : '凭据中心：未配置'),
+                  credential.configured
+                    ? React.createElement('button', {
+                        type: 'button', className: 'rm2-pet-btn', style: { fontSize: 12, padding: '3px 10px' },
+                        disabled: !config || credBusy || credential.writable === false,
+                        onClick: clearCredential,
+                      }, credBusy ? '处理中…' : '清除')
+                    : null,
+                ),
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+                  React.createElement('input', {
+                    type: 'password',
+                    value: credValue,
+                    disabled: !config || v.showBubbleUsage !== true || credBusy || credential.writable === false,
+                    placeholder: credential.configured ? '重新输入以替换' : 'DEEPSEEK_PLATFORM_TOKEN',
+                    onChange: function (e) { setCredValue(e.target.value) },
+                    className: 'rm2-pet-input',
+                    style: { flex: 1 },
+                  }),
+                  React.createElement('button', {
+                    type: 'button', className: 'rm2-pet-btn rm2-pet-btn-primary', style: { fontSize: 12, padding: '3px 10px' },
+                    disabled: !config || credBusy || credential.writable === false || !String(credValue || '').trim(),
+                    onClick: saveCredential,
+                  }, credBusy ? '保存中…' : '保存'),
+                ),
+                credError
+                  ? React.createElement('small', { role: 'alert', style: { color: 'var(--dsw-alias-label-error, #c0392b)', fontSize: 12 } }, credError)
+                  : null,
+                React.createElement('p', { style: { margin: 0, opacity: 0.5, fontSize: 11 } },
+                  '令牌写入 ~/.dsh/.credentials.yaml，不再进插件配置；旧配置里的值会在插件启动时自动迁移。'),
+              )
+            : React.createElement('p', { style: { margin: 0, opacity: 0.6, fontSize: 11, lineHeight: 1.6 } },
+                '宿主未提供凭据中心接口，无法在这里配置平台令牌。请确认 DSH 版本高于 0.2.0 且 remotes 组件已启用。',
+              )
           : null,
       ),
     ),
     // ---- 用量模式已移入气泡子项 ----
   )
+  /** 一行运行时目录：标题 + 路径 + 占用 + 清理按钮。 */
+  var runtimeRow = function (label, info, target) {
+    var exists = info && info.exists === true
+    return React.createElement('div', { style: { display: 'grid', gap: 3 } },
+      React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 } },
+        React.createElement('span', { style: { fontSize: 12 } }, label),
+        React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } },
+          exists ? formatBytes(info.bytes) + ' · ' + info.files + ' 个文件' : '未安装'),
+      ),
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        React.createElement('code', {
+          title: info && info.path,
+          style: {
+            flex: 1, minWidth: 0, fontSize: 11, opacity: 0.7, overflow: 'hidden',
+            textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          },
+        }, (info && info.path) || ''),
+        React.createElement('button', {
+          type: 'button',
+          className: 'rm2-pet-btn',
+          style: { fontSize: 12, padding: '3px 10px', flexShrink: 0 },
+          disabled: !exists || !!runtimeBusy || (runtime && runtime.desktopRunning === true),
+          onClick: function () { clearRuntimeDir(target) },
+        }, runtimeBusy === target ? '清理中…' : '清除'),
+      ),
+    )
+  }
   var desktopTab = React.createElement('div', null,
     React.createElement(Field, { label: '桌面悬浮模式', hint: '用独立置顶窗口显示宠物（需要 Electron 运行时）。' },
       React.createElement(Switch, { checked: v.desktopMode === true, disabled: !config, onChange: function (val) { write('desktopMode', val) } }),
@@ -1022,6 +1224,35 @@ function PetsSection(props) {
     v.desktopMode
       ? React.createElement('p', { style: { margin: '8px 0 0', opacity: 0.6, fontSize: 12 } }, '桌面窗口支持拖动、滚轮缩放、双击画画。关闭后回到页面内展示。')
       : null,
+    // ---- 桌面运行时（缓存路径 / 占用 / 清理）----
+    React.createElement('div', { style: { marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.06))', display: 'grid', gap: 8 } },
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+        React.createElement('span', { style: { fontSize: 13, fontWeight: 600 } }, '桌面运行时'),
+        React.createElement('span', { style: { fontSize: 11, opacity: 0.55 } }, '（Electron 与窗口数据，只影响桌面悬浮）'),
+      ),
+      React.createElement('p', { style: { margin: 0, opacity: 0.6, fontSize: 11, lineHeight: 1.6 } },
+        '运行时缓存在插件包外，插件更新不会删除它；清理后下次开启桌面悬浮会重新下载约 220 MB。'
+      ),
+      !runtime
+        ? React.createElement('button', {
+            type: 'button', className: 'rm2-pet-btn', style: { fontSize: 12, padding: '4px 12px', justifySelf: 'start' },
+            onClick: refreshRuntime,
+          }, '读取运行时信息')
+        : React.createElement('div', { style: { display: 'grid', gap: 10 } },
+            runtimeRow('Electron 运行时缓存', runtime.cache, 'cache'),
+            runtimeRow('窗口数据（userData）', runtime.userData, 'userData'),
+            runtime.desktopRunning
+              ? React.createElement('p', { style: { margin: 0, opacity: 0.6, fontSize: 11 } },
+                  '当前桌面悬浮窗正在运行，需先关闭桌面模式才能清理运行时或窗口数据。')
+              : null,
+            runtimeMsg
+              ? React.createElement('small', {
+                  role: 'alert',
+                  style: { fontSize: 12, color: runtimeMsg.tone === 'error' ? 'var(--dsw-alias-label-error, #c0392b)' : 'var(--dsw-alias-state-success-primary, #2e8b57)' },
+                }, runtimeMsg.text)
+              : null,
+          ),
+    ),
   )
   var aboutTab = React.createElement('div', null,
     React.createElement('p', { style: { margin: '0 0 12px', opacity: 0.7 } }, '检查是否有新版本可用，或执行增量更新。'),
@@ -1238,8 +1469,13 @@ function mountPet(ctx) {
   if (!__bubbleTitle) throw new Error('__rm2BubbleTitle is missing: build-client.mjs bubble-title prepend was broken')
   var measureTextW = __bubbleTitle.measureTextW
   var bubbleRowWidth = __bubbleTitle.bubbleRowWidth
+  var petTipTimer = 0
   function hidePetTip() {
     petTipAnchor = null
+    if (petTipTimer) {
+      clearTimeout(petTipTimer)
+      petTipTimer = 0
+    }
     if (petTip) petTip.style.display = 'none'
   }
   function layoutPetTip(anchor, L, T, R, B) {
@@ -1258,6 +1494,13 @@ function mountPet(ctx) {
     petTip.style.top = '0px'
     petTip.style.display = 'block'
     petTipAnchor = anchor
+    // 截屏/拖窗口/切标签时不会触发 mouseleave，浮层会一直钉在屏幕上；
+    // 除了 blur/visibility 监听，这里再加一道兜底计时，保证它总会消失。
+    if (petTipTimer) clearTimeout(petTipTimer)
+    petTipTimer = setTimeout(function () {
+      petTipTimer = 0
+      hidePetTip()
+    }, 20000)
     var W = window.innerWidth || 1280
     var H = window.innerHeight || 800
     layoutPetTip(anchor, 0, 0, W, H)
@@ -1293,6 +1536,16 @@ function mountPet(ctx) {
   bubbleDot.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(currentBubblePage === 0 ? 1 : 0) })
   bubbleDot.addEventListener('mouseenter', function (e) { if (e && e.stopPropagation) e.stopPropagation(); showPetTip(bubbleDot) })
   bubbleDot.addEventListener('mouseleave', onDotLeave)
+  // 窗口失焦/切标签/滚动/点别处都可能跳过 mouseleave（截屏工具就是典型），
+  // 统一在这些时机收起浮层，避免它钉在屏幕上。
+  function hidePetTipOnLeave() { hidePetTip() }
+  function hidePetTipOnVisibility() {
+    if (document.visibilityState === 'hidden') hidePetTip()
+  }
+  window.addEventListener('blur', hidePetTipOnLeave)
+  document.addEventListener('visibilitychange', hidePetTipOnVisibility)
+  window.addEventListener('scroll', hidePetTipOnLeave, true)
+  document.addEventListener('pointerdown', hidePetTipOnLeave, true)
   syncDotTip()
   // 状态牌叠与单气泡（余额页）都要接住滚轮：翻页，而不是冒泡到 dock 缩放桌宠
   function onBubbleWheel(e) {
@@ -1976,6 +2229,9 @@ function mountPet(ctx) {
     __bubbleTitle.applyCardChrome(el, entry, index, {
       detailShown: shown,
       planSummary: __bubbleTitle.planSummaryOf(shown),
+      ask: entry.ask === true,
+      askSummary: entry.askSummary || '',
+      current: targetSessionOf(entry) === currentSessionIdOf(),
       approval: approval,
       planReview: planReview,
       completed: completed,
@@ -3218,6 +3474,10 @@ function mountPet(ctx) {
     window.removeEventListener('blur', clearReportedCurrentSession)
     window.removeEventListener('focus', onCurrentSessionFocus)
     window.removeEventListener('resize', onViewportResize)
+    window.removeEventListener('blur', hidePetTipOnLeave)
+    document.removeEventListener('visibilitychange', hidePetTipOnVisibility)
+    window.removeEventListener('scroll', hidePetTipOnLeave, true)
+    document.removeEventListener('pointerdown', hidePetTipOnLeave, true)
     document.removeEventListener('visibilitychange', onCurrentSessionVisibilityChange)
     document.removeEventListener('DOMContentLoaded', watchHostTheme)
     window.removeEventListener('pagehide', clearReportedHostTheme)
@@ -3327,6 +3587,7 @@ function registerSettingsSlots(ctx) {
 
 function apply(ctx) {
   if (typeof document === 'undefined' || !document.body) return
+  pluginCtx = ctx
 
   registerSettingsSlots(ctx)
   mountPet(ctx)

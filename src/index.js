@@ -16,6 +16,7 @@
  */
 
 import { createRequire } from 'node:module'
+import { existsSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,7 +24,8 @@ import Schema from '@deepseek-ai/schemastery'
 import { PetReducer, isSubagent } from './pet-reducer.js'
 import { PetMessageKind, PetState, createMessage } from './protocol.js'
 import { DesktopWindow } from './desktop-window.js'
-import { electronArtifact, ensureElectronRuntime, missingRuntimeFiles } from './electron-fetch.mjs'
+import { electronArtifact, ensureElectronRuntime, isUsableElectronRoot, missingRuntimeFiles, runtimeCacheDir } from './electron-fetch.mjs'
+import { clearRuntime, runtimeInfo, userDataDirOf } from './runtime-info.js'
 import {
   CHECK_ENDPOINT, UPDATE_ENDPOINT, PROGRESS_ENDPOINT, INFO_ENDPOINT,
   checkHandler, updateHandler, progressHandler, infoHandler, setSelfUpdateHooks, killActiveUpdate,
@@ -31,7 +33,6 @@ import {
 import {
   DEFAULT_PET_ID,
   DEFAULT_PETS,
-  PET_MOODS,
   PET_MOOD_EXT,
   PET_MANIFEST,
   PET_ID_RE,
@@ -47,6 +48,8 @@ import { localHostOk } from './local-access.js'
 import { TURN_WATCHDOG_INTERVAL_MS, createTurnWatchdog } from './turn-watchdog.js'
 
 const { compareSessions } = createRequire(import.meta.url)('./session-order.cjs')
+// 平台账户接口要求声明调用方身份（x-client-version），用插件自身版本即可。
+const { version: PET_VERSION } = createRequire(import.meta.url)('../package.json')
 
 export const name = 'dsh-pet-remielle'
 export const inject = ['sessions']
@@ -65,6 +68,7 @@ export const DESKTOP_ENDPOINT = '/plugins/dsh-pet-remielle/desktop'
 export const DESKTOP_READY_TIMEOUT_MS = 6000
 export const PLUGIN_KEY = 'dsh-pet-remielle'
 export const BALANCE_ENDPOINT = '/plugins/dsh-pet-remielle/balance'
+export const RUNTIME_ENDPOINT = '/plugins/dsh-pet-remielle/runtime'
 
 const petEntry = Schema.object({
   id: Schema.string().required().pattern(PET_ID_RE).description('宠物 id（assets/pets/<id> 目录名）'),
@@ -173,12 +177,8 @@ export function publicConfig(config = {}) {
 
 /** Configuration sent to browser settings pages; secret values are write-only. */
 export function clientConfig(config = {}) {
-  const value = publicConfig(config)
-  const { platformToken, ...safe } = value
-  return {
-    ...safe,
-    platformTokenConfigured: typeof platformToken === 'string' && platformToken.length > 0,
-  }
+  const { platformToken, ...safe } = publicConfig(config)
+  return safe
 }
 
 function localSettingsScope(value) {
@@ -876,8 +876,8 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       usageMode: config.usageMode ?? 'ledger',
       // platformToken 不进 /state 快照：快照经 SSE 广播给所有订阅者（任意网页标签
       // 页、桌面窗），明文带令牌等于把平台凭证散给每个连上快照的页面。
-      // /config 也只返回 clientConfig：设置页知道令牌是否已配置，但不会收到令牌明文。
-      // balance 服务仍从 settings.get() 读取令牌；令牌写入只走 /config 的 PATCH。
+      // /config 也只返回 clientConfig，不会收到令牌明文。令牌的权威存放地是
+      // DSH 凭据中心（设置页写入）；旧配置字段只服务升级迁移与读取回落。
       paused: config.paused === true,
       hidden: config.hidden === true,
       desktopActive: desktopActiveOf(),
@@ -1073,6 +1073,33 @@ export function advertisedOrigin(httpCtx, fallback) {
   return fallback
 }
 
+/**
+ * 把旧配置里的平台令牌迁进 DSH 凭据中心，成功后清空配置里的明文。
+ * 凭据服务不可用、只读或写入失败时保持原样（不丢值）；凭据中心已有值时
+ * 不覆盖它，但仍会清掉配置里的旧明文副本。迁移是尽力而为。
+ * @returns 是否把令牌写进了凭据中心（已配置时只清理旧副本，返回 false）
+ */
+export async function migratePlatformToken({ settings, credentials, logger = console }) {
+  const legacy = String(settings?.get?.().platformToken || '').trim()
+  if (!legacy) return false
+  if (!credentials || typeof credentials.describe !== 'function' || typeof credentials.set !== 'function') return false
+  try {
+    const info = await credentials.describe('DEEPSEEK_PLATFORM_TOKEN')
+    if (info?.configured === true) {
+      if (typeof settings.update === 'function') await settings.update({ platformToken: '' })
+      return false
+    }
+    if (info && info.writable === false) return false
+    await credentials.set('DEEPSEEK_PLATFORM_TOKEN', legacy)
+    if (typeof settings.update === 'function') await settings.update({ platformToken: '' })
+    logger.info?.('dsh-pet-remielle: platform token migrated to the DSH credential store')
+    return true
+  } catch (error) {
+    logger.warn?.(`dsh-pet-remielle: platform token migration skipped (${error?.message ?? error})`)
+    return false
+  }
+}
+
 function mount(ctx, config = {}, eventCtx = ctx) {
   const logger = ctx.logger ?? console
   const settings = createSettingsScope(ctx, config, eventCtx)
@@ -1095,12 +1122,81 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       return Promise.reject(err)
     }
   }
+  // 登录账号优先：余额与平台会话令牌都取宿主 deepseekAccount 服务（设置页「账号与余额」
+  // 同源）。未登录、服务未挂载或查询失败时返回空，由 balance.js 回落 API key / 手填令牌。
+  const accountMetadata = () => ({
+    version: PET_VERSION,
+    locale: 'zh_CN',
+    timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+  })
+  const accountService = () => hostService(eventCtx, 'deepseekAccount') ?? hostService(ctx, 'deepseekAccount')
   const balanceService = createBalanceService({
     resolveCredential,
     getPlatformToken: () => String(settings.get().platformToken || ''),
+    getAccountBalance: async () => {
+      const account = accountService()
+      if (!account || typeof account.getBalance !== 'function') return null
+      const details = await account.getBalance(accountMetadata())
+      if (!details || details.status !== 'ready') return null
+      const wallets = Array.isArray(details.value) ? details.value : []
+      const bonus = Array.isArray(details.bonusWallets) ? details.bonusWallets : []
+      let total = 0
+      for (const wallet of [...wallets, ...bonus]) {
+        const amount = Number(wallet && wallet.balance)
+        if (Number.isFinite(amount)) total += amount
+      }
+      const currency = (wallets[0] || bonus[0] || {}).currency || 'CNY'
+      return { totalBalance: total, currency }
+    },
+    getAccountPlatformToken: async () => {
+      const account = accountService()
+      if (!account || typeof account.getPlatformSession !== 'function') return ''
+      const session = await account.getPlatformSession()
+      return session && session.token ? String(session.token) : ''
+    },
     log: (code, error) => logger.error?.(`dsh-pet-remielle: ${code} ${error}`),
   })
   let usageModeNow = normalizeUsageMode(settings.get().usageMode)
+
+  // 一次性迁移：旧配置里的平台令牌写进 DSH 凭据中心后清空配置，避免明文继续留在
+  // profile 的 cordis.patch.yml。凭据服务可能晚于插件挂载（0.4.7 的 inject 只有
+  // sessions，实测启动那一刻取不到 credentials），因此补「服务到达监听 + 几次短重试」；
+  // 凭据不可用、只读或写入失败时保持原样，绝不丢值。
+  let platformTokenMigrated = false
+  let warnedMissingCredentials = false
+  const ensurePlatformTokenMigrated = () => {
+    if (platformTokenMigrated) return
+    if (!String(settings.get().platformToken || '').trim()) {
+      platformTokenMigrated = true
+      return
+    }
+    const credentials = hostService(eventCtx, 'credentials') ?? hostService(ctx, 'credentials')
+    if (!credentials) {
+      if (!warnedMissingCredentials) {
+        warnedMissingCredentials = true
+        logger.info?.('dsh-pet-remielle: waiting for the credentials service to migrate the platform token')
+      }
+      return
+    }
+    void migratePlatformToken({ settings, credentials, logger }).then((done) => {
+      if (done) platformTokenMigrated = true
+    })
+  }
+  ensurePlatformTokenMigrated()
+  const offCredentialsArrived = (() => {
+    try {
+      return eventCtx.on('internal/service', (name) => {
+        if (name === 'credentials') ensurePlatformTokenMigrated()
+      })
+    } catch { return undefined }
+  })()
+  if (typeof offCredentialsArrived === 'function' && typeof ctx.effect === 'function') {
+    ctx.effect(() => offCredentialsArrived)
+  }
+  for (const delay of [1000, 4000, 10000]) {
+    const timer = setTimeout(ensurePlatformTokenMigrated, delay)
+    timer.unref?.()
+  }
 
   const petsRoot = fileURLToPath(new URL('../assets/pets/', import.meta.url))
 
@@ -1310,6 +1406,20 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     // 但 states() 已经少了这张卡，必须照样推快照。
     hub.broadcast()
   }
+  // timed 提问：阻塞式 schema 不会进 userQuestions 投影，只有 timed 模式在前台
+  // 等待结束后仍可回答，投影里保留 state==='continued' 的条目。宿主投影服务可能
+  // 不存在（0.2.1 或未挂载），取不到就静默跳过，绝不影响既有渲染。
+  const syncAnswerable = (session) => {
+    if (reducer.includeSubagents !== true && isSubagent(session)) return []
+    const projections = hostService(eventCtx, 'sessionProjections') ?? hostService(ctx, 'sessionProjections')
+    if (!projections || typeof projections.snapshot !== 'function') return []
+    let active
+    try {
+      active = projections.snapshot(session, ['userQuestions'])?.values?.userQuestions?.active
+    } catch { return [] }
+    const continued = Array.isArray(active) ? active.filter((entry) => entry?.state === 'continued') : []
+    return reducer.syncAnswerable(session, continued)
+  }
   const offEvent = eventCtx.on('session/event', (session, event) => {
     const eventType = String(event?.type ?? '')
     // 子会话 id 记账：供「响应子 Agent」关闭时清理残留完成卡（见 subagentSessionIds）。
@@ -1322,7 +1432,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     watchdog.feed(completionSessionIdOf(session))
     if (eventType === 'turn/end') watchdog.end(completionSessionIdOf(session))
     if (eventType === 'turn/start' || eventType === 'tool/call') dropCompletion(session)
-    const outgoing = [...reducer.handle(session, event)]
+    const outgoing = [...reducer.handle(session, event), ...syncAnswerable(session)]
     const sessionId = completionSessionIdOf(session)
     const currentFailed = eventType === 'turn/end'
       && sessionId
@@ -1441,7 +1551,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         const base = localOrigin()
         return base ? `${base}${PET_VIEW_ENDPOINT}` : ''
       }
-      // DSH 0.1.2-alpha.1 起 Web 壳根路径要带进程 token，走 connection 的
+      // Web 壳根路径自 0.1.2 起要带进程 token（当前支持 DSH > 0.2.0），走 connection 的
       // authenticatedUrl。connection 是**可选依赖**：上一版把它写进
       // ctx.inject(['webServer', 'connection'])，而 cordis 的 inject 要所有服务
       // 都可用才执行回调——这一整个块里包着全部 21 条 webServer.register，于是
@@ -1489,6 +1599,20 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         desktopReadyReported = false
         desktop = undefined
         if (desktopActive) { desktopActive = false; hub.broadcast() }
+      }
+      // 升级兼容：旧版把 Electron 下载在插件包内 vendor/，而自更新会清掉包内文件。
+      // 本次启动若缓存还没有、旧 vendor 仍完整可用，就先把它迁移到包外缓存——
+      // 走 ensureElectronRuntime 的迁移分支，旧目录可用时绝不会触发下载。
+      const legacyVendorRoot = electronArtifact().vendorDir
+      if (
+        !isUsableElectronRoot(runtimeCacheDir({ platform: process.platform, arch: process.arch }), process.platform)
+        && isUsableElectronRoot(legacyVendorRoot, process.platform)
+      ) {
+        void ensureElectronRuntime({
+          onProgress: (m) => logger.info?.(`dsh-pet-remielle: ${m}`),
+        }).catch((error) => {
+          logger.info?.(`dsh-pet-remielle: 旧 Electron 运行时迁移失败，继续使用插件包内目录（${error?.message ?? error}）`)
+        })
       }
       let confirmSent = false // prevent duplicate confirm dialogs
       const startDesktop = (allowFetch = false) => {
@@ -1540,9 +1664,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         }
         if (confirmSent) return // already waiting for user confirmation
         confirmSent = true
-        // 缺什么文件一并打出：vendor 残缺时「no backend」只有一句会看不出残缺点。
-        const missing = missingRuntimeFiles(electronArtifact().vendorDir, process.platform)
-        logger.info?.(`dsh-pet-remielle: no Electron backend — requesting user confirmation to fetch (bundled root missing: ${missing.length ? missing.join(', ') : 'nothing, other candidates empty'})`)
+        // 缺什么文件一并打出：运行时根残缺时「no backend」只有一句会看不出残缺点。
+        // 运行时现在装在包外缓存；缓存不存在时回落到旧 vendor 目录做诊断。
+        const cacheRoot = runtimeCacheDir({ platform: process.platform, arch: process.arch })
+        const runtimeRoot = existsSync(cacheRoot) ? cacheRoot : electronArtifact().vendorDir
+        const missing = missingRuntimeFiles(runtimeRoot, process.platform)
+        logger.info?.(`dsh-pet-remielle: no Electron backend — requesting user confirmation to fetch (runtime root ${runtimeRoot}: ${missing.length ? missing.join(', ') : 'nothing, other candidates empty'})`)
         hub.notify({ protocolVersion: 1, kind: 'download', phase: 'confirm' })
       }
       // Only react when desktopMode itself flips: the watch fires on every
@@ -1745,6 +1872,43 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: balance endpoint',
       )
       httpCtx.effect(
+        () => registerRoute({ kind: 'exact', path: RUNTIME_ENDPOINT, handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const cacheDir = runtimeCacheDir({ platform: process.platform, arch: process.arch })
+          const userDataDir = userDataDirOf()
+          if (req.method === 'GET') {
+            try {
+              jsonResponse(res, 200, { ok: true, desktopRunning: Boolean(desktop), ...(await runtimeInfo({ cacheDir, userDataDir })) })
+            } catch (err) {
+              jsonResponse(res, 200, { ok: false, error: String((err && err.message) || err).slice(0, 200) })
+            }
+            return
+          }
+          if (req.method !== 'POST') {
+            jsonResponse(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          try {
+            const body = await readJsonBody(req)
+            const target = body && body.target
+            // 桌面窗运行时 electron.exe 在缓存目录里，窗口还占着 userData 里的
+            // Chromium profile——两个目录都不能删，先关桌面模式。
+            if (desktop) {
+              jsonResponse(res, 200, { ok: false, error: '桌面悬浮窗正在运行，请先关闭桌面模式再清理运行时或窗口数据' })
+              return
+            }
+            const result = await clearRuntime({ target, cacheDir, userDataDir })
+            logger.info?.(`dsh-pet-remielle: runtime cleanup ${target} -> ${result.ok ? 'ok' : 'failed'}`)
+            // 与 GET 同样回 desktopRunning：客户端清理后会用整包结果覆盖状态，
+            // 少了它会让「桌面窗运行中」的提示与禁用态在清理后消失。
+            jsonResponse(res, 200, { ok: result.ok, result, desktopRunning: Boolean(desktop), ...(await runtimeInfo({ cacheDir, userDataDir })) })
+          } catch (err) {
+            jsonResponse(res, 400, { ok: false, error: String((err && err.message) || err).slice(0, 200) })
+          }
+        } }),
+        'dsh-pet-remielle: desktop runtime info/cleanup',
+      )
+      httpCtx.effect(
         () => registerRoute({ kind: 'exact', path: STREAM_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return
           sseHeaders(res)
@@ -1892,21 +2056,21 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: pet sticker assets',
       )
       // ---- self-update routes (version check + one-click update) ----
-      // 一键更新会替换插件目录内的文件：先停掉桌宠窗并等进程退出——
-      // electron.exe 从 vendor/ 目录内运行时会锁住文件，导致 pnpm/git EPERM
+      // 一键更新会替换插件目录内的文件：先停掉桌宠窗并等进程退出，避免窗口
+      // 进程在更新期间继续占用旧页面/运行时（Runtime 本身现已缓存在包外）。
       setSelfUpdateHooks({
         stopDesktopWindow: async (reason = 'self-update') => {
           const w = desktop
           await w?.stop(reason)
           if (w && desktopActive) { desktopActive = false; hub.broadcast() }
         },
-        // 更新成功后收尾：包内下载的 Electron 运行时已被 pnpm 替换掉，
-        // 桌面模式继续开着会让重启后“双端皆无宠物”。自动切回网页宠物；
+        // 更新成功后收尾：Electron 运行时现在缓存在插件包外，不会再随包被
+        // pnpm 清掉，因此不再强制关闭桌面模式、也不误报「运行时被移除」。
+        // 桌面窗已在上一步停止；设置与缓存都保留，重启 DSH 后会重新拉起。
         // 返回的说明文字会展示在更新卡片里。
         onUpdateSuccess: () => {
           if (settings.get().desktopMode !== false) {
-            void settings.update({ desktopMode: false })
-            return '检测到桌面悬浮模式：其 Electron 运行时随更新被移除，已自动切回网页宠物；重启后可重新开启（将重新下载运行时）。'
+            return '桌面窗已随更新停止；Electron 运行时缓存在包外，未随更新删除，重启 DSH 后可继续使用桌面悬浮模式。'
           }
           return null
         },

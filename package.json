@@ -23,8 +23,8 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22.19",
-    "dsh": ">=0.1.2-alpha.1 <0.3.0-0"
+    "node": ">=24.9",
+    "dsh": ">0.2.0 <0.3.0-0"
   },
   "scripts": {
     "build:client": "node scripts/build-client.mjs",
@@ -35,7 +35,7 @@
     "test": "node --test --test-timeout=10000 \"test/*.test.js\"",
     "pretest:platform": "node scripts/build-client.mjs",
     "test:platform": "node --test --test-timeout=10000 test/platform/electron-fetch.test.js test/platform/pet-window-paths.integration.test.js test/platform/self-update.integration.test.js test/platform/desktop-window.test.js",
-    "check": "node --check lib/client.js && node --check src/index.js && node --check src/local-access.js && node --check src/pet-reducer.js && node --check src/session-order.cjs && node --check src/gif-frame.cjs && node --check src/bubble-title.cjs && node --check src/markdown.cjs && node --check src/turn-watchdog.js && node --check src/protocol.js && node --check src/status-copy.js && node --check src/pets.js && node --check src/self-update.js && node --check src/desktop-window.js && node --check src/electron-fetch.mjs && node --check src/pet-window.cjs && node --check src/pet-preload.cjs && node --check src/pet-window-paths.cjs && node --check src/pet-tip.cjs && node --check src/balance.js && node --check src/balance-widget.js && node --check src/holidays.js && node --check scripts/build-client.mjs"
+    "check": "node --check lib/client.js && node --check src/index.js && node --check src/local-access.js && node --check src/pet-reducer.js && node --check src/session-order.cjs && node --check src/gif-frame.cjs && node --check src/bubble-title.cjs && node --check src/markdown.cjs && node --check src/turn-watchdog.js && node --check src/protocol.js && node --check src/status-copy.js && node --check src/pets.js && node --check src/self-update.js && node --check src/desktop-window.js && node --check src/electron-fetch.mjs && node --check src/pet-window.cjs && node --check src/pet-preload.cjs && node --check src/pet-window-paths.cjs && node --check src/pet-tip.cjs && node --check src/balance.js && node --check src/runtime-info.js && node --check src/balance-widget.js && node --check src/holidays.js && node --check scripts/build-client.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4"
@@ -48,7 +48,9 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [],
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes"
+      ],
       "platform": "web"
     }
   },

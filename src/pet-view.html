@@ -278,8 +278,13 @@
   // freeze() 不可用时自动退回首帧快照。__gifFrame.watch 起动画计时表。
   var __gifFrame = window.__rm2GifFrame
   if (__gifFrame && __gifFrame.watch) __gifFrame.watch(imgEl)
+  var petTipTimer = 0
   function hidePetTip() {
     petTipAnchor = null
+    if (petTipTimer) {
+      clearTimeout(petTipTimer)
+      petTipTimer = 0
+    }
     if (petTip) petTip.style.display = 'none'
   }
   function layoutPetTip(anchor, L, T, R, B) {
@@ -315,6 +320,11 @@
     petTip.style.top = '0px'
     petTip.style.display = 'block'
     petTipAnchor = anchor
+    if (petTipTimer) clearTimeout(petTipTimer)
+    petTipTimer = setTimeout(function () {
+      petTipTimer = 0
+      hidePetTip()
+    }, 20000)
     var W = window.innerWidth || 400
     var H = window.innerHeight || 520
     layoutPetTip(anchor, 0, 0, W, H)
@@ -379,6 +389,13 @@
   bubbleDot.addEventListener('click', function (e) { e.stopPropagation(); switchBubblePage(currentBubblePage === 0 ? 1 : 0) })
   bubbleDot.addEventListener('mouseenter', function (e) { if (e && e.stopPropagation) e.stopPropagation(); showPetTip(bubbleDot) })
   bubbleDot.addEventListener('mouseleave', onDotLeave)
+  function hidePetTipOnLeave() { hidePetTip() }
+  window.addEventListener('blur', hidePetTipOnLeave)
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') hidePetTipOnLeave()
+  })
+  window.addEventListener('scroll', hidePetTipOnLeave, true)
+  document.addEventListener('pointerdown', hidePetTipOnLeave, true)
   syncDotTip()
   bubbleEl.addEventListener('wheel', onBubbleWheel, { passive: false })
   bubbleStack.addEventListener('wheel', onBubbleWheel, { passive: false })
@@ -1080,6 +1097,9 @@
     __bubbleTitle.applyCardChrome(el, entry, index, {
       detailShown: shown,
       planSummary: __bubbleTitle.planSummaryOf(shown),
+      ask: entry.ask === true,
+      askSummary: entry.askSummary || '',
+      current: targetSessionOf(entry) === currentSessionId,
       approval: approval,
       planReview: planReview,
       completed: completed,

@@ -25,9 +25,12 @@ const src = readFileSync(CORE, 'utf8')
 // 拼接提供）。这里直接注入共享模块，沙箱跑的是 src 而不是产物，故需手工供上。
 const markdown = require('../src/markdown.cjs')
 
-function makeReact({ tab, data, config, updMsg }) {
-  const initial = [tab, data, null, false, config, false, null, false, updMsg]
+function makeReact({ tab, data, config, updMsg, credential, runtime, credValue }) {
+  // 顺序对应 PetsSection 的 useState 顺序（useRef 不占位）；新增状态追加在末尾。
+  const initial = [tab, data, null, false, config, false, null, false, updMsg, credential, false, null, credValue ?? '', runtime, '', null]
   let cursor = 0
+  // 记录 setter 调用，供「写入被拒时不得清空输入」这类交互用例断言。
+  const calls = []
   return {
     React: {
       Fragment: Symbol('Fragment'),
@@ -36,11 +39,12 @@ function makeReact({ tab, data, config, updMsg }) {
       },
       useState(seed) {
         const i = cursor++
-        return [i < initial.length ? initial[i] : seed, () => {}]
+        return [i < initial.length ? initial[i] : seed, (value) => { calls.push({ index: i, value }) }]
       },
       useEffect() {},
       useRef(seed) { return { current: seed } },
     },
+    calls,
     reset() { cursor = 0 },
   }
 }
@@ -73,9 +77,9 @@ function loadPetsSection() {
   return { sandbox, stubs }
 }
 
-function renderTab(tab, { data = null, config = null, updMsg = null } = {}) {
+function renderTab(tab, { data = null, config = null, updMsg = null, credential = null, runtime = null } = {}) {
   const { sandbox, stubs } = loadPetsSection()
-  const fresh = makeReact({ tab, data, config, updMsg })
+  const fresh = makeReact({ tab, data, config, updMsg, credential, runtime })
   sandbox.React = fresh.React
   sandbox.require = (name) => { if (name === 'react') return fresh.React; throw new Error('require ' + name) }
   return sandbox.PetsSection()
@@ -194,6 +198,118 @@ test('pet cards render rename-on-double-click and status badges (no dead code fa
   const setActive = strings.filter((s) => s === '设为当前')
   assert.equal(setActive.length, 0, '缺图宠物不应出现「设为当前」')
   assert.ok(!strings.includes('改名'), '不应再有独立的「改名」按钮——入口是双击名字')
+})
+
+test('token mode renders the credential-center badge, save and clear actions', () => {
+  const tree = renderTab('behavior', {
+    config: { usageMode: 'token', showBubbleUsage: true },
+    credential: { available: true, configured: true, source: 'store', writable: true },
+  })
+  const strings = collectStrings(tree)
+  assert.ok(strings.some((s) => s.includes('凭据中心：已配置')), '已配置时应显示凭据中心徽标')
+  assert.ok(strings.includes('清除'), '已配置时应提供清除按钮')
+  assert.ok(strings.includes('保存'), '应提供显式保存按钮（不再随输入写盘）')
+})
+
+test('token mode explains the missing credentials service without a legacy input', () => {
+  const tree = renderTab('behavior', {
+    config: { usageMode: 'token', showBubbleUsage: true },
+    credential: { available: false },
+  })
+  const strings = collectStrings(tree)
+  assert.ok(strings.some((s) => s.includes('无法在这里配置平台令牌')), '无凭据服务时要说明无法配置')
+  const inputs = []
+  walk(tree, (node) => { if (nameOf(node.type) === 'input' && node.props?.type === 'password') inputs.push(node) })
+  assert.equal(inputs.length, 0, '不再提供写进插件配置的旧令牌输入')
+})
+
+test('a refused credential write reports the error instead of clearing the input', async () => {
+  const { sandbox } = loadPetsSection()
+  const fresh = makeReact({
+    tab: 'behavior',
+    data: null,
+    config: { usageMode: 'token', showBubbleUsage: true },
+    credential: { available: true, configured: false, writable: true },
+    credValue: 'sk-token',
+  })
+  sandbox.React = fresh.React
+  sandbox.require = (name) => { if (name === 'react') return fresh.React; throw new Error('require ' + name) }
+  // credentialsService() 从模块级 pluginCtx 取 remote.credentials。
+  const ref = sandbox.PLATFORM_TOKEN_REF
+  sandbox.pluginCtx = {
+    get: (name) => (name === 'remote.credentials'
+      ? {
+          describe: async () => ({ ok: true, value: { [ref]: { configured: false, writable: true } } }),
+          set: async () => ({ ok: false, error: { message: '凭据中心只读' } }),
+          unset: async () => ({ ok: true }),
+        }
+      : undefined),
+  }
+  const tree = sandbox.PetsSection()
+  let save
+  walk(tree, (node) => {
+    if (nameOf(node.type) === 'button' && node.children?.[0] === '保存') save = node
+  })
+  assert.ok(save, 'missing save button')
+  assert.equal(save.props.disabled, false)
+  save.props.onClick()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.ok(fresh.calls.some((call) => call.index === 11 && call.value === '凭据中心只读'), 'Remote failure 的 message 应展示给用户')
+  assert.equal(fresh.calls.some((call) => call.index === 12), false, '写入被拒时不得清空输入')
+})
+
+test('desktop tab shows runtime paths, sizes and cleanup buttons', () => {
+  const tree = renderTab('desktop', {
+    config: { desktopMode: true },
+    runtime: {
+      desktopRunning: false,
+      cache: { path: 'C:\\Users\\x\\AppData\\Local\\dsh-pet-remielle\\electron\\v33.0.0-win32-x64', exists: true, bytes: 268435456, files: 73 },
+      userData: { path: 'C:\\Users\\x\\AppData\\Roaming\\dsh-pet-remielle', exists: true, bytes: 10485760, files: 12 },
+    },
+  })
+  const strings = collectStrings(tree)
+  assert.ok(strings.includes('桌面运行时'), '应有「桌面运行时」区块标题')
+  assert.ok(strings.some((s) => s.includes('v33.0.0-win32-x64')), '应显示 Electron 缓存路径')
+  assert.ok(strings.some((s) => s.includes('Roaming')), '应显示 userData 路径')
+  assert.ok(strings.some((s) => s === '256.0 MB · 73 个文件'), '应显示缓存占用与文件数')
+  assert.ok(strings.some((s) => s === '10.0 MB · 12 个文件'), '应显示 userData 占用')
+  assert.equal(strings.filter((s) => s === '清除').length, 2, '两个目录各一个清除按钮')
+})
+
+test('desktop tab disables the cache cleanup while the desktop window runs', () => {
+  const tree = renderTab('desktop', {
+    config: { desktopMode: true },
+    runtime: {
+      desktopRunning: true,
+      cache: { path: '/tmp/cache', exists: true, bytes: 1024, files: 1 },
+      userData: { path: '/tmp/userdata', exists: false, bytes: 0, files: 0 },
+    },
+  })
+  const buttons = []
+  walk(tree, (node) => {
+    if (nameOf(node.type) === 'button' && node.children?.[0] === '清除') buttons.push(node)
+  })
+  assert.equal(buttons.length, 2)
+  assert.equal(buttons[0].props.disabled, true, '桌面窗运行时不得清理缓存（会删掉正在用的 electron.exe）')
+  assert.equal(buttons[1].props.disabled, true, 'userData 不存在时清除按钮禁用')
+  assert.ok(collectStrings(tree).some((s) => s.includes('未安装')), '缺失的目录应显示未安装')
+})
+
+test('desktop tab disables the userData cleanup while the desktop window runs', () => {
+  const tree = renderTab('desktop', {
+    config: { desktopMode: true },
+    runtime: {
+      desktopRunning: true,
+      cache: { path: '/tmp/cache', exists: false, bytes: 0, files: 0 },
+      userData: { path: '/tmp/userdata', exists: true, bytes: 1024, files: 1 },
+    },
+  })
+  const buttons = []
+  walk(tree, (node) => {
+    if (nameOf(node.type) === 'button' && node.children?.[0] === '清除') buttons.push(node)
+  })
+  assert.equal(buttons.length, 2)
+  assert.equal(buttons[1].props.disabled, true, '桌面窗运行时不得删除正在使用的 Chromium profile')
 })
 
 test('update check shows feedback when the repo has no release yet', () => {

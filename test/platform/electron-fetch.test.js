@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname } from 'node:path'
 import { EventEmitter } from 'node:events'
-import { downloadMirrors, ensureElectronRuntime, electronArtifact, runtimeTarget, electronBinaryIn, requiredRuntimeFiles, missingRuntimeFiles, ELECTRON_VERSION } from '../../src/electron-fetch.mjs'
+import { downloadMirrors, ensureElectronRuntime, electronArtifact, runtimeTarget, electronBinaryIn, requiredRuntimeFiles, missingRuntimeFiles, isUsableElectronRoot, runtimeCacheDir, ELECTRON_VERSION } from '../../src/electron-fetch.mjs'
 
 /**
  * 本文件下方的 ensureElectronRuntime 用例一律按 `platform: 'win32'` 驱动，所以夹具
@@ -115,6 +115,16 @@ function tempVendor() {
   return { dir, vendor }
 }
 
+/** 写入一整套完整的 win32 运行时关键文件（让 isUsableElectronRoot 通过）。 */
+function writeUsableRuntime(root) {
+  for (const rel of requiredRuntimeFiles('win32')) {
+    const p = join(root, rel)
+    mkdirSync(dirname(p), { recursive: true })
+    writeFileSync(p, 'FAKE_RUNTIME')
+  }
+  return root
+}
+
 test('missingRuntimeFiles lists exactly the absent required files (residue diagnosis)', () => {
   const { dir, vendor } = tempVendor()
   try {
@@ -189,6 +199,153 @@ test('runtimeTarget/electronBinaryIn map the launchable binary per platform', ()
   assert.deepEqual(runtimeTarget('darwin', 'arm64').sub, ['Electron.app', 'Contents', 'MacOS', 'Electron'])
   assert.equal(electronBinaryIn('/v', 'darwin', 'arm64'), resolve('/v', 'Electron.app', 'Contents', 'MacOS', 'Electron'))
   assert.deepEqual(runtimeTarget('darwin', 'x64').sub, ['Electron.app', 'Contents', 'MacOS', 'Electron'])
+})
+
+test('runtimeCacheDir: platform base dirs plus versioned target triple', () => {
+  const target = (platform, arch, base) => join(base, 'dsh-pet-remielle', 'electron', `v${ELECTRON_VERSION}-${platform}-${arch}`)
+
+  assert.equal(
+    runtimeCacheDir({ platform: 'win32', arch: 'x64', env: { LOCALAPPDATA: 'C:/Users/x/AppData/Local', HOME: 'C:/Users/x' } }),
+    target('win32', 'x64', 'C:/Users/x/AppData/Local'),
+  )
+  assert.equal(
+    runtimeCacheDir({ platform: 'darwin', arch: 'arm64', env: { HOME: '/Users/x' } }),
+    target('darwin', 'arm64', join('/Users/x', 'Library', 'Caches')),
+  )
+  // Linux 未设 XDG_CACHE_HOME 时回落 ~/.cache
+  assert.equal(
+    runtimeCacheDir({ platform: 'linux', arch: 'x64', env: { HOME: '/home/x' } }),
+    target('linux', 'x64', join('/home/x', '.cache')),
+  )
+  assert.equal(
+    runtimeCacheDir({ platform: 'linux', arch: 'arm64', env: { HOME: '/home/x', XDG_CACHE_HOME: '/var/cache/x' } }),
+    target('linux', 'arm64', '/var/cache/x'),
+  )
+})
+
+test('runtimeCacheDir: DSH_PET_ELECTRON_CACHE overrides the platform base directory', () => {
+  const dir = runtimeCacheDir({
+    platform: 'win32',
+    arch: 'x64',
+    env: { DSH_PET_ELECTRON_CACHE: 'D:/pet-cache', LOCALAPPDATA: 'C:/Users/x/AppData/Local' },
+  })
+  // 覆盖的是 base：仍追加 dsh-pet-remielle/electron/v<版本>-<平台>-<架构>
+  assert.equal(dir, join('D:/pet-cache', 'dsh-pet-remielle', 'electron', `v${ELECTRON_VERSION}-win32-x64`))
+  assert.ok(!dir.includes('AppData'), 'env override must win over LOCALAPPDATA')
+})
+
+test('ensureElectronRuntime uses the package-external cache without downloading', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pet-electron-cache-'))
+  try {
+    const env = { DSH_PET_ELECTRON_CACHE: join(dir, 'cache-base') }
+    const cacheRoot = runtimeCacheDir({ platform: 'win32', arch: 'x64', env })
+    writeUsableRuntime(cacheRoot)
+    let fetchCalls = 0
+    const exe = await ensureElectronRuntime({
+      platform: 'win32',
+      arch: 'x64',
+      env,
+      // 不触碰仓库里可能存在的真实 vendor/：本用例只验证缓存命中。
+      legacyVendorDir: null,
+      fetchImpl: async () => { fetchCalls += 1; throw new Error('must not fetch') },
+      spawnImpl: () => { throw new Error('must not spawn') },
+    })
+    assert.equal(exe, electronBinaryIn(cacheRoot, 'win32', 'x64'))
+    assert.equal(fetchCalls, 0, '可用缓存不应触发下载')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ensureElectronRuntime migrates a usable legacy vendor runtime into the cache', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pet-electron-migrate-'))
+  try {
+    // 升级前下载的旧运行时：完整、可用。
+    const legacy = join(dir, 'plugin', 'vendor', 'electron-win32-x64')
+    writeUsableRuntime(legacy)
+    const env = { DSH_PET_ELECTRON_CACHE: join(dir, 'cache-base') }
+    const cacheRoot = runtimeCacheDir({ platform: 'win32', arch: 'x64', env })
+    let fetchCalls = 0
+    const progress = []
+    const exe = await ensureElectronRuntime({
+      platform: 'win32',
+      arch: 'x64',
+      env,
+      legacyVendorDir: legacy,
+      onProgress: (m) => progress.push(m),
+      fetchImpl: async () => { fetchCalls += 1; throw new Error('must not fetch') },
+      spawnImpl: () => { throw new Error('must not spawn') },
+    })
+    assert.equal(exe, electronBinaryIn(cacheRoot, 'win32', 'x64'))
+    assert.ok(isUsableElectronRoot(cacheRoot, 'win32'), '迁移后的缓存目录应完整可用')
+    assert.equal(existsSync(legacy), false, '同盘 rename 后旧目录应消失')
+    assert.equal(fetchCalls, 0, '迁移优先于重新下载')
+    assert.match(progress.join(' '), /迁移/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ensureElectronRuntime falls back to the legacy vendor dir when migration fails', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pet-electron-migrate-fail-'))
+  try {
+    const legacy = join(dir, 'plugin', 'vendor', 'electron-win32-x64')
+    writeUsableRuntime(legacy)
+    const cacheBase = join(dir, 'cache-base')
+    // 在缓存父路径上放一个同名文件，让 mkdir/rename 必然失败（模拟跨卷/被锁）。
+    mkdirSync(join(cacheBase, 'dsh-pet-remielle'), { recursive: true })
+    writeFileSync(join(cacheBase, 'dsh-pet-remielle', 'electron'), 'not a directory')
+    const env = { DSH_PET_ELECTRON_CACHE: cacheBase }
+    let fetchCalls = 0
+    const exe = await ensureElectronRuntime({
+      platform: 'win32',
+      arch: 'x64',
+      env,
+      legacyVendorDir: legacy,
+      fetchImpl: async () => { fetchCalls += 1; throw new Error('must not fetch') },
+      spawnImpl: () => { throw new Error('must not spawn') },
+    })
+    assert.equal(exe, electronBinaryIn(legacy, 'win32', 'x64'))
+    assert.equal(fetchCalls, 0, '迁移失败应直接使用旧目录，不得重新下载')
+    assert.ok(existsSync(legacy), '旧目录必须保留')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ensureElectronRuntime prunes older same-platform versions from the cache after install', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pet-electron-prune-'))
+  try {
+    const env = { DSH_PET_ELECTRON_CACHE: join(dir, 'cache-base') }
+    const cacheRoot = runtimeCacheDir({ platform: 'win32', arch: 'x64', env })
+    const parent = dirname(cacheRoot)
+    const oldSamePlatform = join(parent, 'v0.9.0-win32-x64')
+    const otherPlatform = join(parent, 'v0.9.0-linux-x64')
+    const sameVersionOtherArch = join(parent, `v${ELECTRON_VERSION}-win32-arm64`)
+    for (const p of [oldSamePlatform, otherPlatform, sameVersionOtherArch]) {
+      mkdirSync(p, { recursive: true })
+      writeFileSync(join(p, 'marker'), 'x')
+    }
+
+    await ensureElectronRuntime({
+      mirrors: ['https://mirror.test/electron.zip'],
+      platform: 'win32',
+      arch: 'x64',
+      env,
+      // 默认 legacyVendorDir 会指向仓库真实 vendor/；本用例只测版本清理，
+      // 必须显式断开，避免把开发机的旧运行时 rename 进临时目录后删掉。
+      legacyVendorDir: null,
+      fetchImpl: fakeFetch(true),
+      spawnImpl: fakeSpawn('win32'),
+    })
+
+    assert.ok(isUsableElectronRoot(cacheRoot, 'win32'))
+    assert.equal(existsSync(oldSamePlatform), false, '同平台旧版本应被清理')
+    assert.ok(existsSync(otherPlatform), '其他平台缓存不得误删')
+    assert.ok(existsSync(sameVersionOtherArch), '当前版本的其他架构不得误删')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('ensureElectronRuntime is idempotent when the runtime already exists', async () => {

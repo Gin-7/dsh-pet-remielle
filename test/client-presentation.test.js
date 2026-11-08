@@ -210,6 +210,9 @@ test('web pet tip follows dark theme and stays inside the viewport', () => {
   // stub 自己的数字而非真实布局——同样量级的检查已在那边做过且更强，故不重复。
   // 此处只留一条与 DOM 接线直接相关的：提示浮层拿到的是自绘节点且短口吻不拆字。
   assert.equal(tip.style.whiteSpace, 'nowrap')
+  // 收尾：点击外部收起浮层并清掉 20s 兜底计时，否则测试进程会等计时器空转，
+  // CI 的 10s 超时会把整个文件判为失败。
+  harness.dispatchDocumentEvent('pointerdown')
 })
 
 test('pet dock grabbing cursor survives snapshot refresh until pointerup', () => {
@@ -245,4 +248,36 @@ test('question and error action symbols open their own conversations', () => {
   const backboard = harness.elements.find((node) => String(node.className).includes('backboard'))
   harness.click(backboard)
   assert.deepEqual(harness.opened, ['question', 'error'])
+})
+
+test('hover tip hides when the window loses focus or something is clicked', () => {
+  const harness = createHarness('other', true, [])
+  harness.send({
+    enabled: true,
+    showBubble: true,
+    showBubbleStatus: true,
+    petId: 'remielle',
+    sessions: [{
+      sessionId: 's1',
+      state: 'WORKING',
+      phase: 'output',
+      message: '正在输出回答哦',
+      detail: 'dsh-pet-remielle · 输出阶段',
+    }],
+  })
+  const card = harness.card('正在输出回答哦')
+  const enter = card.listeners.get('mouseenter')?.[0]
+  assert.ok(enter, 'missing mouseenter listener')
+  enter()
+  const tip = harness.elements.find((node) => node.className === 'rm2-pet-tip')
+  assert.ok(tip, 'missing .rm2-pet-tip')
+  assert.equal(tip.style.display, 'block')
+
+  harness.dispatchWindowEvent('blur')
+  assert.equal(tip.style.display, 'none', '窗口失焦（截屏工具会触发）应收起浮层')
+
+  enter()
+  assert.equal(tip.style.display, 'block')
+  harness.dispatchDocumentEvent('pointerdown')
+  assert.equal(tip.style.display, 'none', '点击其它地方应收起浮层')
 })

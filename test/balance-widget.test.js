@@ -129,6 +129,34 @@ test('a rejected fetch degrades to the same failure frame', async () => {
   assert.equal(frames.at(-1).amount, '--')
 })
 
+
+test('a rejected realtime token explains the ledger fallback on the bubble', async () => {
+  let call = 0
+  const { api, frames, flush } = load({
+    fetchImpl: async () => {
+      call += 1
+      // 第一次：令牌被拒，服务端已回落记账并带上 usageError；第二次：没有错误。
+      const body = call === 1
+        ? balanceBody(30, { usageError: 'platform 40003: Authorization Failed' })
+        : balanceBody(30)
+      return { json: async () => body }
+    },
+  })
+  api.init('token')
+  await flush()
+  api.showBalance()
+  let frame = frames.at(-1)
+  assert.equal(frame.period, '实时用量不可用', '令牌被拒要显示出来，不能静默展示记账数字')
+  assert.equal(frame.color, '#b26a00')
+  assert.equal(frame.detail, '今日已用 ¥ 1.50', '数字仍来自记账，raw error 不拼进 detail')
+
+  // 下一次拉取没有 usageError：提示必须消失，不能粘住。
+  api.setUsageMode('ledger')
+  await flush()
+  frame = frames.at(-1)
+  assert.equal(frame.period, '空闲时段')
+})
+
 test('the balance request always opts out of caching and carries a timeout signal', async () => {
   const { api, requests, flush } = load({ fetchImpl: async () => ({ json: async () => balanceBody(30) }) })
   api.init('ledger')
