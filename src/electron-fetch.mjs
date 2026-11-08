@@ -195,13 +195,6 @@ export function missingRuntimeFiles(root, platform = process.platform) {
   return requiredRuntimeFiles(platform).filter((rel) => !requiredFilePresent(fs, resolve(root, rel), rel))
 }
 
-/**
- * 插件包内的旧运行时目录（升级兼容）。新安装默认写 runtimeCacheDir()；
- * VENDOR_DIR / ELECTRON_EXE 仅用于候选发现、迁移与诊断。
- */
-export const VENDOR_DIR = resolve(here, '..', 'vendor', runtimeTarget().folder)
-export const ELECTRON_EXE = electronBinaryIn(VENDOR_DIR)
-
 /** Download candidates, best first. Each is the full zip URL for the current
  *  platform/arch (npmmirror first: fast in mainland China, then GitHub). */
 export function downloadMirrors(version = ELECTRON_VERSION, platform = process.platform, arch = process.arch) {

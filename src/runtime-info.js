@@ -15,7 +15,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 /** 递归统计文件数与总字节；目录不存在返回 { exists: false }。 */
-export async function measureDir(dir, { maxFiles = 20000 } = {}) {
+export async function measureDir(dir) {
   let info
   try {
     info = await stat(dir)
@@ -25,7 +25,6 @@ export async function measureDir(dir, { maxFiles = 20000 } = {}) {
   if (!info.isDirectory()) return { exists: true, bytes: info.size, files: 1 }
   let bytes = 0
   let files = 0
-  let truncated = false
   const stack = [dir]
   while (stack.length > 0) {
     const current = stack.pop()
@@ -48,14 +47,9 @@ export async function measureDir(dir, { maxFiles = 20000 } = {}) {
       } catch {
         // 统计期间被删/无权限：跳过，不影响其余结果。
       }
-      if (files >= maxFiles) {
-        truncated = true
-        break
-      }
     }
-    if (truncated) break
   }
-  return { exists: true, bytes, files, truncated }
+  return { exists: true, bytes, files }
 }
 
 /** 各平台的应用数据根目录（与 Electron app.getPath('appData') 同义）。 */

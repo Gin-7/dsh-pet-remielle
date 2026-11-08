@@ -57,8 +57,8 @@ if (userData.fallback) {
 }
 if (userData.ownsLock) petWindowPaths.writeLock(userData.lockPath, process.pid)
 
-// 启动时清一次历史残留的退避目录：进程已死或闲置超过 6 小时的不会再被使用，
-// 但每个都是完整 Chromium userData（几十 MB），不清理会无限堆积。逐项
+// 启动时清一次历史残留的退避目录：进程已死的不会再被使用，但每个都是
+// 完整 Chromium userData（几十 MB），不清理会无限堆积。逐项
 // best-effort 删除，被占用／无权限就静默跳过，绝不让异常影响启动。
 try {
   for (const stale of petWindowPaths.staleFallbackDirs({ appDataDir })) {
@@ -554,7 +554,7 @@ app.whenReady().then(() => {
   })
 
   // 无网页客户端在线时点击气泡卡：渲染层只发信号，URL 由宿主经 DSH_WEB_URL
-  // 传入（桌面模式要求 DSH 0.1.2-alpha.1+ 的带进程 token 根路径）。
+  // 传入（桌面模式依赖带进程 token 的根路径，0.1.2 起提供；当前支持 DSH > 0.2.0）。
   // 用 href 而不是 origin：token 在 query 上，303 换 cookie 时也会丢掉其它参数。
   ipcMain.handle('open-dsh-page', () => {
     try {

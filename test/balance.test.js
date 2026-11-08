@@ -384,17 +384,13 @@ test('the signed-in account balance outranks the API key balance', async () => {
 })
 
 test('an unavailable account balance falls back to the API key balance', async () => {
-  const svc = service(fakeFetch(20), { getAccountBalance: async () => null })
-  const result = await svc.getBalance('ledger')
-  assert.equal(result.totalBalance, 20)
-  assert.equal(result.balanceSource, 'apikey')
-})
-
-test('a throwing account balance falls back to the API key balance', async () => {
-  const svc = service(fakeFetch(20), { getAccountBalance: async () => { throw new Error('account offline') } })
-  const result = await svc.getBalance('ledger')
-  assert.equal(result.totalBalance, 20)
-  assert.equal(result.balanceSource, 'apikey')
+  // 两种失败形态走同一条回落分支：未登录返回 null、查询抛错。
+  for (const getAccountBalance of [async () => null, async () => { throw new Error('account offline') }]) {
+    const svc = service(fakeFetch(20), { getAccountBalance })
+    const result = await svc.getBalance('ledger')
+    assert.equal(result.totalBalance, 20)
+    assert.equal(result.balanceSource, 'apikey')
+  }
 })
 
 test('usage prefers the signed-in platform session token', async () => {

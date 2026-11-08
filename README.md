@@ -12,7 +12,7 @@
 - 一键版本检查 + 增量更新
 - 设置页与插件详情页共用设置（外观 / 宠物 / 行为 / 桌面悬浮 / 关于）
 
-> 兼容 DeepSeek Harness（含其分支）的 web profile；桌面悬浮模式默认关闭，可按需开启。桌面模式要求 DSH `>= 0.1.2-alpha.1`，以提供带 token 的认证根 URL。
+> 兼容 DeepSeek Harness（含其分支）的 web profile；**要求 DSH `> 0.2.0`（0.2.1 起，0.3.0 以下）**，更早版本不再支持（`engines.dsh` 会在安装时拦下）。桌面悬浮模式默认关闭，可按需开启。
 
 ---
 
@@ -138,8 +138,8 @@ dsh plugin --profile web add dsh-pet-remielle
 
 > **首次运行**：若开启桌面悬浮模式但本机找不到 Electron 运行时，会**提示下载并安装**（需你确认，因 Electron 运行时约 100–220MB，Windows 最大）；下载并解压到包外缓存；失败则自动回落页面内展示，不会影响其他功能。也可手动把任一对应平台的 Electron 发行包解压到 `vendor/electron-<platform>-<arch>/`（下次启动会迁移到缓存），或设置 `DSH_PET_ELECTRON` 指向现有 electron 可执行文件（Windows：`electron.exe`；macOS：`Electron.app/Contents/MacOS/Electron`；Linux：`electron`）。
 
+> **运行时占用与清理**：设置 → 宠物管理 → 桌面悬浮 页底部有「桌面运行时」区块，显示 Electron 缓存与窗口数据目录的路径、占用和文件数，可分别「清除」。清理运行时后，下次开启桌面悬浮会重新下载约 220 MB；桌面悬浮窗正在运行时不允许清理运行时缓存与窗口数据。
 
-> **运行时占用与清理**：设置 → 宠物管理 → 桌面悬浮 页底部有「桌面运行时」区块，显示 Electron 缓存与窗口数据目录的路径、占用和文件数，可分别「清除」。清理运行时后，下次开启桌面悬浮会重新下载约 220 MB；桌面悬浮窗正在运行时不允许清理缓存。
 ### 平台能力
 
 | 平台 | 桌面悬浮窗 | 页面内桌宠 |
@@ -178,7 +178,7 @@ dsh plugin --profile web add dsh-pet-remielle
 
 > `DEEPSEEK_PLATFORM_TOKEN` 获取方式：登录 platform.deepseek.com → F12 开发者工具 → Network → 打开「用量」页面 → 复制 `api/v0/usage/...` 请求的 `Authorization` 请求头值 → 在设置页保存，写入 DSH 凭据中心（`~/.dsh/.credentials.yaml`），不写进插件配置。
 >
-> 早期版本把令牌存在插件配置里；升级后插件启动时会自动把它迁进凭据中心并清空配置里的明文。没有凭据服务（DSH < 0.2.1）时设置页退回旧的配置输入。
+> 早期版本把令牌存在插件配置里；升级后插件启动时会自动把它迁进凭据中心并清空配置里的明文。受支持的 DSH 版本（> 0.2.0）均提供凭据中心接口，设置页不再保留写进插件配置的旧输入；接口缺失时只提示无法配置。
 
 ---
 

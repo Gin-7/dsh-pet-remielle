@@ -24,7 +24,7 @@
   ],
   "engines": {
     "node": ">=24.9",
-    "dsh": ">=0.1.2-alpha.1 <0.3.0-0"
+    "dsh": ">0.2.0 <0.3.0-0"
   },
   "scripts": {
     "build:client": "node scripts/build-client.mjs",

@@ -194,17 +194,16 @@ test('snapshot top-level fields follow config, desktop state and pet registry', 
   assert.equal(bare.webClients, 0)
 })
 
-// 快照和 /config 都不得回传令牌明文；设置页只拿到 configured 标志，更新仍由 PATCH 写入。
+// 快照和 /config 都不得回传令牌明文；更新仍由 PATCH 写入。
 test('state snapshot never carries platformToken', () => {
   const snapshot = snapshotWith({ latest: idle, config: { platformToken: 'sk-must-not-leak' }, petId: DEFAULT_PET_ID })
   assert.equal('platformToken' in snapshot, false)
   assert.equal(JSON.stringify(snapshot).includes('sk-must-not-leak'), false, '快照序列化后不得出现令牌明文')
   assert.equal(publicConfig({ platformToken: 'sk-ok' }).platformToken, 'sk-ok')
-  assert.equal(clientConfig({ platformToken: 'sk-ok' }).platformTokenConfigured, true)
   assert.equal('platformToken' in clientConfig({ platformToken: 'sk-ok' }), false)
 })
 
-test('config route keeps platformToken write-only while preserving patch updates', async () => {
+test('config route strips platformToken while still accepting patch updates', async () => {
   const updates = []
   const settings = {
     get: () => ({ enabled: true, platformToken: 'sk-never-echo' }),
@@ -215,7 +214,6 @@ test('config route keeps platformToken write-only while preserving patch updates
   await handler(request('GET'), get)
   const got = JSON.parse(get.body)
   assert.equal(get.status, 200)
-  assert.equal(got.platformTokenConfigured, true)
   assert.equal('platformToken' in got, false)
   assert.equal(JSON.stringify(got).includes('sk-never-echo'), false)
 
@@ -223,7 +221,6 @@ test('config route keeps platformToken write-only while preserving patch updates
   await handler(request('PATCH', { platformToken: 'sk-replaced' }), patch)
   const updated = JSON.parse(patch.body)
   assert.deepEqual(updates, [{ platformToken: 'sk-replaced' }])
-  assert.equal(updated.platformTokenConfigured, true)
   assert.equal('platformToken' in updated, false)
 
   const remoteHost = responseRecorder()

@@ -333,23 +333,8 @@ export class PetReducer {
         record.openTools.set(callId, { name, args: event.data?.arguments })
         // 计划审核通过 user-questions waterfall 呈现，不会发 approval/asked；
         // 但 exit_plan_mode 的 tool/call 是它进入等待期的稳定宿主信号。
-        if (name === PLAN_REVIEW_TOOL) {
-          this.#humanWait(record, 'plan-review', callId, name, event.data?.arguments)
-          return this.#render()
-        }
-        // Asking the human a question is a "waiting" state, not "摸鱼中".
-        if (name === ASK_USER_TOOL) {
-          this.#humanWait(record, 'ask', callId, name, event.data?.arguments, event.seq)
-          return this.#render()
-        }
-        const activity = toolActivity(name)
-        this.#update(record, PetState.WORKING, {
-          phase: 'tool-call',
-          activity,
-          stage: activityStage(activity),
-          toolName: name,
-          message: activityCopy(activity, event.seq),
-        })
+        if (this.#humanWaitForTool(record, name, callId, event.data?.arguments, event.seq)) return this.#render()
+        this.#showToolActivity(record, name, event.seq)
         return this.#render()
       }
 
@@ -362,22 +347,8 @@ export class PetReducer {
         if (!subCallId) return []
         const name = String(event.data?.name ?? 'tool')
         record.ptcTools.set(subCallId, { name, parentCallId: String(event.data?.parentCallId ?? '') })
-        if (name === PLAN_REVIEW_TOOL) {
-          this.#humanWait(record, 'plan-review', subCallId, name, event.data?.arguments)
-          return this.#render()
-        }
-        if (name === ASK_USER_TOOL) {
-          this.#humanWait(record, 'ask', subCallId, name, event.data?.arguments, event.seq)
-          return this.#render()
-        }
-        const activity = toolActivity(name)
-        this.#update(record, PetState.WORKING, {
-          phase: 'tool-call',
-          activity,
-          stage: activityStage(activity),
-          toolName: name,
-          message: activityCopy(activity, event.seq),
-        })
+        if (this.#humanWaitForTool(record, name, subCallId, event.data?.arguments, event.seq)) return this.#render()
+        this.#showToolActivity(record, name, event.seq)
         return this.#render()
       }
 
@@ -706,6 +677,31 @@ export class PetReducer {
     record.updatedAt = ++this.clock
   }
 
+  /** Enter the human wait a tool asks for; false when it is an ordinary tool. */
+  #humanWaitForTool(record, name, id, argsRaw, seq) {
+    if (name === PLAN_REVIEW_TOOL) {
+      this.#humanWait(record, 'plan-review', id, name, argsRaw)
+      return true
+    }
+    if (name === ASK_USER_TOOL) {
+      this.#humanWait(record, 'ask', id, name, argsRaw, seq)
+      return true
+    }
+    return false
+  }
+
+  /** Show the named tool as the current working activity. */
+  #showToolActivity(record, name, seq) {
+    const activity = toolActivity(name)
+    this.#update(record, PetState.WORKING, {
+      phase: 'tool-call',
+      activity,
+      stage: activityStage(activity),
+      toolName: name,
+      message: activityCopy(activity, seq),
+    })
+  }
+
   /** Enter a human-decision wait for a native tool call or a PTC sub-call. */
   #humanWait(record, kind, id, name, argsRaw, seq) {
     if (kind === 'plan-review') {
@@ -743,15 +739,7 @@ export class PetReducer {
     const pending = [...record.ptcTools.values()].at(-1)
     const parent = record.openTools.size > 0 ? [...record.openTools.values()].at(-1) : undefined
     if (!pending && !parent) return []
-    const name = pending?.name ?? parent?.name ?? 'tool'
-    const activity = toolActivity(name)
-    this.#update(record, PetState.WORKING, {
-      phase: 'tool-call',
-      activity,
-      stage: activityStage(activity),
-      toolName: name,
-      message: activityCopy(activity, seq),
-    })
+    this.#showToolActivity(record, pending?.name ?? parent?.name ?? 'tool', seq)
     return this.#render()
   }
 

@@ -156,12 +156,10 @@ test('listFallbackDirs lists only existing fallback directories', () => {
   })
 })
 
-test('staleFallbackDirs drops dead, aged and foreign dirs but never currentPid', () => {
+test('staleFallbackDirs drops dead dirs but never live or current processes', () => {
   withTempRoot((root) => {
-    const now = Date.UTC(2026, 10, 7, 9, 0, 0)
-    const maxAgeMs = 6 * 60 * 60 * 1000
-    const old = new Date(now - maxAgeMs - 1000)
-    const fresh = new Date(now - 1000)
+    const old = new Date(Date.UTC(2026, 10, 7, 2, 0, 0))
+    const fresh = new Date(Date.UTC(2026, 10, 7, 8, 59, 0))
     const makeDir = (name, mtime) => {
       const dir = join(root, name)
       mkdirSync(dir, { recursive: true })

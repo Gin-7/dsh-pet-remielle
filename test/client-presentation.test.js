@@ -210,6 +210,9 @@ test('web pet tip follows dark theme and stays inside the viewport', () => {
   // stub 自己的数字而非真实布局——同样量级的检查已在那边做过且更强，故不重复。
   // 此处只留一条与 DOM 接线直接相关的：提示浮层拿到的是自绘节点且短口吻不拆字。
   assert.equal(tip.style.whiteSpace, 'nowrap')
+  // 收尾：点击外部收起浮层并清掉 20s 兜底计时，否则测试进程会等计时器空转，
+  // CI 的 10s 超时会把整个文件判为失败。
+  harness.dispatchDocumentEvent('pointerdown')
 })
 
 test('pet dock grabbing cursor survives snapshot refresh until pointerup', () => {
@@ -247,7 +250,7 @@ test('question and error action symbols open their own conversations', () => {
   assert.deepEqual(harness.opened, ['question', 'error'])
 })
 
-test('hover tip hides when the window loses focus, the page hides, or something is clicked', () => {
+test('hover tip hides when the window loses focus or something is clicked', () => {
   const harness = createHarness('other', true, [])
   harness.send({
     enabled: true,

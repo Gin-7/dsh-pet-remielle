@@ -1097,6 +1097,8 @@
     __bubbleTitle.applyCardChrome(el, entry, index, {
       detailShown: shown,
       planSummary: __bubbleTitle.planSummaryOf(shown),
+      ask: entry.ask === true,
+      askSummary: entry.askSummary || '',
       current: targetSessionOf(entry) === currentSessionId,
       approval: approval,
       planReview: planReview,

@@ -245,6 +245,8 @@ test('ensureElectronRuntime uses the package-external cache without downloading'
       platform: 'win32',
       arch: 'x64',
       env,
+      // 不触碰仓库里可能存在的真实 vendor/：本用例只验证缓存命中。
+      legacyVendorDir: null,
       fetchImpl: async () => { fetchCalls += 1; throw new Error('must not fetch') },
       spawnImpl: () => { throw new Error('must not spawn') },
     })
@@ -330,6 +332,9 @@ test('ensureElectronRuntime prunes older same-platform versions from the cache a
       platform: 'win32',
       arch: 'x64',
       env,
+      // 默认 legacyVendorDir 会指向仓库真实 vendor/；本用例只测版本清理，
+      // 必须显式断开，避免把开发机的旧运行时 rename 进临时目录后删掉。
+      legacyVendorDir: null,
       fetchImpl: fakeFetch(true),
       spawnImpl: fakeSpawn('win32'),
     })

@@ -33,7 +33,6 @@ import {
 import {
   DEFAULT_PET_ID,
   DEFAULT_PETS,
-  PET_MOODS,
   PET_MOOD_EXT,
   PET_MANIFEST,
   PET_ID_RE,
@@ -178,12 +177,8 @@ export function publicConfig(config = {}) {
 
 /** Configuration sent to browser settings pages; secret values are write-only. */
 export function clientConfig(config = {}) {
-  const value = publicConfig(config)
-  const { platformToken, ...safe } = value
-  return {
-    ...safe,
-    platformTokenConfigured: typeof platformToken === 'string' && platformToken.length > 0,
-  }
+  const { platformToken, ...safe } = publicConfig(config)
+  return safe
 }
 
 function localSettingsScope(value) {
@@ -881,8 +876,8 @@ export function createStateSnapshot({ getLatest, getPulse, getConfig, getPetId, 
       usageMode: config.usageMode ?? 'ledger',
       // platformToken 不进 /state 快照：快照经 SSE 广播给所有订阅者（任意网页标签
       // 页、桌面窗），明文带令牌等于把平台凭证散给每个连上快照的页面。
-      // /config 也只返回 clientConfig：设置页知道令牌是否已配置，但不会收到令牌明文。
-      // balance 服务仍从 settings.get() 读取令牌；令牌写入只走 /config 的 PATCH。
+      // /config 也只返回 clientConfig，不会收到令牌明文。令牌的权威存放地是
+      // DSH 凭据中心（设置页写入）；旧配置字段只服务升级迁移与读取回落。
       paused: config.paused === true,
       hidden: config.hidden === true,
       desktopActive: desktopActiveOf(),
@@ -1080,8 +1075,9 @@ export function advertisedOrigin(httpCtx, fallback) {
 
 /**
  * 把旧配置里的平台令牌迁进 DSH 凭据中心，成功后清空配置里的明文。
- * 凭据服务不可用、只读、已配置或写入失败时保持原样——迁移是尽力而为，绝不丢值。
- * @returns 是否真的完成了迁移（写凭据 + 清配置）
+ * 凭据服务不可用、只读或写入失败时保持原样（不丢值）；凭据中心已有值时
+ * 不覆盖它，但仍会清掉配置里的旧明文副本。迁移是尽力而为。
+ * @returns 是否把令牌写进了凭据中心（已配置时只清理旧副本，返回 false）
  */
 export async function migratePlatformToken({ settings, credentials, logger = console }) {
   const legacy = String(settings?.get?.().platformToken || '').trim()
@@ -1133,7 +1129,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     locale: 'zh_CN',
     timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
   })
-  const accountService = () => hostService(ctx, 'deepseekAccount')
+  const accountService = () => hostService(eventCtx, 'deepseekAccount') ?? hostService(ctx, 'deepseekAccount')
   const balanceService = createBalanceService({
     resolveCredential,
     getPlatformToken: () => String(settings.get().platformToken || ''),
@@ -1415,8 +1411,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
   // 不存在（0.2.1 或未挂载），取不到就静默跳过，绝不影响既有渲染。
   const syncAnswerable = (session) => {
     if (reducer.includeSubagents !== true && isSubagent(session)) return []
-    let projections
-    try { projections = hostService(ctx, 'sessionProjections') } catch { projections = undefined }
+    const projections = hostService(eventCtx, 'sessionProjections') ?? hostService(ctx, 'sessionProjections')
     if (!projections || typeof projections.snapshot !== 'function') return []
     let active
     try {
@@ -1556,7 +1551,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         const base = localOrigin()
         return base ? `${base}${PET_VIEW_ENDPOINT}` : ''
       }
-      // DSH 0.1.2-alpha.1 起 Web 壳根路径要带进程 token，走 connection 的
+      // Web 壳根路径自 0.1.2 起要带进程 token（当前支持 DSH > 0.2.0），走 connection 的
       // authenticatedUrl。connection 是**可选依赖**：上一版把它写进
       // ctx.inject(['webServer', 'connection'])，而 cordis 的 inject 要所有服务
       // 都可用才执行回调——这一整个块里包着全部 21 条 webServer.register，于是
@@ -1896,14 +1891,17 @@ function mount(ctx, config = {}, eventCtx = ctx) {
           try {
             const body = await readJsonBody(req)
             const target = body && body.target
-            // 桌面窗运行时 electron.exe 就在缓存目录里，删了会把正在跑的窗口一起弄坏。
-            if (target === 'cache' && desktop) {
-              jsonResponse(res, 200, { ok: false, error: '桌面悬浮窗正在运行，请先关闭桌面模式再清理运行时' })
+            // 桌面窗运行时 electron.exe 在缓存目录里，窗口还占着 userData 里的
+            // Chromium profile——两个目录都不能删，先关桌面模式。
+            if (desktop) {
+              jsonResponse(res, 200, { ok: false, error: '桌面悬浮窗正在运行，请先关闭桌面模式再清理运行时或窗口数据' })
               return
             }
             const result = await clearRuntime({ target, cacheDir, userDataDir })
             logger.info?.(`dsh-pet-remielle: runtime cleanup ${target} -> ${result.ok ? 'ok' : 'failed'}`)
-            jsonResponse(res, 200, { ok: result.ok, result, ...(await runtimeInfo({ cacheDir, userDataDir })) })
+            // 与 GET 同样回 desktopRunning：客户端清理后会用整包结果覆盖状态，
+            // 少了它会让「桌面窗运行中」的提示与禁用态在清理后消失。
+            jsonResponse(res, 200, { ok: result.ok, result, desktopRunning: Boolean(desktop), ...(await runtimeInfo({ cacheDir, userDataDir })) })
           } catch (err) {
             jsonResponse(res, 400, { ok: false, error: String((err && err.message) || err).slice(0, 200) })
           }
