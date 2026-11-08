@@ -164,11 +164,14 @@ function planReviewContent(argsRaw) {
   return clipLine(paragraph || markdown) || '计划待审'
 }
 
-/** First question sentence, short enough for the hover tip only. */
-function askSummaryOf(argsRaw) {
-  const args = parseToolArgs(argsRaw)
-  const first = Array.isArray(args?.questions) ? args.questions[0] : undefined
+/** 取第一个问题（或标题）的短摘要，气泡悬停层与 timed 投影共用。 */
+function questionSummaryOf(questions) {
+  const first = Array.isArray(questions) ? questions[0] : undefined
   return clipLine(String(first?.question ?? first?.header ?? ''), 60)
+}
+
+function askSummaryOf(argsRaw) {
+  return questionSummaryOf(parseToolArgs(argsRaw)?.questions)
 }
 
 /** Wait id for a timed question that stays answerable from the host projection. */
@@ -764,8 +767,7 @@ export class PetReducer {
     for (const entry of Array.isArray(entries) ? entries : []) {
       const callId = String(entry?.callId ?? '')
       if (!callId) continue
-      const question = Array.isArray(entry?.questions) ? entry.questions[0] : undefined
-      next.set(callId, clipLine(String(question?.question ?? question?.header ?? ''), 60))
+      next.set(callId, questionSummaryOf(entry?.questions))
     }
     let changed = false
     for (const callId of [...record.answerable.keys()]) {

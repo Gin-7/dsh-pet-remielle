@@ -674,7 +674,6 @@ test('dismissError clears only durable ERROR sessions', () => {
   assert.equal(live.states().find((entry) => entry.sessionId === 'work').state, PetState.WORKING)
 })
 
-
 test('PTC ask_user_question -> WAITING with question summary, settle restores the parent tool', () => {
   const reducer = new PetReducer()
   const sess = session()

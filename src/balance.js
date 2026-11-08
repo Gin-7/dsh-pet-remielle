@@ -158,32 +158,26 @@ export function createBalanceService({ resolveCredential, getPlatformToken, getA
     if (typeof getAccountPlatformToken === 'function') {
       try {
         const token = String((await getAccountPlatformToken()) || '').replace(/^Bearer\s+/i, '')
-        if (token) list.push({ source: 'account', token })
+        if (token) list.push(token)
       } catch (err) {
         logger('account-session', String((err && err.message) || err).slice(0, 160))
       }
     }
-    let credentialToken = ''
     try {
       const cred = await resolveCredential('DEEPSEEK_PLATFORM_TOKEN')
       const token = cred && cred.value ? String(cred.value).replace(/^Bearer\s+/i, '') : ''
-      if (token) {
-        credentialToken = token
-        list.push({ source: 'credentials', token })
-      }
+      if (token) list.push(token)
     } catch (err) {
       /* 凭据中心不可用时继续尝试旧配置 */
     }
-    // 旧配置字段只在凭据中心没有令牌时兜底（迁移后它应为空），
-    // 避免凭据里的令牌失效后又拿同一段旧值重试。
-    if (!credentialToken && typeof getPlatformToken === 'function') {
+    // 旧配置字段作为最后一级兜底（迁移后它应为空）；与凭据同值时会被末尾去重。
+    if (typeof getPlatformToken === 'function') {
       try {
         const token = String(getPlatformToken() || '').replace(/^Bearer\s+/i, '')
-        if (token) list.push({ source: 'settings', token })
+        if (token) list.push(token)
       } catch (err) { /* ignore */ }
     }
-    const seen = new Set()
-    return list.filter((item) => (seen.has(item.token) ? false : (seen.add(item.token), true)))
+    return [...new Set(list)]
   }
 
   /** 用一枚令牌查询当天费用；鉴权失败单独标记，便于换下一枚令牌。 */
@@ -220,15 +214,17 @@ export function createBalanceService({ resolveCredential, getPlatformToken, getA
     const tokens = await usageTokens()
     if (!tokens.length) return { error: 'no platform token' }
     let last = null
-    for (const item of tokens) {
+    for (const token of tokens) {
       try {
-        const usage = await fetchUsageWithToken(item.token)
-        if (usage.amount !== undefined) return { ...usage, source: item.source }
+        const usage = await fetchUsageWithToken(token)
+        if (usage.amount !== undefined) return usage
         last = usage
         // 网络/结构类失败换令牌也没用；只有鉴权失败才继续试下一枚
         if (!usage.authFailed) break
       } catch (err) {
+        // 网络/超时与令牌无关，换下一枚只会把同一个超时再等一遍，直接结束。
         last = { error: String((err && err.message) || err) }
+        break
       }
     }
     return last || { error: 'no usage' }

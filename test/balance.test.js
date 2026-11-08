@@ -347,7 +347,7 @@ test('the injected clock controls ledger date and token usage window', async () 
   assert.ok(usageUrl.includes(`start=${expectedStart}`), `usage window must use injected date: ${usageUrl}`)
 })
 
-test('credential store token outranks the legacy platformToken setting', async () => {
+test('credential store token is tried before the legacy platformToken setting', async () => {
   const urls = []
   const auths = []
   const fetchImpl = async (url, init) => {
@@ -368,7 +368,7 @@ test('credential store token outranks the legacy platformToken setting', async (
   await svc.getBalance('token')
   const usageIndex = urls.findIndex((u) => u.includes('by_api_key/cost'))
   assert.equal(auths[usageIndex], 'Bearer cred-token', '凭据中心的值优先于旧配置字段')
-  assert.ok(!auths.includes('Bearer legacy-token'), '旧配置值不应被使用')
+  assert.equal(auths[usageIndex + 1], 'Bearer legacy-token', '凭据令牌被拒后才回落旧配置字段')
 })
 
 test('the signed-in account balance outranks the API key balance', async () => {

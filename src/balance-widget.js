@@ -26,7 +26,7 @@
   var FETCH_TIMEOUT_MS = 25000
 
   var usageMode = 'ledger'
-  var state = { balance: null, currency: 'CNY', todayUsage: null, isPeak: false, status: 'loading', message: '' }
+  var state = { balance: null, currency: 'CNY', todayUsage: null, isPeak: false, status: 'loading', message: '', usageError: '' }
   var shown = null
   var busy = false
   var animId = null
@@ -68,6 +68,11 @@
     if (state.status === 'error' && state.message) {
       period = '获取失败'
       color = '#c0392b'
+    } else if (state.usageError) {
+      // 余额正常、但实时用量令牌被拒时，usageMode 已回落记账；把这件事说出来，
+      // 否则用户只看到一个「今日已用」数字，不知道它不是实时的。
+      period = '实时用量不可用'
+      color = '#b26a00'
     }
     emit({
       kind: 'balance',
@@ -127,6 +132,7 @@
           state.balance = nb
           state.currency = nc
           state.message = ''
+          state.usageError = data.usageError ? String(data.usageError) : ''
           state.todayUsage = data.todayUsage !== undefined ? data.todayUsage : null
           state.isPeak = !!data.isPeak
           state.status = 'ok'
@@ -140,6 +146,7 @@
           if (mode === 'balance') emitBalance(shown)
         } else {
           state.status = 'error'
+          state.usageError = ''
           state.message = (data && data.error) ? String(data.error) : '获取失败'
           if (mode === 'balance') emitBalance(shown)
         }
