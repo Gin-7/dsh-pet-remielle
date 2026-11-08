@@ -16,6 +16,7 @@
  */
 
 import { createRequire } from 'node:module'
+import { existsSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,7 +24,8 @@ import Schema from '@deepseek-ai/schemastery'
 import { PetReducer, isSubagent } from './pet-reducer.js'
 import { PetMessageKind, PetState, createMessage } from './protocol.js'
 import { DesktopWindow } from './desktop-window.js'
-import { electronArtifact, ensureElectronRuntime, missingRuntimeFiles } from './electron-fetch.mjs'
+import { electronArtifact, ensureElectronRuntime, isUsableElectronRoot, missingRuntimeFiles, runtimeCacheDir } from './electron-fetch.mjs'
+import { clearRuntime, runtimeInfo, userDataDirOf } from './runtime-info.js'
 import {
   CHECK_ENDPOINT, UPDATE_ENDPOINT, PROGRESS_ENDPOINT, INFO_ENDPOINT,
   checkHandler, updateHandler, progressHandler, infoHandler, setSelfUpdateHooks, killActiveUpdate,
@@ -67,6 +69,7 @@ export const DESKTOP_ENDPOINT = '/plugins/dsh-pet-remielle/desktop'
 export const DESKTOP_READY_TIMEOUT_MS = 6000
 export const PLUGIN_KEY = 'dsh-pet-remielle'
 export const BALANCE_ENDPOINT = '/plugins/dsh-pet-remielle/balance'
+export const RUNTIME_ENDPOINT = '/plugins/dsh-pet-remielle/runtime'
 
 const petEntry = Schema.object({
   id: Schema.string().required().pattern(PET_ID_RE).description('宠物 id（assets/pets/<id> 目录名）'),
@@ -1602,6 +1605,20 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         desktop = undefined
         if (desktopActive) { desktopActive = false; hub.broadcast() }
       }
+      // 升级兼容：旧版把 Electron 下载在插件包内 vendor/，而自更新会清掉包内文件。
+      // 本次启动若缓存还没有、旧 vendor 仍完整可用，就先把它迁移到包外缓存——
+      // 走 ensureElectronRuntime 的迁移分支，旧目录可用时绝不会触发下载。
+      const legacyVendorRoot = electronArtifact().vendorDir
+      if (
+        !isUsableElectronRoot(runtimeCacheDir({ platform: process.platform, arch: process.arch }), process.platform)
+        && isUsableElectronRoot(legacyVendorRoot, process.platform)
+      ) {
+        void ensureElectronRuntime({
+          onProgress: (m) => logger.info?.(`dsh-pet-remielle: ${m}`),
+        }).catch((error) => {
+          logger.info?.(`dsh-pet-remielle: 旧 Electron 运行时迁移失败，继续使用插件包内目录（${error?.message ?? error}）`)
+        })
+      }
       let confirmSent = false // prevent duplicate confirm dialogs
       const startDesktop = (allowFetch = false) => {
         if (desktop) return
@@ -1652,9 +1669,12 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         }
         if (confirmSent) return // already waiting for user confirmation
         confirmSent = true
-        // 缺什么文件一并打出：vendor 残缺时「no backend」只有一句会看不出残缺点。
-        const missing = missingRuntimeFiles(electronArtifact().vendorDir, process.platform)
-        logger.info?.(`dsh-pet-remielle: no Electron backend — requesting user confirmation to fetch (bundled root missing: ${missing.length ? missing.join(', ') : 'nothing, other candidates empty'})`)
+        // 缺什么文件一并打出：运行时根残缺时「no backend」只有一句会看不出残缺点。
+        // 运行时现在装在包外缓存；缓存不存在时回落到旧 vendor 目录做诊断。
+        const cacheRoot = runtimeCacheDir({ platform: process.platform, arch: process.arch })
+        const runtimeRoot = existsSync(cacheRoot) ? cacheRoot : electronArtifact().vendorDir
+        const missing = missingRuntimeFiles(runtimeRoot, process.platform)
+        logger.info?.(`dsh-pet-remielle: no Electron backend — requesting user confirmation to fetch (runtime root ${runtimeRoot}: ${missing.length ? missing.join(', ') : 'nothing, other candidates empty'})`)
         hub.notify({ protocolVersion: 1, kind: 'download', phase: 'confirm' })
       }
       // Only react when desktopMode itself flips: the watch fires on every
@@ -1857,6 +1877,40 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: balance endpoint',
       )
       httpCtx.effect(
+        () => registerRoute({ kind: 'exact', path: RUNTIME_ENDPOINT, handler: async (req, res) => {
+          if (!localOnly(req, res)) return
+          const cacheDir = runtimeCacheDir({ platform: process.platform, arch: process.arch })
+          const userDataDir = userDataDirOf()
+          if (req.method === 'GET') {
+            try {
+              jsonResponse(res, 200, { ok: true, desktopRunning: Boolean(desktop), ...(await runtimeInfo({ cacheDir, userDataDir })) })
+            } catch (err) {
+              jsonResponse(res, 200, { ok: false, error: String((err && err.message) || err).slice(0, 200) })
+            }
+            return
+          }
+          if (req.method !== 'POST') {
+            jsonResponse(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          try {
+            const body = await readJsonBody(req)
+            const target = body && body.target
+            // 桌面窗运行时 electron.exe 就在缓存目录里，删了会把正在跑的窗口一起弄坏。
+            if (target === 'cache' && desktop) {
+              jsonResponse(res, 200, { ok: false, error: '桌面悬浮窗正在运行，请先关闭桌面模式再清理运行时' })
+              return
+            }
+            const result = await clearRuntime({ target, cacheDir, userDataDir })
+            logger.info?.(`dsh-pet-remielle: runtime cleanup ${target} -> ${result.ok ? 'ok' : 'failed'}`)
+            jsonResponse(res, 200, { ok: result.ok, result, ...(await runtimeInfo({ cacheDir, userDataDir })) })
+          } catch (err) {
+            jsonResponse(res, 400, { ok: false, error: String((err && err.message) || err).slice(0, 200) })
+          }
+        } }),
+        'dsh-pet-remielle: desktop runtime info/cleanup',
+      )
+      httpCtx.effect(
         () => registerRoute({ kind: 'exact', path: STREAM_ENDPOINT, handler: async (req, res) => {
           if (!localOnly(req, res)) return
           sseHeaders(res)
@@ -2004,21 +2058,21 @@ function mount(ctx, config = {}, eventCtx = ctx) {
         'dsh-pet-remielle: pet sticker assets',
       )
       // ---- self-update routes (version check + one-click update) ----
-      // 一键更新会替换插件目录内的文件：先停掉桌宠窗并等进程退出——
-      // electron.exe 从 vendor/ 目录内运行时会锁住文件，导致 pnpm/git EPERM
+      // 一键更新会替换插件目录内的文件：先停掉桌宠窗并等进程退出，避免窗口
+      // 进程在更新期间继续占用旧页面/运行时（Runtime 本身现已缓存在包外）。
       setSelfUpdateHooks({
         stopDesktopWindow: async (reason = 'self-update') => {
           const w = desktop
           await w?.stop(reason)
           if (w && desktopActive) { desktopActive = false; hub.broadcast() }
         },
-        // 更新成功后收尾：包内下载的 Electron 运行时已被 pnpm 替换掉，
-        // 桌面模式继续开着会让重启后“双端皆无宠物”。自动切回网页宠物；
+        // 更新成功后收尾：Electron 运行时现在缓存在插件包外，不会再随包被
+        // pnpm 清掉，因此不再强制关闭桌面模式、也不误报「运行时被移除」。
+        // 桌面窗已在上一步停止；设置与缓存都保留，重启 DSH 后会重新拉起。
         // 返回的说明文字会展示在更新卡片里。
         onUpdateSuccess: () => {
           if (settings.get().desktopMode !== false) {
-            void settings.update({ desktopMode: false })
-            return '检测到桌面悬浮模式：其 Electron 运行时随更新被移除，已自动切回网页宠物；重启后可重新开启（将重新下载运行时）。'
+            return '桌面窗已随更新停止；Electron 运行时缓存在包外，未随更新删除，重启 DSH 后可继续使用桌面悬浮模式。'
           }
           return null
         },

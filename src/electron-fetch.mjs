@@ -27,15 +27,17 @@
  *  - Idempotent: if the runtime binary for the current platform already exists it
  *    resolves immediately without touching the network.
  *
- * Files land exactly where `desktop-window.js`'s `bundledElectron` path points,
- * so a later `resolveBackend()` picks the freshly installed runtime up with no
- * reconfiguration:    <repo>/vendor/electron-<platform>-<arch>/<binary>
+ * 运行时默认缓存在插件包外（见 runtimeCacheDir）。插件自更新/重装只替换包内
+ * 文件，所以 220MB 的 Electron 不再需要每次更新后重下；插件包内旧的 vendor/
+ * 运行时会在首次使用时一次性迁移到缓存（同盘 rename，失败则继续原地使用）。
+ * 显式传 options.vendorDir 仍可安装到自定义位置（测试/高级用法）。
  */
 
 import { spawn } from 'node:child_process'
 import fsNode from 'node:fs'
 import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -45,11 +47,35 @@ const here = dirname(fileURLToPath(import.meta.url))
 export const ELECTRON_VERSION = '33.0.0'
 
 /**
+ * 运行时缓存目录（插件包外）。插件更新只替换包内文件，缓存放在用户缓存目录，
+ * 因此升级后无需重新下载 ~220MB。
+ *
+ * 各平台 base 目录：
+ *  - win32:  %LOCALAPPDATA%
+ *  - darwin: ~/Library/Caches
+ *  - linux:  $XDG_CACHE_HOME（未设置时 ~/.cache）
+ * 最终目录追加 dsh-pet-remielle/electron/v<版本>-<platform>-<arch>
+ * （例如 v33.0.0-win32-x64），不同版本/平台/架构互不覆盖。
+ *
+ * 环境变量 DSH_PET_ELECTRON_CACHE 覆盖的是 **base 目录**（不是最终缓存根）：
+ * 仍然追加 dsh-pet-remielle/electron/v...，这样整棵缓存可以整体迁移到别的盘。
+ */
+export function runtimeCacheDir({ platform = process.platform, arch = process.arch, env = process.env } = {}) {
+  const home = env.HOME || env.USERPROFILE || homedir()
+  let base
+  if (env.DSH_PET_ELECTRON_CACHE) base = env.DSH_PET_ELECTRON_CACHE
+  else if (platform === 'win32') base = env.LOCALAPPDATA || join(home, 'AppData', 'Local')
+  else if (platform === 'darwin') base = join(home, 'Library', 'Caches')
+  else base = env.XDG_CACHE_HOME || join(home, '.cache')
+  return join(base, 'dsh-pet-remielle', 'electron', `v${ELECTRON_VERSION}-${platform}-${arch}`)
+}
+
+/**
  * pr-16: Resolve the Electron artifact layout for a platform/arch. `platform`
  * uses node's tokens ('win32' | 'linux' | 'darwin'), which match Electron's
  * release zip naming. `binary` is the executable name (electron.exe on Windows,
- * electron elsewhere). `vendorDir`/`exe` point where the runtime is installed.
- * Used by the win32/linux extraction path and by tests.
+ * electron elsewhere). `vendorDir`/`exe` 指向插件包内的旧安装位置（升级兼容用；
+ * 新安装默认走 runtimeCacheDir()）。保留该字段是因为桌面候选发现和诊断需要旧位置。
  */
 export function electronArtifact({ platform = process.platform, arch = process.arch } = {}) {
   const binary = platform === 'win32' ? 'electron.exe' : 'electron'
@@ -170,8 +196,8 @@ export function missingRuntimeFiles(root, platform = process.platform) {
 }
 
 /**
- * VENDOR_DIR / ELECTRON_EXE use the macOS-capable resolver so the path is
- * correct on every platform (identical to electronArtifact() on win32/linux).
+ * 插件包内的旧运行时目录（升级兼容）。新安装默认写 runtimeCacheDir()；
+ * VENDOR_DIR / ELECTRON_EXE 仅用于候选发现、迁移与诊断。
  */
 export const VENDOR_DIR = resolve(here, '..', 'vendor', runtimeTarget().folder)
 export const ELECTRON_EXE = electronBinaryIn(VENDOR_DIR)
@@ -194,37 +220,69 @@ let inflight = null
 /**
  * Ensure the Electron runtime exists, downloading it on demand.
  *
+ * 默认目标目录是包外缓存 runtimeCacheDir()；缓存不可用而插件包内旧的 vendor
+ * 运行时可用时，优先把旧目录 rename 到缓存（同盘原子），rename 失败就直接使用
+ * 旧目录，不重新下载。
+ *
  * @param {object} [options]
  * @param {string[]} [options.mirrors]   zip URLs to try, in order.
- * @param {string}  [options.vendorDir]  target directory for the runtime (defaults to the platform vendor dir).
+ * @param {string}  [options.vendorDir]  target directory (defaults to runtimeCacheDir()).
+ * @param {string}  [options.legacyVendorDir]  old in-package runtime dir (defaults to the platform vendor dir; injectable for tests).
  * @param {(m: string) => void} [options.onProgress]  human-readable progress callback.
  * @param {(cmd: string, args: string[], opts: object) => import('node:child_process').ChildProcess} [options.spawnImpl] injectable spawn (for tests).
  * @param {string}  [options.platform]   process.platform (injectable for tests).
  * @param {string}  [options.arch]       process.arch (injectable for tests).
+ * @param {object}  [options.env]        process.env (injectable for tests).
  * @returns {Promise<string>}  absolute path to the Electron binary on success.
  * @throws  when every mirror fails and no runtime can be placed.
  */
 export async function ensureElectronRuntime({
   mirrors = downloadMirrors(),
-  vendorDir = VENDOR_DIR,
+  vendorDir,
+  legacyVendorDir,
   onProgress,
   spawnImpl = spawn,
   fetchImpl = fetch,
   platform = process.platform,
   arch = process.arch,
+  env = process.env,
 } = {}) {
-  const electronExe = electronBinaryIn(vendorDir, platform, arch)
+  // 默认装到包外缓存；显式 vendorDir 仍支持（测试/自定义安装位置）。
+  const cachedRoot = runtimeCacheDir({ platform, arch, env })
+  const targetDir = vendorDir ?? cachedRoot
+  // 只有「默认缓存目标」才做旧 vendor 迁移：显式 vendorDir 的调用方明确指定了
+  // 自己的安装位置，不能悄悄把插件包内的运行时搬走。
+  const legacyDir = legacyVendorDir !== undefined
+    ? legacyVendorDir
+    : (vendorDir === undefined ? legacyVendorDirFor(platform, arch) : null)
+
   // 快速路径必须是完整性校验而非仅 exe 存在（issue #24）：exe-only 残留
   // （复制中断、杀软锁定）会被旧判断当成已安装，从此既不下载也无法自愈。
-  if (isUsableElectronRoot(vendorDir, platform)) return electronExe
+  if (isUsableElectronRoot(targetDir, platform)) return electronBinaryIn(targetDir, platform, arch)
+
+  // 缓存缺失但升级前下载的旧 vendor 还在：优先 rename 到缓存（同盘原子），
+  // 失败就直接用旧目录，绝不为了搬家重新下载 220MB。
+  if (legacyDir && legacyDir !== targetDir && isUsableElectronRoot(legacyDir, platform)) {
+    const migrated = migrateLegacyRuntime(legacyDir, targetDir, platform)
+    if (migrated) {
+      onProgress?.('已把旧的 Electron 运行时迁移到包外缓存')
+      return electronBinaryIn(migrated, platform, arch)
+    }
+    if (isUsableElectronRoot(legacyDir, platform)) {
+      onProgress?.('无法迁移旧的 Electron 运行时，继续使用插件包内目录')
+      return electronBinaryIn(legacyDir, platform, arch)
+    }
+  }
+
+  const electronExe = electronBinaryIn(targetDir, platform, arch)
   if (existsSync(electronExe)) {
     onProgress?.('检测到不完整的 Electron 运行时残留，正在重新安装…')
-    try { rmSync(vendorDir, { recursive: true, force: true }) } catch { /* ignore */ }
+    try { rmSync(targetDir, { recursive: true, force: true }) } catch { /* ignore */ }
   }
   // Serialise concurrent requests across the whole host process.
   if (inflight) return inflight
   const run = (async () => {
-    const work = `${vendorDir}.tmp-${process.pid}-${Date.now()}`
+    const work = `${targetDir}.tmp-${process.pid}-${Date.now()}`
     const zip = `${work}.zip`
     try {
       mkdirSync(work, { recursive: true })
@@ -247,12 +305,12 @@ export async function ensureElectronRuntime({
       }
       onProgress?.('正在解压 Electron…')
       if (platform === 'darwin') {
-        // pr-17: 直接解压进 vendorDir —— macOS 的 Electron.app bundle 内含符号链接/
+        // pr-17: 直接解压进 targetDir —— macOS 的 Electron.app bundle 内含符号链接/
         // 特殊文件，copyFile 会因 ENOTSUP 失败；tar/bsdtar/unzip 解压会原样保留它们。
-        // vendorDir 是全新目录（下载前已 rm），解压后直接校验可执行文件即可。
-        rmSync(vendorDir, { recursive: true, force: true })
-        mkdirSync(vendorDir, { recursive: true })
-        await unzip(zip, vendorDir, spawnImpl)
+        // targetDir 是全新目录（下载前已 rm），解压后直接校验可执行文件即可。
+        rmSync(targetDir, { recursive: true, force: true })
+        mkdirSync(targetDir, { recursive: true })
+        await unzip(zip, targetDir, spawnImpl)
       } else {
         // pr-16 + issue #24：先解到临时 staging，完整性校验通过后「目录改名」
         // 原子发布。不再逐文件 copyFile——Electron 宿主的 ASAR fs 补丁会把读取
@@ -266,33 +324,35 @@ export async function ensureElectronRuntime({
           throw new Error('解压出的 Electron 运行时不完整（缺关键文件），已放弃安装')
         }
         let retired = null
-        if (existsSync(vendorDir)) {
-          // 走到这里 vendorDir 只可能是残缺残留（完整运行时在快速路径已返回）。
+        if (existsSync(targetDir)) {
+          // 走到这里 targetDir 只可能是残缺残留（完整运行时在快速路径已返回）。
           // Windows 不允许改名到已存在目录，先把旧目录挪开。
-          retired = `${vendorDir}.old-${process.pid}-${Date.now()}`
-          renameSync(vendorDir, retired)
+          retired = `${targetDir}.old-${process.pid}-${Date.now()}`
+          renameSync(targetDir, retired)
         }
         try {
-          renameSync(distDir, vendorDir)
+          renameSync(distDir, targetDir)
         } catch (error) {
           // 改名失败（跨卷/被锁等）退回逐文件复制；复制必须走 ASAR 安全 fs。
           if (retired) {
-            try { renameSync(retired, vendorDir); retired = null } catch { /* 旧目录已丢也不影响：其内容本就残缺 */ }
+            try { renameSync(retired, targetDir); retired = null } catch { /* 旧目录已丢也不影响：其内容本就残缺 */ }
           }
-          mkdirSync(vendorDir, { recursive: true })
-          await moveContents(distDir, vendorDir)
+          mkdirSync(targetDir, { recursive: true })
+          await moveContents(distDir, targetDir)
         }
         if (retired) {
           try { rmSync(retired, { recursive: true, force: true }) } catch { /* ignore */ }
         }
       }
-      if (!isUsableElectronRoot(vendorDir, platform)) {
+      if (!isUsableElectronRoot(targetDir, platform)) {
         if (platform === 'darwin') {
           const target = runtimeTarget(platform, arch)
           throw new Error(`解压后未找到 Electron 可执行文件（${electronExe}）——期望安装包内含 ${target.tag} 的 ${target.sub.join('/')}`)
         }
         throw new Error(`解压后未找到 Electron 可执行文件（${electronExe}）`)
       }
+      // 只保留缓存里同平台当前版本的目录，旧版本清掉；失败静默。
+      if (targetDir === cachedRoot) pruneOldRuntimeCaches(targetDir, platform)
       onProgress?.('Electron 已就绪')
       return electronExe
     } finally {
@@ -304,6 +364,43 @@ export async function ensureElectronRuntime({
   })()
   inflight = run
   return run
+}
+
+/** 插件包内旧的运行时目录（升级兼容用；新安装不再写这里）。 */
+function legacyVendorDirFor(platform, arch) {
+  return resolve(here, '..', 'vendor', runtimeTarget(platform, arch).folder)
+}
+
+/**
+ * 把旧 vendor 运行时 rename 到缓存目录。成功返回可用的目标目录；rename 失败
+ * （跨卷/被锁/父路径不可建）返回 null，由调用方决定继续用旧目录。
+ */
+function migrateLegacyRuntime(from, to, platform) {
+  try {
+    mkdirSync(dirname(to), { recursive: true })
+    if (existsSync(to)) {
+      if (isUsableElectronRoot(to, platform)) return to
+      // 缓存里的残缺残留会让 rename 在 Windows 上失败（不允许覆盖已存在目录）。
+      rmSync(to, { recursive: true, force: true })
+    }
+    renameSync(from, to)
+    return isUsableElectronRoot(to, platform) ? to : null
+  } catch {
+    return null
+  }
+}
+
+/** 安装成功后清理缓存里同平台的其他版本目录，失败静默（旧版本不再需要）。 */
+function pruneOldRuntimeCaches(targetDir, platform) {
+  try {
+    const parent = dirname(targetDir)
+    for (const entry of readdirSync(parent, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const match = /^v(\d+\.\d+\.\d+)-([a-z0-9]+)-/.exec(entry.name)
+      if (!match || match[2] !== platform || match[1] === ELECTRON_VERSION) continue
+      try { rmSync(join(parent, entry.name), { recursive: true, force: true }) } catch { /* ignore */ }
+    }
+  } catch { /* 缓存目录不存在等：忽略 */ }
 }
 
 /** Stream a URL to disk with a rough percent progress. */

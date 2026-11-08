@@ -15,6 +15,7 @@
  */
 
 const { app, BrowserWindow, ipcMain, screen, session, shell } = require('electron')
+const { rmSync } = require('node:fs')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const petWindowPaths = require('./pet-window-paths.cjs')
@@ -35,16 +36,37 @@ process.noDeprecation = true
 //     重新引出 ① 的陈旧缓存问题。
 // 判定与标记读写的细节见 pet-window-paths.cjs（纯逻辑，可单测）。
 const appDataDir = app.getPath('appData')
+const lockPath = petWindowPaths.lockPathOf(appDataDir)
+// 稳定目录被别的存活实例占着时，先同步等它释放最多约 1.5 秒。宿主看门狗每秒
+// 轮询，快速重启时旧窗口通常马上就退出，等一下就能复用稳定目录，少生成一个
+// 几十 MB 的退避目录；等不到再按原规则退避，不改变互斥判定。
+const occupantPid = petWindowPaths.waitForLockRelease({
+  lockPath,
+  pid: process.pid,
+  timeoutMs: 1500,
+  intervalMs: 50,
+})
 const userData = petWindowPaths.resolveUserDataDir({
   appDataDir,
   pid: process.pid,
-  occupantPid: petWindowPaths.readOccupantPid(petWindowPaths.lockPathOf(appDataDir)),
+  occupantPid,
 })
 app.setPath('userData', userData.dir)
 if (userData.fallback) {
   console.error(`dsh-pet-window: userData dir busy (pid ${userData.occupantPid}), falling back to ${userData.dir}`)
 }
 if (userData.ownsLock) petWindowPaths.writeLock(userData.lockPath, process.pid)
+
+// 启动时清一次历史残留的退避目录：进程已死或闲置超过 6 小时的不会再被使用，
+// 但每个都是完整 Chromium userData（几十 MB），不清理会无限堆积。逐项
+// best-effort 删除，被占用／无权限就静默跳过，绝不让异常影响启动。
+try {
+  for (const stale of petWindowPaths.staleFallbackDirs({ appDataDir })) {
+    try {
+      rmSync(stale.dir, { recursive: true, force: true })
+    } catch { /* 仍被占用，留给下次启动再试 */ }
+  }
+} catch { /* 清理逻辑自身的异常同样忽略：启动优先 */ }
 
 const url = process.env.DSH_PET_URL
 const parentPid = Number(process.env.DSH_PET_PARENT_PID || 0)
@@ -702,4 +724,12 @@ app.on('window-all-closed', () => {
 // 标记也会因为 pid 已死而在下次启动被判为空闲，无需在此额外兜底。
 app.on('will-quit', () => {
   if (userData.ownsLock) petWindowPaths.releaseLock(userData.lockPath, process.pid)
+  // 退避目录是本进程专属的临时 profile。退出时尽力删掉，避免在 %APPDATA% 下
+  // 持续堆积完整的 Chromium userData；Electron 可能还占着文件，失败就留给
+  // 下次启动的残留清理（那时 pid 已死，必被选中）。
+  if (userData.fallback) {
+    try {
+      rmSync(userData.dir, { recursive: true, force: true })
+    } catch { /* 仍有文件句柄，忽略 */ }
+  }
 })

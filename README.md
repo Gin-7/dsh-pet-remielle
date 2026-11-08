@@ -7,7 +7,7 @@
 由 **DSH 真实会话事件**驱动的多宠物网页桌宠：桌宠实时跟随 DeepSeek Harness 的任务进展，以贴纸动画 + 状态气泡呈现。
 
 - 多宠物注册表 + 状态气泡（项目 / 阶段 / 待办 / 进度实时汇报）
-- SSE 实时推送 + 可选的桌面悬浮窗（随包 Electron，透明置顶）
+- SSE 实时推送 + 可选的桌面悬浮窗（Electron 运行时按需下载并缓存在包外，透明置顶）
 - 双击画画联动：粗笔刷揭示作品图（绘制中 → 得意中 → 淡出）
 - 一键版本检查 + 增量更新
 - 设置页与插件详情页共用设置（外观 / 宠物 / 行为 / 桌面悬浮 / 关于）
@@ -32,7 +32,7 @@
 | 出错提醒 | 后台回合失败（模型调用失败等）保留粉圈直至打开该对话；当前会话失败不进提醒。点气泡跳转或侧边栏点进该对话后提醒消失。审批/提问不受影响 |
 | 余额 | 状态与用量都开启时，点气泡左侧圆点或在气泡上滚轮切换余额页（60s 自动刷新、数字滚动动画、网络抖动沿用最近余额）；停在当前页，不自动回落 |
 | 今日已用 | 双模式任选：小鲸鱼记账（免令牌，余额差值累计）/ 实时·令牌（平台费用接口直接返回真实金额，精确） |
-| 桌面悬浮 | 随包 Electron 透明置顶窗口（可选，默认关） |
+| 桌面悬浮 | Electron 透明置顶窗口（运行时按需下载/缓存，可选，默认关） |
 | 多宠物 | 插件 → 蕾米埃尔桌宠 → 宠物（注册表 + 切换当前宠物） |
 | 版本更新 | 内置检查 + 一键增量更新 |
 
@@ -134,10 +134,12 @@ dsh plugin --profile web add dsh-pet-remielle
 - 关闭/切换后自动回到页面内；随 DSH host 退出自动关闭（宿主退出后最多 1 秒内消失）。
 - 桌面窗的 Electron 数据目录固定在系统应用数据目录（Windows `%APPDATA%\dsh-pet-remielle`，macOS / Linux 落在各自的应用数据目录），**不放临时目录**——`%TEMP%` 会被系统磁盘清理连缓存一起删掉。同一时刻只允许一个桌面窗持有它：检测到另一个存活实例（宿主刚重启、旧窗口还没退完）时自动退避到带 pid 的兄弟目录，两者不共用同一份 Chromium 缓存。
 
-**Electron 运行时来源（按顺序探测）**：`DSH_PET_ELECTRON` 环境变量 → `vendor/electron-<platform>-<arch>/`（本目录不进 Git，按当前系统自动下载对应平台包）→ 系统已安装的 Electron → 均无则仅页面内展示。
+**Electron 运行时来源（按顺序探测）**：`DSH_PET_ELECTRON` 环境变量 → **包外缓存**（`%LOCALAPPDATA%\dsh-pet-remielle\electron\v<版本>-<platform>-<arch>`；macOS/Linux 用各自缓存目录；插件更新不会再清掉）→ 旧 `vendor/electron-<platform>-<arch>/`（升级兼容：缓存为空时首次启动会自动迁移到包外）→ 系统已安装的 Electron → 均无则仅页面内展示。
 
-> **首次运行**：若开启桌面悬浮模式但本机找不到 Electron 运行时，会**提示下载并安装**（需你确认，因 Electron 运行时约 100–220MB，Windows 最大）；下载失败则自动回落页面内展示，不会影响其他功能。也可手动把任一对应平台的 Electron 发行包解压到 `vendor/electron-<platform>-<arch>/`，或设置 `DSH_PET_ELECTRON` 指向现有 electron 可执行文件（Windows：`electron.exe`；macOS：`Electron.app/Contents/MacOS/Electron`；Linux：`electron`）。
+> **首次运行**：若开启桌面悬浮模式但本机找不到 Electron 运行时，会**提示下载并安装**（需你确认，因 Electron 运行时约 100–220MB，Windows 最大）；下载并解压到包外缓存；失败则自动回落页面内展示，不会影响其他功能。也可手动把任一对应平台的 Electron 发行包解压到 `vendor/electron-<platform>-<arch>/`（下次启动会迁移到缓存），或设置 `DSH_PET_ELECTRON` 指向现有 electron 可执行文件（Windows：`electron.exe`；macOS：`Electron.app/Contents/MacOS/Electron`；Linux：`electron`）。
 
+
+> **运行时占用与清理**：设置 → 宠物管理 → 桌面悬浮 页底部有「桌面运行时」区块，显示 Electron 缓存与窗口数据目录的路径、占用和文件数，可分别「清除」。清理运行时后，下次开启桌面悬浮会重新下载约 220 MB；桌面悬浮窗正在运行时不允许清理缓存。
 ### 平台能力
 
 | 平台 | 桌面悬浮窗 | 页面内桌宠 |
@@ -224,7 +226,7 @@ src/
 ├── status-copy.js    # 蕾米埃尔风格状态文案（可整体替换）
 ├── turn-watchdog.js  # 回合挂起看门狗：兜底「强杀会话后卡在分析阶段」
 ├── desktop-window.js # 桌面模式：Electron 发现 + 窗口进程管理（可单测）
-├── electron-fetch.mjs # 按当前平台/架构下载并解压 Electron 运行时
+├── electron-fetch.mjs # 按当前平台/架构下载、解压并缓存 Electron 运行时（包外，升级不重下）
 ├── pet-window.cjs    # 桌面模式：Electron main（透明置顶窗口 + 屏幕右上角作品窗）
 ├── pet-window-paths.cjs # 桌宠窗 userData 目录决策（与宿主 Electron 隔离）
 ├── pet-preload.cjs   # 桌宠窗 preload：页面 ↔ 主进程桥（点击穿透、拖拽、命中矩形、菜单展开）
@@ -263,7 +265,7 @@ pnpm pack --dry-run   # 检查发布内容（不含 node_modules / vendor）
 pnpm publish
 ```
 
-> 发布内容由 `files` 字段限定：`src/`、`lib/client.js`、`assets/`、`scripts/`、`test/`、`cordis.patch.yml`、`NOTICE`、`README.md`。`vendor/`（Electron 运行时）不发布，桌面模式按需下载。
+> 发布内容由 `files` 字段限定：`src/`、`lib/client.js`、`assets/`、`scripts/`、`test/`、`cordis.patch.yml`、`NOTICE`、`README.md`。`vendor/`（旧版 Electron 运行时位置）不发布；新安装把运行时缓存在插件包外，桌面模式按需下载一次后跨更新复用。
 
 ---
 

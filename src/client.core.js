@@ -33,6 +33,7 @@ var CHECK_ENDPOINT = '/plugins/dsh-pet-remielle/check'
 var UPDATE_ENDPOINT = '/plugins/dsh-pet-remielle/update'
 var PROGRESS_ENDPOINT = '/plugins/dsh-pet-remielle/update-progress'
 var INFO_ENDPOINT = '/plugins/dsh-pet-remielle/info'
+var RUNTIME_ENDPOINT = '/plugins/dsh-pet-remielle/runtime'
 var DEFAULT_PET_ID = 'remielle'
 
 // `require` is provided by the module-loader factory wrapper.
@@ -672,6 +673,16 @@ function AddPetForm(props) {
   )
 }
 
+/** 人类可读的字节数（运行时占用展示用）。 */
+function formatBytes(bytes) {
+  var n = Number(bytes)
+  if (!isFinite(n) || n <= 0) return '0 B'
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  if (n < 1024 * 1024 * 1024) return (n / 1048576).toFixed(1) + ' MB'
+  return (n / 1073741824).toFixed(2) + ' GB'
+}
+
 /** Latest client plugin context; the credential UI needs services outside the section closure. */
 var pluginCtx = null
 var PLATFORM_TOKEN_REF = 'DEEPSEEK_PLATFORM_TOKEN'
@@ -772,6 +783,47 @@ function PetsSection(props) {
       setCredError((error && error.message) || '清除凭据失败')
     })
   }
+  // 桌面运行时：缓存目录与 userData 目录的路径/占用，及其清理。
+  var runtimeState = React.useState(null)        // { cache:{path,bytes,files,exists}, userData:{...}, desktopRunning }
+  var runtime = runtimeState[0]
+  var setRuntime = runtimeState[1]
+  var runtimeBusyState = React.useState('')      // '' | 'cache' | 'userData'
+  var runtimeBusy = runtimeBusyState[0]
+  var setRuntimeBusy = runtimeBusyState[1]
+  var runtimeMsgState = React.useState(null)     // { tone:'ok'|'error', text }
+  var runtimeMsg = runtimeMsgState[0]
+  var setRuntimeMsg = runtimeMsgState[1]
+  var refreshRuntime = function () {
+    fetch(RUNTIME_ENDPOINT, { cache: 'no-store' })
+      .then(function (response) { return response.ok ? response.json() : null })
+      .then(function (payload) { if (payload && payload.ok !== false) setRuntime(payload) })
+      .catch(function () { /* 运行时信息拿不到就不显示，不打扰用户 */ })
+  }
+  var clearRuntimeDir = function (target) {
+    if (!runtime || runtimeBusy) return
+    setRuntimeBusy(target)
+    setRuntimeMsg(null)
+    fetch(RUNTIME_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: target }),
+    })
+      .then(function (response) { return response.json() })
+      .then(function (payload) {
+        setRuntimeBusy('')
+        if (!payload || payload.ok === false) {
+          setRuntimeMsg({ tone: 'error', text: (payload && payload.error) || '清理失败' })
+          return
+        }
+        if (payload.cache) setRuntime(payload)
+        var freed = payload.result && payload.result.freedBytes ? payload.result.freedBytes : 0
+        setRuntimeMsg({ tone: 'ok', text: '已清理 ' + formatBytes(freed) })
+      })
+      .catch(function () { setRuntimeBusy(''); setRuntimeMsg({ tone: 'error', text: '清理请求失败' }) })
+  }
+  React.useEffect(function () {
+    if (tab === 'desktop') refreshRuntime()
+  }, [tab])
   React.useEffect(function () { refreshCredential() }, [])
   React.useEffect(function () {
     var remote = pluginCtx && typeof pluginCtx.get === 'function' ? pluginCtx.get('remote') : undefined
@@ -1133,6 +1185,33 @@ function PetsSection(props) {
     ),
     // ---- 用量模式已移入气泡子项 ----
   )
+  /** 一行运行时目录：标题 + 路径 + 占用 + 清理按钮。 */
+  var runtimeRow = function (label, info, target) {
+    var exists = info && info.exists === true
+    return React.createElement('div', { style: { display: 'grid', gap: 3 } },
+      React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 } },
+        React.createElement('span', { style: { fontSize: 12 } }, label),
+        React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } },
+          exists ? formatBytes(info.bytes) + ' · ' + info.files + ' 个文件' : '未安装'),
+      ),
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        React.createElement('code', {
+          title: info && info.path,
+          style: {
+            flex: 1, minWidth: 0, fontSize: 11, opacity: 0.7, overflow: 'hidden',
+            textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          },
+        }, (info && info.path) || ''),
+        React.createElement('button', {
+          type: 'button',
+          className: 'rm2-pet-btn',
+          style: { fontSize: 12, padding: '3px 10px', flexShrink: 0 },
+          disabled: !exists || !!runtimeBusy || (target === 'cache' && runtime && runtime.desktopRunning === true),
+          onClick: function () { clearRuntimeDir(target) },
+        }, runtimeBusy === target ? '清理中…' : '清除'),
+      ),
+    )
+  }
   var desktopTab = React.createElement('div', null,
     React.createElement(Field, { label: '桌面悬浮模式', hint: '用独立置顶窗口显示宠物（需要 Electron 运行时）。' },
       React.createElement(Switch, { checked: v.desktopMode === true, disabled: !config, onChange: function (val) { write('desktopMode', val) } }),
@@ -1140,6 +1219,35 @@ function PetsSection(props) {
     v.desktopMode
       ? React.createElement('p', { style: { margin: '8px 0 0', opacity: 0.6, fontSize: 12 } }, '桌面窗口支持拖动、滚轮缩放、双击画画。关闭后回到页面内展示。')
       : null,
+    // ---- 桌面运行时（缓存路径 / 占用 / 清理）----
+    React.createElement('div', { style: { marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.06))', display: 'grid', gap: 8 } },
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+        React.createElement('span', { style: { fontSize: 13, fontWeight: 600 } }, '桌面运行时'),
+        React.createElement('span', { style: { fontSize: 11, opacity: 0.55 } }, '（Electron 与窗口数据，只影响桌面悬浮）'),
+      ),
+      React.createElement('p', { style: { margin: 0, opacity: 0.6, fontSize: 11, lineHeight: 1.6 } },
+        '运行时缓存在插件包外，插件更新不会删除它；清理后下次开启桌面悬浮会重新下载约 220 MB。'
+      ),
+      !runtime
+        ? React.createElement('button', {
+            type: 'button', className: 'rm2-pet-btn', style: { fontSize: 12, padding: '4px 12px', justifySelf: 'start' },
+            onClick: refreshRuntime,
+          }, '读取运行时信息')
+        : React.createElement('div', { style: { display: 'grid', gap: 10 } },
+            runtimeRow('Electron 运行时缓存', runtime.cache, 'cache'),
+            runtimeRow('窗口数据（userData）', runtime.userData, 'userData'),
+            runtime.desktopRunning
+              ? React.createElement('p', { style: { margin: 0, opacity: 0.6, fontSize: 11 } },
+                  '当前桌面悬浮窗正在运行，需先关闭桌面模式才能清理 Electron 运行时。')
+              : null,
+            runtimeMsg
+              ? React.createElement('small', {
+                  role: 'alert',
+                  style: { fontSize: 12, color: runtimeMsg.tone === 'error' ? 'var(--dsw-alias-label-error, #c0392b)' : 'var(--dsw-alias-state-success-primary, #2e8b57)' },
+                }, runtimeMsg.text)
+              : null,
+          ),
+    ),
   )
   var aboutTab = React.createElement('div', null,
     React.createElement('p', { style: { margin: '0 0 12px', opacity: 0.7 } }, '检查是否有新版本可用，或执行增量更新。'),

@@ -9,6 +9,9 @@
 - `engines.node` 对齐 DSH 0.2.2（`>=24.9`），客户端声明 `@deepseek-ai/dsh-api-remotes` 依赖以使用 `ctx.remote.credentials`。
 
 ### Fixes
+- 设置页「桌面悬浮」新增**桌面运行时**区块：分别显示 Electron 运行时缓存（`%LOCALAPPDATA%\dsh-pet-remielle\electron\v<版本>-<platform>-<arch>`）与窗口数据目录（`%APPDATA%\dsh-pet-remielle`）的路径、占用空间与文件数，并可单独清理；桌面悬浮窗正在运行时拒绝清理运行时缓存，避免删掉正在使用的 `electron.exe`。
+- **桌面悬浮模式的 Electron 运行时装到插件包外缓存**（Windows `%LOCALAPPDATA%\dsh-pet-remielle\electron\v<版本>-<platform>-<arch>`，macOS/Linux 用各自缓存目录）：插件更新/重装不再清掉 220MB 运行时、不需要重新下载；旧版包内 `vendor/` 运行时会在首次启动时自动迁移（同盘 rename，失败则继续原地使用）。可用 `DSH_PET_ELECTRON_CACHE` 指定缓存根目录。
+- 修复桌面窗退避 userData 目录无限堆积：稳定目录被存活实例占用时仍退避，但现在会先同步等锁最多约 1.5 秒；启动时清理进程已死的 `dsh-pet-remielle-<pid>` 残留，退出时删除自己的退避目录（活着的 pid 一律保留，避免误删运行中的 profile）。
 - 余额优先取 **DSH 登录账号**（设置页「账号与余额」同源，充值与赠金相加），未登录或查询失败时才回落 `DEEPSEEK_API_KEY` 的 `/user/balance`；`/balance` 响应新增 `balanceSource`（`account` / `apikey`）便于排查。
 - 实时用量优先使用登录会话令牌（宿主 `deepseekAccount.getPlatformSession()`），无需手工粘贴；会话令牌被拒或未登录时依次回落凭据中心的 `DEEPSEEK_PLATFORM_TOKEN` 与旧配置字段。
 - 修复实时令牌模式的失败被当成成功：平台把鉴权失败包在 HTTP 200 的 `{"code":40003,"msg":"Authorization Failed (invalid token)"}` 里，而 `isFinite(null)` 为 true，于是无效令牌被当成「今日用量 0」，用量模式还显示成实时。现在解析失败或鉴权失败都回落记账模式，并把原因放进 `usageError`（同一条错误只记一次日志）；`biz_data` 合法但当天没有 cost 桶时按 0 处理。

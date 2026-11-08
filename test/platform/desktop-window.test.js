@@ -19,10 +19,21 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import vm from 'node:vm'
 import { backendCandidates, DesktopWindow, findRoot, findDshRoot } from '../../src/desktop-window.js'
+import { electronBinaryIn, requiredRuntimeFiles, runtimeCacheDir } from '../../src/electron-fetch.mjs'
 import { cardHeightOf } from '../helpers/card-height.mjs'
+
+/** 在 root 写入完整的 win32 运行时关键文件，使候选通过 isUsableElectronRoot。 */
+function writeRuntime(root) {
+  for (const rel of requiredRuntimeFiles('win32')) {
+    const p = join(root, rel)
+    mkdirSync(dirname(p), { recursive: true })
+    writeFileSync(p, 'fake')
+  }
+  return root
+}
 
 /**
  * 候选发现的结构契约。
@@ -49,9 +60,14 @@ test('every backend candidate is well-formed and points at the pet-window entry'
         `候选入口应指向 pet-window.cjs，实际 ${candidate.args[0]}`,
       )
     }
-    // 本机确实装了 bundled 运行时时，顺带确认它排在最前（没装则此条自然不成立）
-    if (list.some((c) => c.command.includes('electron-win32-x64'))) {
-      assert.ok(list[0].command.includes('electron-win32-x64'), 'bundled 运行时应优先于 npm 全局安装')
+    // 包外缓存优先于旧 vendor（本机存在对应缓存/旧目录时才有可断言的对象）
+    const cacheIndex = list.findIndex((c) => c.command.includes('dsh-pet-remielle\\electron\\v') || c.command.includes('dsh-pet-remielle/electron/v'))
+    const vendorIndex = list.findIndex((c) => c.command.includes('electron-win32-x64'))
+    if (cacheIndex >= 0 && vendorIndex >= 0) {
+      assert.ok(cacheIndex < vendorIndex, '包外缓存应优先于旧 vendor 运行时')
+    }
+    if (cacheIndex < 0 && vendorIndex >= 0) {
+      assert.equal(vendorIndex, 0, '没有缓存时旧 vendor 运行时应排第一（npm 全局/DSH/cwd 之后）')
     }
   } finally {
     if (saved !== undefined) process.env.DSH_PET_ELECTRON = saved
@@ -68,6 +84,81 @@ test('backend candidates honor DSH_PET_ELECTRON first', () => {
   } finally {
     if (saved !== undefined) process.env.DSH_PET_ELECTRON = saved
     else delete process.env.DSH_PET_ELECTRON
+  }
+})
+
+test('backend candidates prefer cache, then legacy vendor, npm, dsh root, cwd', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pet-backend-order-'))
+  try {
+    const env = { DSH_PET_ELECTRON_CACHE: join(dir, 'cache-base') }
+    const cacheRoot = runtimeCacheDir({ platform: 'win32', arch: 'x64', env })
+    const legacyRoot = join(dir, 'legacy', 'vendor', 'electron-win32-x64')
+    const npmPrefix = join(dir, 'npm')
+    const npmRoot = join(npmPrefix, 'node_modules', 'electron', 'dist')
+    const dshRoot = join(dir, 'dsh')
+    const dshElectronRoot = join(dshRoot, 'node_modules', 'electron', 'dist')
+    const cwd = join(dir, 'profile')
+    const cwdElectronRoot = join(cwd, 'node_modules', 'electron', 'dist')
+    for (const rootDir of [cacheRoot, legacyRoot, npmRoot, dshElectronRoot, cwdElectronRoot]) writeRuntime(rootDir)
+
+    const list = backendCandidates({
+      platform: 'win32',
+      arch: 'x64',
+      cwd,
+      env,
+      legacyVendorRoot: legacyRoot,
+      npmGlobalPrefix: npmPrefix,
+      dshRoot,
+    })
+    assert.deepEqual(
+      list.map((candidate) => candidate.command),
+      [cacheRoot, legacyRoot, npmRoot, dshElectronRoot, cwdElectronRoot].map((rootDir) => electronBinaryIn(rootDir, 'win32', 'x64')),
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('backend candidates fall back to the legacy vendor dir when the cache is absent', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pet-backend-legacy-'))
+  try {
+    const legacyRoot = join(dir, 'legacy', 'vendor', 'electron-win32-x64')
+    writeRuntime(legacyRoot)
+    const list = backendCandidates({
+      platform: 'win32',
+      arch: 'x64',
+      cwd: join(dir, 'empty-cwd'),
+      env: { DSH_PET_ELECTRON_CACHE: join(dir, 'cache-base') },
+      legacyVendorRoot: legacyRoot,
+      npmGlobalPrefix: null,
+      dshRoot: null,
+    })
+    assert.equal(list.length, 1)
+    assert.equal(list[0].command, electronBinaryIn(legacyRoot, 'win32', 'x64'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('backend candidates use only the package-external cache when nothing else exists', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pet-backend-cache-'))
+  try {
+    const env = { DSH_PET_ELECTRON_CACHE: join(dir, 'cache-base') }
+    const cacheRoot = runtimeCacheDir({ platform: 'win32', arch: 'x64', env })
+    writeRuntime(cacheRoot)
+    const list = backendCandidates({
+      platform: 'win32',
+      arch: 'x64',
+      cwd: join(dir, 'empty-cwd'),
+      env,
+      legacyVendorRoot: join(dir, 'missing-vendor'),
+      npmGlobalPrefix: null,
+      dshRoot: null,
+    })
+    assert.equal(list.length, 1)
+    assert.equal(list[0].command, electronBinaryIn(cacheRoot, 'win32', 'x64'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 

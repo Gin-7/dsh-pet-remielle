@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -103,6 +103,152 @@ test('readOccupantPid returns null for missing, corrupt or malformed locks', () 
     assert.equal(paths.readOccupantPid(lock), null, 'pid 非法应视为空闲')
     writeFileSync(lock, JSON.stringify({ pid: 321 }), 'utf8')
     assert.equal(paths.readOccupantPid(lock), 321)
+  })
+})
+
+test('fallbackDirPidOf parses only canonical fallback names', () => {
+  assert.equal(paths.fallbackDirPidOf('dsh-pet-remielle-4242'), 4242)
+  assert.equal(paths.fallbackDirPidOf('dsh-pet-remielle-1'), 1)
+  for (const name of [
+    'dsh-pet-remielle', // 稳定目录本身
+    'dsh-pet-remielle-', // 缺 pid
+    'dsh-pet-remielle-abc',
+    'dsh-pet-remielle-12x',
+    'dsh-pet-remielle-0',
+    'dsh-pet-remielle--1',
+    'dsh-pet-remielle-007', // 非规范形式（前导零）
+    'dsh-pet-remielle-1-2',
+    'x-dsh-pet-remielle-1',
+    'dsh-pet-remielle-99999999999999999999', // 超出安全整数
+    '',
+  ]) {
+    assert.equal(paths.fallbackDirPidOf(name), null, `${JSON.stringify(name)} 不应被当成退避目录`)
+  }
+  assert.equal(paths.fallbackDirPidOf(null), null)
+  assert.equal(paths.fallbackDirPidOf(undefined), null)
+  assert.equal(paths.fallbackDirPidOf(123), null)
+})
+
+test('listFallbackDirs lists only existing fallback directories', () => {
+  withTempRoot((root) => {
+    mkdirSync(join(root, 'dsh-pet-remielle'), { recursive: true })
+    mkdirSync(join(root, 'dsh-pet-remielle-101'), { recursive: true })
+    mkdirSync(join(root, 'dsh-pet-remielle-202'), { recursive: true })
+    // 前缀对但 pid 非法、前缀不对、以及同名的普通文件都不应入选。
+    mkdirSync(join(root, 'dsh-pet-remielle-abc'), { recursive: true })
+    mkdirSync(join(root, 'other-303'), { recursive: true })
+    writeFileSync(join(root, 'dsh-pet-remielle-404'), 'not a dir', 'utf8')
+
+    const listed = paths.listFallbackDirs(root)
+    assert.deepEqual(listed.map((item) => item.pid), [101, 202])
+    assert.deepEqual(listed.map((item) => item.name), ['dsh-pet-remielle-101', 'dsh-pet-remielle-202'])
+    assert.deepEqual(
+      listed.map((item) => item.dir),
+      [join(root, 'dsh-pet-remielle-101'), join(root, 'dsh-pet-remielle-202')]
+    )
+    assert.ok(listed.every((item) => Number.isFinite(item.mtimeMs)))
+
+    // 根目录不存在 / 指向文件：失败返回空数组，不抛。
+    assert.deepEqual(paths.listFallbackDirs(join(root, 'missing')), [])
+    const fileAsRoot = join(root, 'not-a-dir')
+    writeFileSync(fileAsRoot, 'x', 'utf8')
+    assert.deepEqual(paths.listFallbackDirs(fileAsRoot), [])
+  })
+})
+
+test('staleFallbackDirs drops dead, aged and foreign dirs but never currentPid', () => {
+  withTempRoot((root) => {
+    const now = Date.UTC(2026, 10, 7, 9, 0, 0)
+    const maxAgeMs = 6 * 60 * 60 * 1000
+    const old = new Date(now - maxAgeMs - 1000)
+    const fresh = new Date(now - 1000)
+    const makeDir = (name, mtime) => {
+      const dir = join(root, name)
+      mkdirSync(dir, { recursive: true })
+      utimesSync(dir, mtime, mtime)
+      return dir
+    }
+
+    // 稳定目录本身永远不在结果里（名字解析不出 pid）。
+    makeDir('dsh-pet-remielle', old)
+    const dead = makeDir('dsh-pet-remielle-111', fresh) // 进程已死
+    const aliveFresh = makeDir('dsh-pet-remielle-222', fresh) // 活进程 → 保留
+    const aliveOld = makeDir('dsh-pet-remielle-333', old) // 活进程即使目录很旧也保留（不能误删运行中的 profile）
+    const own = makeDir('dsh-pet-remielle-444', old) // 本进程自己的目录
+    const deadOld = makeDir('dsh-pet-remielle-555', old) // 死进程 → 报 dead
+
+    const stale = paths.staleFallbackDirs({
+      appDataDir: root,
+      currentPid: 444,
+      isAlive: (pid) => pid === 222 || pid === 333,
+    })
+    assert.deepEqual(stale, [
+      { dir: dead, pid: 111, reason: 'dead' },
+      { dir: deadOld, pid: 555, reason: 'dead' },
+    ])
+    // 保留项：活进程（无论新旧）；自己的目录无论死活都排除。
+    assert.ok(!stale.some((item) => item.dir === aliveFresh || item.dir === aliveOld || item.dir === own))
+  })
+})
+
+test('waitForLockRelease waits only while a live foreign pid holds the lock', () => {
+  withTempRoot((root) => {
+    const lock = paths.lockPathOf(root)
+
+    // 自己的残留标记：不算占用，立即返回，不睡眠。
+    paths.writeLock(lock, 100)
+    let slept = 0
+    assert.equal(paths.waitForLockRelease({
+      lockPath: lock,
+      pid: 100,
+      timeoutMs: 1000,
+      intervalMs: 50,
+      isAlive: () => true,
+      sleep: (ms) => { slept += ms },
+    }), 100)
+    assert.equal(slept, 0)
+
+    // 已死占用者：同样不睡眠，把 pid 交给 resolveUserDataDir 走自愈。
+    paths.writeLock(lock, 200)
+    slept = 0
+    assert.equal(paths.waitForLockRelease({
+      lockPath: lock,
+      pid: 100,
+      timeoutMs: 1000,
+      intervalMs: 50,
+      isAlive: () => false,
+      sleep: (ms) => { slept += ms },
+    }), 200)
+    assert.equal(slept, 0)
+
+    // 活占用者释放：等到标记消失就返回 null。
+    paths.writeLock(lock, 200)
+    slept = 0
+    assert.equal(paths.waitForLockRelease({
+      lockPath: lock,
+      pid: 100,
+      timeoutMs: 1000,
+      intervalMs: 50,
+      isAlive: (pid) => pid === 200,
+      sleep: (ms) => {
+        slept += ms
+        if (slept >= 100) rmSync(lock, { force: true })
+      },
+    }), null)
+    assert.equal(slept, 100)
+
+    // 活占用者一直不放：等满预算后返回它，调用方照常退避。
+    paths.writeLock(lock, 200)
+    slept = 0
+    assert.equal(paths.waitForLockRelease({
+      lockPath: lock,
+      pid: 100,
+      timeoutMs: 200,
+      intervalMs: 50,
+      isAlive: () => true,
+      sleep: (ms) => { slept += ms },
+    }), 200)
+    assert.equal(slept, 200)
   })
 })
 

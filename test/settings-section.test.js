@@ -25,9 +25,9 @@ const src = readFileSync(CORE, 'utf8')
 // 拼接提供）。这里直接注入共享模块，沙箱跑的是 src 而不是产物，故需手工供上。
 const markdown = require('../src/markdown.cjs')
 
-function makeReact({ tab, data, config, updMsg, credential }) {
+function makeReact({ tab, data, config, updMsg, credential, runtime }) {
   // 顺序对应 PetsSection 的 useState 顺序（useRef 不占位）；新增状态追加在末尾。
-  const initial = [tab, data, null, false, config, false, null, false, updMsg, credential, false, null, '']
+  const initial = [tab, data, null, false, config, false, null, false, updMsg, credential, false, null, '', runtime, '', null]
   let cursor = 0
   return {
     React: {
@@ -74,9 +74,9 @@ function loadPetsSection() {
   return { sandbox, stubs }
 }
 
-function renderTab(tab, { data = null, config = null, updMsg = null, credential = null } = {}) {
+function renderTab(tab, { data = null, config = null, updMsg = null, credential = null, runtime = null } = {}) {
   const { sandbox, stubs } = loadPetsSection()
-  const fresh = makeReact({ tab, data, config, updMsg, credential })
+  const fresh = makeReact({ tab, data, config, updMsg, credential, runtime })
   sandbox.React = fresh.React
   sandbox.require = (name) => { if (name === 'react') return fresh.React; throw new Error('require ' + name) }
   return sandbox.PetsSection()
@@ -215,6 +215,43 @@ test('token mode falls back to the legacy config input when the credentials serv
   })
   const strings = collectStrings(tree)
   assert.ok(strings.some((s) => s.includes('凭据中心不可用')), '无凭据服务时要说明暂存配置')
+})
+
+test('desktop tab shows runtime paths, sizes and cleanup buttons', () => {
+  const tree = renderTab('desktop', {
+    config: { desktopMode: true },
+    runtime: {
+      desktopRunning: false,
+      cache: { path: 'C:\\Users\\x\\AppData\\Local\\dsh-pet-remielle\\electron\\v33.0.0-win32-x64', exists: true, bytes: 268435456, files: 73 },
+      userData: { path: 'C:\\Users\\x\\AppData\\Roaming\\dsh-pet-remielle', exists: true, bytes: 10485760, files: 12 },
+    },
+  })
+  const strings = collectStrings(tree)
+  assert.ok(strings.includes('桌面运行时'), '应有「桌面运行时」区块标题')
+  assert.ok(strings.some((s) => s.includes('v33.0.0-win32-x64')), '应显示 Electron 缓存路径')
+  assert.ok(strings.some((s) => s.includes('Roaming')), '应显示 userData 路径')
+  assert.ok(strings.some((s) => s === '256.0 MB · 73 个文件'), '应显示缓存占用与文件数')
+  assert.ok(strings.some((s) => s === '10.0 MB · 12 个文件'), '应显示 userData 占用')
+  assert.equal(strings.filter((s) => s === '清除').length, 2, '两个目录各一个清除按钮')
+})
+
+test('desktop tab disables the cache cleanup while the desktop window runs', () => {
+  const tree = renderTab('desktop', {
+    config: { desktopMode: true },
+    runtime: {
+      desktopRunning: true,
+      cache: { path: '/tmp/cache', exists: true, bytes: 1024, files: 1 },
+      userData: { path: '/tmp/userdata', exists: false, bytes: 0, files: 0 },
+    },
+  })
+  const buttons = []
+  walk(tree, (node) => {
+    if (nameOf(node.type) === 'button' && node.children?.[0] === '清除') buttons.push(node)
+  })
+  assert.equal(buttons.length, 2)
+  assert.equal(buttons[0].props.disabled, true, '桌面窗运行时不得清理缓存（会删掉正在用的 electron.exe）')
+  assert.equal(buttons[1].props.disabled, true, 'userData 不存在时清除按钮禁用')
+  assert.ok(collectStrings(tree).some((s) => s.includes('未安装')), '缺失的目录应显示未安装')
 })
 
 test('update check shows feedback when the repo has no release yet', () => {
