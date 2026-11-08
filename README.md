@@ -166,9 +166,9 @@ dsh plugin --profile web add dsh-pet-remielle
 
 状态与用量都开启时，点气泡左侧圆点或在气泡上滚轮即可查看 DeepSeek 账户余额与今日消耗（气泡显示「DeepSeek 余额 ¥X」+「今日已用 ¥X · 空闲/高峰时段」，时段用颜色标识：空闲绿、高峰红）。只开用量时气泡直接显示余额页。停在当前页，不会自动回到状态。
 
-- **余额**：来自官方接口 `api.deepseek.com/user/balance`（凭据 `DEEPSEEK_API_KEY`）。60 秒自动刷新；切到余额页时会拉一次；余额变化时有数字滚动动画；网络瞬时抖动自动沿用最近余额不报错。
+- **余额**：优先取 DSH 登录账号（与设置页「账号与余额」同源，充值余额 + 赠金余额相加）；未登录或查询失败时回落官方接口 `api.deepseek.com/user/balance`（凭据 `DEEPSEEK_API_KEY`）。60 秒自动刷新；切到余额页时会拉一次；余额变化时有数字滚动动画；网络瞬时抖动自动沿用最近余额不报错。`/balance` 响应里的 `balanceSource` 会标明当前来源（`account` / `apikey`）。
 - **今日已用 · 小鲸鱼记账（默认，免令牌）**：每次观测余额后用余额差值自动累计，持久化到 `$DSH_HOME/.dshp-usage.json`，跨天自动归零归档。无需额外令牌，但属于估算——DSH 关闭期间的消耗会漏记。
-- **今日已用 · 实时·令牌（精确）**：配置平台会话令牌 `DEEPSEEK_PLATFORM_TOKEN` 后，直连平台费用接口（`platform.deepseek.com/api/v0/usage/by_api_key/cost`），直接取平台按小时统计的**真实金额**——无需本地定价表，DeepSeek 调价自动跟随：
+- **今日已用 · 实时·令牌（精确）**：登录 DSH 后优先直接用登录会话令牌（`deepseekAccount.getPlatformSession()`）；未登录或令牌被拒时，再用凭据中心里的平台会话令牌 `DEEPSEEK_PLATFORM_TOKEN`（可手工粘贴）。直连平台费用接口（`platform.deepseek.com/api/v0/usage/by_api_key/cost`），直接取平台按小时统计的**真实金额**——无需本地定价表，DeepSeek 调价自动跟随：
   - 气泡里同时显示当前所处时段（空闲 / 高峰）：工作日高峰为 9:00–12:00 与 14:00–18:00（北京时间），**周六周日与中国法定节假日全天空闲**（调休上班的周末同样按空闲计费，与官方口径一致）。节假日日历以内置表兜底、后台静默刷新公共日历数据（缓存到 `$DSH_HOME/.dshp-holidays-<年份>.json`），仅在首次/过期时发一次只含年份的请求
   - 令牌缺失或失效时自动回落记账模式
 

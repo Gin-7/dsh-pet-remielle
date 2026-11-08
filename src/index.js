@@ -47,6 +47,8 @@ import { localHostOk } from './local-access.js'
 import { TURN_WATCHDOG_INTERVAL_MS, createTurnWatchdog } from './turn-watchdog.js'
 
 const { compareSessions } = createRequire(import.meta.url)('./session-order.cjs')
+// 平台账户接口要求声明调用方身份（x-client-version），用插件自身版本即可。
+const { version: PET_VERSION } = createRequire(import.meta.url)('../package.json')
 
 export const name = 'dsh-pet-remielle'
 export const inject = ['sessions']
@@ -1121,9 +1123,38 @@ function mount(ctx, config = {}, eventCtx = ctx) {
       return Promise.reject(err)
     }
   }
+  // 登录账号优先：余额与平台会话令牌都取宿主 deepseekAccount 服务（设置页「账号与余额」
+  // 同源）。未登录、服务未挂载或查询失败时返回空，由 balance.js 回落 API key / 手填令牌。
+  const accountMetadata = () => ({
+    version: PET_VERSION,
+    locale: 'zh_CN',
+    timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+  })
+  const accountService = () => hostService(ctx, 'deepseekAccount')
   const balanceService = createBalanceService({
     resolveCredential,
     getPlatformToken: () => String(settings.get().platformToken || ''),
+    getAccountBalance: async () => {
+      const account = accountService()
+      if (!account || typeof account.getBalance !== 'function') return null
+      const details = await account.getBalance(accountMetadata())
+      if (!details || details.status !== 'ready') return null
+      const wallets = Array.isArray(details.value) ? details.value : []
+      const bonus = Array.isArray(details.bonusWallets) ? details.bonusWallets : []
+      let total = 0
+      for (const wallet of [...wallets, ...bonus]) {
+        const amount = Number(wallet && wallet.balance)
+        if (Number.isFinite(amount)) total += amount
+      }
+      const currency = (wallets[0] || bonus[0] || {}).currency || 'CNY'
+      return { totalBalance: total, currency }
+    },
+    getAccountPlatformToken: async () => {
+      const account = accountService()
+      if (!account || typeof account.getPlatformSession !== 'function') return ''
+      const session = await account.getPlatformSession()
+      return session && session.token ? String(session.token) : ''
+    },
     log: (code, error) => logger.error?.(`dsh-pet-remielle: ${code} ${error}`),
   })
   let usageModeNow = normalizeUsageMode(settings.get().usageMode)

@@ -9,6 +9,8 @@
 - `engines.node` 对齐 DSH 0.2.2（`>=24.9`），客户端声明 `@deepseek-ai/dsh-api-remotes` 依赖以使用 `ctx.remote.credentials`。
 
 ### Fixes
+- 余额优先取 **DSH 登录账号**（设置页「账号与余额」同源，充值与赠金相加），未登录或查询失败时才回落 `DEEPSEEK_API_KEY` 的 `/user/balance`；`/balance` 响应新增 `balanceSource`（`account` / `apikey`）便于排查。
+- 实时用量优先使用登录会话令牌（宿主 `deepseekAccount.getPlatformSession()`），无需手工粘贴；会话令牌被拒或未登录时依次回落凭据中心的 `DEEPSEEK_PLATFORM_TOKEN` 与旧配置字段。
 - 修复实时令牌模式的失败被当成成功：平台把鉴权失败包在 HTTP 200 的 `{"code":40003,"msg":"Authorization Failed (invalid token)"}` 里，而 `isFinite(null)` 为 true，于是无效令牌被当成「今日用量 0」，用量模式还显示成实时。现在解析失败或鉴权失败都回落记账模式，并把原因放进 `usageError`（同一条错误只记一次日志）；`biz_data` 合法但当天没有 cost 桶时按 0 处理。
 
 ## [0.4.7] — 2026-10-27

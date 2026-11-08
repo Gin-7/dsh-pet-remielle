@@ -370,3 +370,69 @@ test('credential store token outranks the legacy platformToken setting', async (
   assert.equal(auths[usageIndex], 'Bearer cred-token', '凭据中心的值优先于旧配置字段')
   assert.ok(!auths.includes('Bearer legacy-token'), '旧配置值不应被使用')
 })
+
+test('the signed-in account balance outranks the API key balance', async () => {
+  const calls = []
+  const fetchImpl = async (url) => { calls.push(String(url)); return okBody(20) }
+  const svc = service(fetchImpl, {
+    getAccountBalance: async () => ({ totalBalance: 92.4, currency: 'CNY' }),
+  })
+  const result = await svc.getBalance('ledger')
+  assert.equal(result.totalBalance, 92.4)
+  assert.equal(result.balanceSource, 'account')
+  assert.ok(!calls.some((url) => url.includes('/user/balance')), '登录账号可用时不应再查 API key 余额')
+})
+
+test('an unavailable account balance falls back to the API key balance', async () => {
+  const svc = service(fakeFetch(20), { getAccountBalance: async () => null })
+  const result = await svc.getBalance('ledger')
+  assert.equal(result.totalBalance, 20)
+  assert.equal(result.balanceSource, 'apikey')
+})
+
+test('a throwing account balance falls back to the API key balance', async () => {
+  const svc = service(fakeFetch(20), { getAccountBalance: async () => { throw new Error('account offline') } })
+  const result = await svc.getBalance('ledger')
+  assert.equal(result.totalBalance, 20)
+  assert.equal(result.balanceSource, 'apikey')
+})
+
+test('usage prefers the signed-in platform session token', async () => {
+  const auths = []
+  const fetchImpl = async (url, init) => {
+    if (!String(url).includes('by_api_key/cost') && !String(url).includes('/user/balance')) return { ok: false, status: 404, json: async () => ({}) }
+    if (String(url).includes('/user/balance')) return okBody(20)
+    auths.push(init?.headers?.Authorization)
+    return { ok: true, status: 200, json: async () => ({ data: { biz_data: { data: [{ series: [{ buckets: [{ cost: '0.5' }] }] }] } } }) }
+  }
+  const svc = service(fetchImpl, {
+    getAccountPlatformToken: async () => 'session-token',
+    resolveCredential: async (name) => (name === 'DEEPSEEK_API_KEY' ? { value: 'sk-test' } : { value: 'manual-token' }),
+  })
+  const result = await svc.getBalance('token')
+  assert.equal(result.usageMode, 'token')
+  assert.equal(result.todayUsage, 0.5)
+  assert.equal(auths[0], 'Bearer session-token', '应先用登录会话令牌')
+})
+
+test('a rejected session token falls through to the stored platform token', async () => {
+  const auths = []
+  const fetchImpl = async (url, init) => {
+    if (!String(url).includes('by_api_key/cost') && !String(url).includes('/user/balance')) return { ok: false, status: 404, json: async () => ({}) }
+    if (String(url).includes('/user/balance')) return okBody(20)
+    const auth = init?.headers?.Authorization
+    auths.push(auth)
+    if (auth === 'Bearer session-token') {
+      return { ok: true, status: 200, json: async () => ({ code: 40003, msg: 'Authorization Failed (invalid token)', data: {} }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ data: { biz_data: { data: [{ series: [{ buckets: [{ cost: '1' }] }] }] } } }) }
+  }
+  const svc = service(fetchImpl, {
+    getAccountPlatformToken: async () => 'session-token',
+    resolveCredential: async (name) => (name === 'DEEPSEEK_API_KEY' ? { value: 'sk-test' } : { value: 'manual-token' }),
+  })
+  const result = await svc.getBalance('token')
+  assert.equal(result.usageMode, 'token')
+  assert.equal(result.todayUsage, 1)
+  assert.deepEqual(auths, ['Bearer session-token', 'Bearer manual-token'], '会话令牌被拒后应换手填令牌')
+})

@@ -61,7 +61,7 @@ export function computeTodayCost(data) {
  * @param {typeof fetch} [options.fetchImpl] 网络出口，测试注入用（默认全局 fetch）
  * @param {() => number} [options.now] 时钟，测试注入用（默认 Date.now）
  */
-export function createBalanceService({ resolveCredential, getPlatformToken, dshHome, log, fetchImpl = globalThis.fetch, now = () => Date.now() }) {
+export function createBalanceService({ resolveCredential, getPlatformToken, getAccountBalance, getAccountPlatformToken, dshHome, log, fetchImpl = globalThis.fetch, now = () => Date.now() }) {
   const DSH_HOME = dshHome || process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
   const logger = log || (() => {})
   // 峰谷时段判定（issue #25）：周末/法定节假日全天空闲，其余按 9–12、14–18
@@ -78,6 +78,24 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
   let lastUsageError = null
 
   async function fetchBalance() {
+    // 登录账号优先：与设置页「账号与余额」同源（充值 + 赠金），且和用量令牌同账号。
+    // 未登录 / 服务未挂载 / 查询失败时再回落 API key 的 /user/balance。
+    if (typeof getAccountBalance === 'function') {
+      try {
+        const account = await getAccountBalance()
+        if (account && Number.isFinite(account.totalBalance)) {
+          return {
+            ok: true,
+            totalBalance: account.totalBalance,
+            currency: account.currency || 'CNY',
+            balanceSource: 'account',
+            updatedAt: new Date(now()).toISOString(),
+          }
+        }
+      } catch (err) {
+        logger('account-balance', String((err && err.message) || err).slice(0, 160))
+      }
+    }
     let cred
     try {
       cred = await resolveCredential('DEEPSEEK_API_KEY')
@@ -121,6 +139,7 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
         ok: true,
         totalBalance: Number(info.total_balance),
         currency: String(info.currency || 'CNY'),
+        balanceSource: 'apikey',
         updatedAt: new Date(now()).toISOString(),
       }
     }
@@ -133,43 +152,86 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
     }
   }
 
+  /** 按优先级收集可用的平台令牌：登录账号会话 > 凭据中心手填 > 旧配置字段。 */
+  async function usageTokens() {
+    const list = []
+    if (typeof getAccountPlatformToken === 'function') {
+      try {
+        const token = String((await getAccountPlatformToken()) || '').replace(/^Bearer\s+/i, '')
+        if (token) list.push({ source: 'account', token })
+      } catch (err) {
+        logger('account-session', String((err && err.message) || err).slice(0, 160))
+      }
+    }
+    let credentialToken = ''
+    try {
+      const cred = await resolveCredential('DEEPSEEK_PLATFORM_TOKEN')
+      const token = cred && cred.value ? String(cred.value).replace(/^Bearer\s+/i, '') : ''
+      if (token) {
+        credentialToken = token
+        list.push({ source: 'credentials', token })
+      }
+    } catch (err) {
+      /* 凭据中心不可用时继续尝试旧配置 */
+    }
+    // 旧配置字段只在凭据中心没有令牌时兜底（迁移后它应为空），
+    // 避免凭据里的令牌失效后又拿同一段旧值重试。
+    if (!credentialToken && typeof getPlatformToken === 'function') {
+      try {
+        const token = String(getPlatformToken() || '').replace(/^Bearer\s+/i, '')
+        if (token) list.push({ source: 'settings', token })
+      } catch (err) { /* ignore */ }
+    }
+    const seen = new Set()
+    return list.filter((item) => (seen.has(item.token) ? false : (seen.add(item.token), true)))
+  }
+
+  /** 用一枚令牌查询当天费用；鉴权失败单独标记，便于换下一枚令牌。 */
+  async function fetchUsageWithToken(token) {
+    const current = new Date(now())
+    const tz = -current.getTimezoneOffset() * 60
+    const start = Math.floor(new Date(current.getFullYear(), current.getMonth(), current.getDate()).getTime() / 1000)
+    const end = start + 86400
+    const url = `${USAGE_URL}?start=${start}&end=${end}&tz=${tz}`
+    const res = await fetchImpl(url, {
+      headers: { Authorization: 'Bearer ' + token },
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!res.ok) {
+      return { error: 'http ' + res.status, authFailed: res.status === 401 || res.status === 403 }
+    }
+    const data = await res.json()
+    const amount = computeTodayCost(data)
+    // isFinite(null) 为 true：平台把鉴权失败也包在 HTTP 200 里（code 40003），
+    // 必须显式排除 null，否则无效令牌会被当成「今日用量 0」而掩盖失败。
+    if (amount !== null && isFinite(amount)) return { amount }
+    // 有 biz_data 但没有 cost 桶 = 今天确实没产生用量
+    if (data && data.data && data.data.biz_data) return { amount: 0 }
+    const platformMsg = data && (data.msg || data.message)
+    const platformCode = data && typeof data.code !== 'undefined' ? ' ' + data.code : ''
+    const authFailed = !!(data && (data.code === 40003 || data.code === 401 || data.code === 403))
+    return {
+      error: 'platform' + platformCode + ': ' + String(platformMsg || 'no usage').slice(0, 120),
+      authFailed,
+    }
+  }
+
   async function fetchUsage() {
-    // 凭据中心优先（写进 .credentials.yaml 的值是权威来源），旧配置字段只作兼容回落
-    let cred
-    try {
-      cred = await resolveCredential('DEEPSEEK_PLATFORM_TOKEN')
-    } catch (err) {
-      return { error: 'platform cred resolve failed' }
+    const tokens = await usageTokens()
+    if (!tokens.length) return { error: 'no platform token' }
+    let last = null
+    for (const item of tokens) {
+      try {
+        const usage = await fetchUsageWithToken(item.token)
+        if (usage.amount !== undefined) return { ...usage, source: item.source }
+        last = usage
+        // 网络/结构类失败换令牌也没用；只有鉴权失败才继续试下一枚
+        if (!usage.authFailed) break
+      } catch (err) {
+        last = { error: String((err && err.message) || err) }
+      }
     }
-    let token = cred && cred.value ? String(cred.value).replace(/^Bearer\s+/i, '') : ''
-    if (!token) {
-      try { token = String((typeof getPlatformToken === 'function' ? getPlatformToken() : '') || '').replace(/^Bearer\s+/i, '') } catch { /* ignore */ }
-    }
-    if (!token) return { error: 'no platform token' }
-    try {
-      const current = new Date(now())
-      const tz = -current.getTimezoneOffset() * 60
-      const start = Math.floor(new Date(current.getFullYear(), current.getMonth(), current.getDate()).getTime() / 1000)
-      const end = start + 86400
-      const url = `${USAGE_URL}?start=${start}&end=${end}&tz=${tz}`
-      const res = await fetchImpl(url, {
-        headers: { Authorization: 'Bearer ' + token },
-        signal: AbortSignal.timeout(15000),
-      })
-      if (!res.ok) return { error: 'http ' + res.status }
-      const data = await res.json()
-      const amount = computeTodayCost(data)
-      // isFinite(null) 为 true：平台把鉴权失败也包在 HTTP 200 里（code 40003），
-      // 必须显式排除 null，否则无效令牌会被当成「今日用量 0」而掩盖失败。
-      if (amount !== null && isFinite(amount)) return { amount }
-      // 有 biz_data 但没有 cost 桶 = 今天确实没产生用量
-      if (data && data.data && data.data.biz_data) return { amount: 0 }
-      const platformMsg = data && (data.msg || data.message)
-      const platformCode = data && typeof data.code !== 'undefined' ? ' ' + data.code : ''
-      return { error: 'platform' + platformCode + ': ' + String(platformMsg || 'no usage').slice(0, 120) }
-    } catch (err) {
-      return { error: String((err && err.message) || err) }
-    }
+    return last || { error: 'no usage' }
   }
 
   function todayKey() {
