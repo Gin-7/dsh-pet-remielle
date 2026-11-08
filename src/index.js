@@ -1073,6 +1073,32 @@ export function advertisedOrigin(httpCtx, fallback) {
   return fallback
 }
 
+/**
+ * 把旧配置里的平台令牌迁进 DSH 凭据中心，成功后清空配置里的明文。
+ * 凭据服务不可用、只读、已配置或写入失败时保持原样——迁移是尽力而为，绝不丢值。
+ * @returns 是否真的完成了迁移（写凭据 + 清配置）
+ */
+export async function migratePlatformToken({ settings, credentials, logger = console }) {
+  const legacy = String(settings?.get?.().platformToken || '').trim()
+  if (!legacy) return false
+  if (!credentials || typeof credentials.describe !== 'function' || typeof credentials.set !== 'function') return false
+  try {
+    const info = await credentials.describe('DEEPSEEK_PLATFORM_TOKEN')
+    if (info?.configured === true) {
+      if (typeof settings.update === 'function') await settings.update({ platformToken: '' })
+      return false
+    }
+    if (info && info.writable === false) return false
+    await credentials.set('DEEPSEEK_PLATFORM_TOKEN', legacy)
+    if (typeof settings.update === 'function') await settings.update({ platformToken: '' })
+    logger.info?.('dsh-pet-remielle: platform token migrated to the DSH credential store')
+    return true
+  } catch (error) {
+    logger.warn?.(`dsh-pet-remielle: platform token migration skipped (${error?.message ?? error})`)
+    return false
+  }
+}
+
 function mount(ctx, config = {}, eventCtx = ctx) {
   const logger = ctx.logger ?? console
   const settings = createSettingsScope(ctx, config, eventCtx)
@@ -1101,6 +1127,46 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     log: (code, error) => logger.error?.(`dsh-pet-remielle: ${code} ${error}`),
   })
   let usageModeNow = normalizeUsageMode(settings.get().usageMode)
+
+  // 一次性迁移：旧配置里的平台令牌写进 DSH 凭据中心后清空配置，避免明文继续留在
+  // profile 的 cordis.patch.yml。凭据服务可能晚于插件挂载（0.4.7 的 inject 只有
+  // sessions，实测启动那一刻取不到 credentials），因此补「服务到达监听 + 几次短重试」；
+  // 凭据不可用、只读或写入失败时保持原样，绝不丢值。
+  let platformTokenMigrated = false
+  let warnedMissingCredentials = false
+  const ensurePlatformTokenMigrated = () => {
+    if (platformTokenMigrated) return
+    if (!String(settings.get().platformToken || '').trim()) {
+      platformTokenMigrated = true
+      return
+    }
+    const credentials = hostService(eventCtx, 'credentials') ?? hostService(ctx, 'credentials')
+    if (!credentials) {
+      if (!warnedMissingCredentials) {
+        warnedMissingCredentials = true
+        logger.info?.('dsh-pet-remielle: waiting for the credentials service to migrate the platform token')
+      }
+      return
+    }
+    void migratePlatformToken({ settings, credentials, logger }).then((done) => {
+      if (done) platformTokenMigrated = true
+    })
+  }
+  ensurePlatformTokenMigrated()
+  const offCredentialsArrived = (() => {
+    try {
+      return eventCtx.on('internal/service', (name) => {
+        if (name === 'credentials') ensurePlatformTokenMigrated()
+      })
+    } catch { return undefined }
+  })()
+  if (typeof offCredentialsArrived === 'function' && typeof ctx.effect === 'function') {
+    ctx.effect(() => offCredentialsArrived)
+  }
+  for (const delay of [1000, 4000, 10000]) {
+    const timer = setTimeout(ensurePlatformTokenMigrated, delay)
+    timer.unref?.()
+  }
 
   const petsRoot = fileURLToPath(new URL('../assets/pets/', import.meta.url))
 
@@ -1310,6 +1376,21 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     // 但 states() 已经少了这张卡，必须照样推快照。
     hub.broadcast()
   }
+  // timed 提问：阻塞式 schema 不会进 userQuestions 投影，只有 timed 模式在前台
+  // 等待结束后仍可回答，投影里保留 state==='continued' 的条目。宿主投影服务可能
+  // 不存在（0.2.1 或未挂载），取不到就静默跳过，绝不影响既有渲染。
+  const syncAnswerable = (session) => {
+    if (reducer.includeSubagents !== true && isSubagent(session)) return []
+    let projections
+    try { projections = hostService(ctx, 'sessionProjections') } catch { projections = undefined }
+    if (!projections || typeof projections.snapshot !== 'function') return []
+    let active
+    try {
+      active = projections.snapshot(session, ['userQuestions'])?.values?.userQuestions?.active
+    } catch { return [] }
+    const continued = Array.isArray(active) ? active.filter((entry) => entry?.state === 'continued') : []
+    return reducer.syncAnswerable(session, continued)
+  }
   const offEvent = eventCtx.on('session/event', (session, event) => {
     const eventType = String(event?.type ?? '')
     // 子会话 id 记账：供「响应子 Agent」关闭时清理残留完成卡（见 subagentSessionIds）。
@@ -1322,7 +1403,7 @@ function mount(ctx, config = {}, eventCtx = ctx) {
     watchdog.feed(completionSessionIdOf(session))
     if (eventType === 'turn/end') watchdog.end(completionSessionIdOf(session))
     if (eventType === 'turn/start' || eventType === 'tool/call') dropCompletion(session)
-    const outgoing = [...reducer.handle(session, event)]
+    const outgoing = [...reducer.handle(session, event), ...syncAnswerable(session)]
     const sessionId = completionSessionIdOf(session)
     const currentFailed = eventType === 'turn/end'
       && sessionId

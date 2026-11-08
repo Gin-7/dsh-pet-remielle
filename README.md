@@ -174,7 +174,9 @@ dsh plugin --profile web add dsh-pet-remielle
 
 **切换用量模式**：插件 → 蕾米埃尔桌宠 → 行为 →「用量模式」（小鲸鱼记账 / 实时·令牌）。也可从「设置 → 宠物管理 → 行为」修改同一配置。
 
-> `DEEPSEEK_PLATFORM_TOKEN` 获取方式：登录 platform.deepseek.com → F12 开发者工具 → Network → 打开「用量」页面 → 复制 `api/v0/usage/...` 请求的 `Authorization` 请求头值 → 配置到 DSH 凭据服务。
+> `DEEPSEEK_PLATFORM_TOKEN` 获取方式：登录 platform.deepseek.com → F12 开发者工具 → Network → 打开「用量」页面 → 复制 `api/v0/usage/...` 请求的 `Authorization` 请求头值 → 在设置页保存，写入 DSH 凭据中心（`~/.dsh/.credentials.yaml`），不写进插件配置。
+>
+> 早期版本把令牌存在插件配置里；升级后插件启动时会自动把它迁进凭据中心并清空配置里的明文。没有凭据服务（DSH < 0.2.1）时设置页退回旧的配置输入。
 
 ---
 

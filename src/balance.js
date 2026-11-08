@@ -75,6 +75,7 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
 
   let balanceCache = null
   let balanceInFlight = null
+  let lastUsageError = null
 
   async function fetchBalance() {
     let cred
@@ -133,19 +134,18 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
   }
 
   async function fetchUsage() {
-    // 优先用配置里的 platformToken（main 设置页填写），回落到 DSH 凭据服务
-    let token = ''
-    try { token = String((typeof getPlatformToken === 'function' ? getPlatformToken() : '') || '').replace(/^Bearer\s+/i, '') } catch { /* ignore */ }
-    if (!token) {
-      let cred
-      try {
-        cred = await resolveCredential('DEEPSEEK_PLATFORM_TOKEN')
-      } catch (err) {
-        return { error: 'platform cred resolve failed' }
-      }
-      if (!cred) return { error: 'no platform token' }
-      token = String(cred.value).replace(/^Bearer\s+/i, '')
+    // 凭据中心优先（写进 .credentials.yaml 的值是权威来源），旧配置字段只作兼容回落
+    let cred
+    try {
+      cred = await resolveCredential('DEEPSEEK_PLATFORM_TOKEN')
+    } catch (err) {
+      return { error: 'platform cred resolve failed' }
     }
+    let token = cred && cred.value ? String(cred.value).replace(/^Bearer\s+/i, '') : ''
+    if (!token) {
+      try { token = String((typeof getPlatformToken === 'function' ? getPlatformToken() : '') || '').replace(/^Bearer\s+/i, '') } catch { /* ignore */ }
+    }
+    if (!token) return { error: 'no platform token' }
     try {
       const current = new Date(now())
       const tz = -current.getTimezoneOffset() * 60
@@ -159,8 +159,14 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
       if (!res.ok) return { error: 'http ' + res.status }
       const data = await res.json()
       const amount = computeTodayCost(data)
-      if (isFinite(amount)) return { amount }
-      return { error: 'no usage' }
+      // isFinite(null) 为 true：平台把鉴权失败也包在 HTTP 200 里（code 40003），
+      // 必须显式排除 null，否则无效令牌会被当成「今日用量 0」而掩盖失败。
+      if (amount !== null && isFinite(amount)) return { amount }
+      // 有 biz_data 但没有 cost 桶 = 今天确实没产生用量
+      if (data && data.data && data.data.biz_data) return { amount: 0 }
+      const platformMsg = data && (data.msg || data.message)
+      const platformCode = data && typeof data.code !== 'undefined' ? ' ' + data.code : ''
+      return { error: 'platform' + platformCode + ': ' + String(platformMsg || 'no usage').slice(0, 120) }
     } catch (err) {
       return { error: String((err && err.message) || err) }
     }
@@ -240,11 +246,18 @@ export function createBalanceService({ resolveCredential, getPlatformToken, dshH
     if (u && u.amount !== undefined) {
       full.todayUsage = u.amount
       full.usageMode = 'token'
+      lastUsageError = null
       return full
     }
     // 无令牌或令牌失败：回落记账模式
     full.todayUsage = led.todayUsage
     full.usageMode = 'ledger'
+    // 把失败原因随响应带出（无效令牌时用户切到 token 模式会静默回落，需要可解释）
+    if (u && u.error) {
+      full.usageError = u.error
+      if (u.error !== lastUsageError) logger('token-usage', u.error)
+      lastUsageError = u.error
+    }
     return full
   }
 

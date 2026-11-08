@@ -674,3 +674,113 @@ test('dismissError clears only durable ERROR sessions', () => {
   assert.equal(live.states().find((entry) => entry.sessionId === 'work').state, PetState.WORKING)
 })
 
+
+test('PTC ask_user_question -> WAITING with question summary, settle restores the parent tool', () => {
+  const reducer = new PetReducer()
+  const sess = session()
+  const messages = collect(reducer, sess, [
+    event('turn/start'),
+    event('tool/call', { callId: 'r1', name: 'run_code' }, 2),
+    event('tool/ptc-dispatch-start', {
+      subCallId: 'r1:ptc:1',
+      parentCallId: 'r1',
+      name: 'ask_user_question',
+      arguments: { questions: [{ id: 'q', question: '要继续吗？' }] },
+    }, 3),
+  ])
+  const waiting = messages.filter((m) => m.kind === PetMessageKind.STATE).at(-1)
+  assert.equal(waiting.state, PetState.WAITING)
+  assert.equal(waiting.mood, '05')
+  assert.equal(waiting.phase, 'ask')
+  assert.equal(waiting.askSummary, '要继续吗？')
+  assert.equal(reducer.states()[0].ask, true)
+  assert.equal(reducer.states()[0].approval, false)
+
+  const tail = collect(reducer, sess, [
+    event('tool/ptc-dispatch', { subCallId: 'r1:ptc:1', parentCallId: 'r1', name: 'ask_user_question' }, 4),
+  ])
+  const after = tail.filter((m) => m.kind === PetMessageKind.STATE).at(-1)
+  assert.equal(after.state, PetState.WORKING, '回答后回到 run_code 的下层状态')
+  assert.equal(after.toolName, 'run_code')
+  assert.equal(reducer.states()[0].ask, false)
+})
+
+test('PTC exit_plan_mode -> plan review wait, settle restores', () => {
+  const reducer = new PetReducer()
+  const sess = session()
+  const messages = collect(reducer, sess, [
+    event('turn/start'),
+    event('tool/call', { callId: 'r2', name: 'run_code' }, 2),
+    event('tool/ptc-dispatch-start', {
+      subCallId: 'r2:ptc:1',
+      parentCallId: 'r2',
+      name: 'exit_plan_mode',
+      arguments: { plan: '# 修复标题折叠' },
+    }, 3),
+  ])
+  const waiting = messages.filter((m) => m.kind === PetMessageKind.STATE).at(-1)
+  assert.equal(waiting.state, PetState.WAITING)
+  assert.equal(waiting.phase, 'plan-review')
+  assert.equal(waiting.preview, '修复标题折叠')
+  assert.equal(reducer.states()[0].planReview, true)
+
+  const recovered = collect(reducer, sess, [
+    event('tool/ptc-dispatch', { subCallId: 'r2:ptc:1', parentCallId: 'r2', name: 'exit_plan_mode' }, 4),
+  ])
+  const after = recovered.filter((m) => m.kind === PetMessageKind.STATE).at(-1)
+  assert.equal(after.state, PetState.WORKING)
+  assert.equal(reducer.states()[0].planReview, false)
+})
+
+test('PTC sub-call activity follows the running sub-tool and falls back to run_code', () => {
+  const reducer = new PetReducer()
+  const sess = session()
+  const started = collect(reducer, sess, [
+    event('turn/start'),
+    event('tool/call', { callId: 'r3', name: 'run_code' }, 2),
+    event('tool/ptc-dispatch-start', { subCallId: 'r3:ptc:1', parentCallId: 'r3', name: 'ops_bash', arguments: {} }, 3),
+  ])
+  const running = started.filter((m) => m.kind === PetMessageKind.STATE).at(-1)
+  assert.equal(running.toolName, 'ops_bash')
+  assert.equal(running.stage, '执行阶段')
+
+  const settled = collect(reducer, sess, [
+    event('tool/ptc-dispatch', { subCallId: 'r3:ptc:1', parentCallId: 'r3', name: 'ops_bash' }, 4),
+  ])
+  const idle = settled.filter((m) => m.kind === PetMessageKind.STATE).at(-1)
+  assert.equal(idle.toolName, 'run_code', '子调用结束后回落父级 run_code')
+  assert.equal(idle.stage, '处理阶段')
+})
+
+test('syncAnswerable mirrors continued timed questions and clears them', () => {
+  const reducer = new PetReducer()
+  const sess = session()
+  collect(reducer, sess, [event('turn/start'), event('assistant/message', {}, 2)])
+  const messages = reducer.syncAnswerable(sess, [
+    { callId: 'c9', state: 'continued', questions: [{ id: 'q', question: '还要继续吗？' }] },
+  ])
+  const waiting = messages.filter((m) => m.kind === PetMessageKind.STATE).at(-1)
+  assert.equal(waiting.state, PetState.WAITING)
+  assert.equal(waiting.stage, '等待回答 · 可稍后回复')
+  assert.equal(waiting.askSummary, '还要继续吗？')
+  assert.equal(reducer.states()[0].ask, true)
+
+  const cleared = reducer.syncAnswerable(sess, [])
+  assert.equal(cleared.filter((m) => m.kind === PetMessageKind.STATE).at(-1).state, PetState.THINKING)
+  assert.equal(reducer.states()[0].ask, false)
+  assert.deepEqual(reducer.syncAnswerable(session('unknown'), []), [])
+})
+
+test('turn/end clears open PTC sub-calls and waits', () => {
+  const reducer = new PetReducer()
+  const sess = session()
+  collect(reducer, sess, [
+    event('turn/start'),
+    event('tool/call', { callId: 'r4', name: 'run_code' }, 2),
+    event('tool/ptc-dispatch-start', { subCallId: 'r4:ptc:1', parentCallId: 'r4', name: 'ask_user_question', arguments: { questions: [{ question: '？' }] } }, 3),
+  ])
+  assert.equal(reducer.states()[0].ask, true)
+  collect(reducer, sess, [event('turn/end', {}, 4)])
+  assert.equal(reducer.states().some((entry) => entry.ask === true), false, '回合结束后不再等待')
+  assert.equal(reducer.states().some((entry) => entry.state === PetState.WAITING), false)
+})

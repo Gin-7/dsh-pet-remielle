@@ -246,3 +246,35 @@ test('question and error action symbols open their own conversations', () => {
   harness.click(backboard)
   assert.deepEqual(harness.opened, ['question', 'error'])
 })
+
+test('hover tip hides when the window loses focus, the page hides, or something is clicked', () => {
+  const harness = createHarness('other', true, [])
+  harness.send({
+    enabled: true,
+    showBubble: true,
+    showBubbleStatus: true,
+    petId: 'remielle',
+    sessions: [{
+      sessionId: 's1',
+      state: 'WORKING',
+      phase: 'output',
+      message: '正在输出回答哦',
+      detail: 'dsh-pet-remielle · 输出阶段',
+    }],
+  })
+  const card = harness.card('正在输出回答哦')
+  const enter = card.listeners.get('mouseenter')?.[0]
+  assert.ok(enter, 'missing mouseenter listener')
+  enter()
+  const tip = harness.elements.find((node) => node.className === 'rm2-pet-tip')
+  assert.ok(tip, 'missing .rm2-pet-tip')
+  assert.equal(tip.style.display, 'block')
+
+  harness.dispatchWindowEvent('blur')
+  assert.equal(tip.style.display, 'none', '窗口失焦（截屏工具会触发）应收起浮层')
+
+  enter()
+  assert.equal(tip.style.display, 'block')
+  harness.dispatchDocumentEvent('pointerdown')
+  assert.equal(tip.style.display, 'none', '点击其它地方应收起浮层')
+})

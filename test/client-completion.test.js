@@ -134,7 +134,8 @@ test('plan review card renders with its own tooltip and opens without auto-appro
   assert.equal(card.className.includes('attention'), true)
   assert.equal(card.className.includes('approval'), false)
   assert.equal(card.className.includes('plan-review'), false, 'plan-review 类名无样式消费，不得回归')
-  assert.match(card.dataset.rm2Tip, /计划待审：推理面板改材质，点击打开同意执行\/要求修改/)
+  // 这张卡所在会话就是当前会话：点击不会跳转，提示只说明它在这里。
+  assert.match(card.dataset.rm2Tip, /计划待审：推理面板改材质（就在这儿呢）/)
   harness.click(card)
   assert.deepEqual(harness.opened, ['plan'])
   assert.equal(harness.allowClicks.length, 0)

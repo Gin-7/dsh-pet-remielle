@@ -25,8 +25,9 @@ const src = readFileSync(CORE, 'utf8')
 // 拼接提供）。这里直接注入共享模块，沙箱跑的是 src 而不是产物，故需手工供上。
 const markdown = require('../src/markdown.cjs')
 
-function makeReact({ tab, data, config, updMsg }) {
-  const initial = [tab, data, null, false, config, false, null, false, updMsg]
+function makeReact({ tab, data, config, updMsg, credential }) {
+  // 顺序对应 PetsSection 的 useState 顺序（useRef 不占位）；新增状态追加在末尾。
+  const initial = [tab, data, null, false, config, false, null, false, updMsg, credential, false, null, '']
   let cursor = 0
   return {
     React: {
@@ -73,9 +74,9 @@ function loadPetsSection() {
   return { sandbox, stubs }
 }
 
-function renderTab(tab, { data = null, config = null, updMsg = null } = {}) {
+function renderTab(tab, { data = null, config = null, updMsg = null, credential = null } = {}) {
   const { sandbox, stubs } = loadPetsSection()
-  const fresh = makeReact({ tab, data, config, updMsg })
+  const fresh = makeReact({ tab, data, config, updMsg, credential })
   sandbox.React = fresh.React
   sandbox.require = (name) => { if (name === 'react') return fresh.React; throw new Error('require ' + name) }
   return sandbox.PetsSection()
@@ -194,6 +195,26 @@ test('pet cards render rename-on-double-click and status badges (no dead code fa
   const setActive = strings.filter((s) => s === '设为当前')
   assert.equal(setActive.length, 0, '缺图宠物不应出现「设为当前」')
   assert.ok(!strings.includes('改名'), '不应再有独立的「改名」按钮——入口是双击名字')
+})
+
+test('token mode renders the credential-center badge, save and clear actions', () => {
+  const tree = renderTab('behavior', {
+    config: { usageMode: 'token', showBubbleUsage: true },
+    credential: { available: true, configured: true, source: 'store', writable: true },
+  })
+  const strings = collectStrings(tree)
+  assert.ok(strings.some((s) => s.includes('凭据中心：已配置')), '已配置时应显示凭据中心徽标')
+  assert.ok(strings.includes('清除'), '已配置时应提供清除按钮')
+  assert.ok(strings.includes('保存'), '应提供显式保存按钮（不再随输入写盘）')
+})
+
+test('token mode falls back to the legacy config input when the credentials service is missing', () => {
+  const tree = renderTab('behavior', {
+    config: { usageMode: 'token', showBubbleUsage: true, platformToken: '' },
+    credential: { available: false },
+  })
+  const strings = collectStrings(tree)
+  assert.ok(strings.some((s) => s.includes('凭据中心不可用')), '无凭据服务时要说明暂存配置')
 })
 
 test('update check shows feedback when the repo has no release yet', () => {

@@ -292,6 +292,34 @@ test('a platform cost payload is adopted as today usage in token mode', async ()
   assert.equal(result.todayUsage, 3.25)
 })
 
+test('a platform auth error wrapped in HTTP 200 falls back to ledger instead of showing 0 usage', async () => {
+  const fetchImpl = async (url) => (String(url).includes('/user/balance')
+    ? okBody(20)
+    : {
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 40003, msg: 'Authorization Failed (invalid token)', data: {} }),
+      })
+  const result = await service(fetchImpl, { getPlatformToken: () => 'sk-not-a-user-token' }).getBalance('token')
+  // 平台把鉴权失败塞进 200 响应体；isFinite(null) 曾把它当成「今日用量 0」而掩盖失败
+  assert.equal(result.usageMode, 'ledger', '无效令牌不能留在实时模式')
+  assert.equal(result.todayUsage, 0)
+  assert.ok(result.usageError && result.usageError.includes('40003'), '失败原因应随响应带出')
+})
+
+test('an empty platform cost payload means zero usage today, not a failure', async () => {
+  const fetchImpl = async (url) => (String(url).includes('/user/balance')
+    ? okBody(20)
+    : {
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 0, data: { biz_data: { data: [] } } }),
+      })
+  const result = await service(fetchImpl, { getPlatformToken: () => 'tok' }).getBalance('token')
+  assert.equal(result.usageMode, 'token')
+  assert.equal(result.todayUsage, 0)
+})
+
 test('the injected clock controls ledger date and token usage window', async () => {
   const home = tempHome()
   const clock = new Date('2026-02-03T16:30:00.000Z').getTime()
@@ -317,4 +345,28 @@ test('the injected clock controls ledger date and token usage window', async () 
   assert.equal(JSON.parse(readFileSync(join(home, LEDGER), 'utf8')).date, expectedDate)
   const usageUrl = urls.find((url) => url.includes('/api/v0/usage/by_api_key/cost'))
   assert.ok(usageUrl.includes(`start=${expectedStart}`), `usage window must use injected date: ${usageUrl}`)
+})
+
+test('credential store token outranks the legacy platformToken setting', async () => {
+  const urls = []
+  const auths = []
+  const fetchImpl = async (url, init) => {
+    const href = String(url)
+    urls.push(href)
+    auths.push(init?.headers?.Authorization)
+    if (href.includes('/user/balance')) return okBody(20)
+    return { ok: false, status: 403, json: async () => ({}) }
+  }
+  const svc = service(fetchImpl, {
+    getPlatformToken: () => 'legacy-token',
+    resolveCredential: async (name) => {
+      if (name === 'DEEPSEEK_API_KEY') return { value: 'sk-test' }
+      if (name === 'DEEPSEEK_PLATFORM_TOKEN') return { value: 'cred-token' }
+      return null
+    },
+  })
+  await svc.getBalance('token')
+  const usageIndex = urls.findIndex((u) => u.includes('by_api_key/cost'))
+  assert.equal(auths[usageIndex], 'Bearer cred-token', '凭据中心的值优先于旧配置字段')
+  assert.ok(!auths.includes('Bearer legacy-token'), '旧配置值不应被使用')
 })

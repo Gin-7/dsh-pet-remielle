@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.8] — 未发布
+
+### Changes
+- **代码模式（PTC）里的提问与计划待审不再丢失提醒**：宿主把 `run_code` 内的工具调用记成 `tool/ptc-dispatch-start` / `tool/ptc-dispatch` 而不是 `tool/call`，reducer 现在同时识别两种来源；气泡显示 `?` 与「等待回答」，回答/结算后恢复下层状态。顺带让气泡反映 PTC 子工具的活动（执行命令、改文件等），不再一直显示 `run_code`。
+- 提问气泡只保留短文案（「有个问题想问你一下」），问题首句进悬停浮层（「提问：…，点击回答」）；timed 提问在前台等待结束后仍可回答时，经 `userQuestions` 投影继续显示等待，不再静默消失。
+- **平台令牌改存 DSH 凭据中心**：设置页令牌输入改成状态徽标 + 显式「保存 / 清除」，写入 `DEEPSEEK_PLATFORM_TOKEN`，不再随输入把明文写进插件配置；插件启动时把旧配置里的值一次性迁移进凭据中心并清空配置（凭据服务不可用、只读或写入失败时保持原样）。用量接口读取顺序改为「凭据中心 → 旧配置」。
+- `engines.node` 对齐 DSH 0.2.2（`>=24.9`），客户端声明 `@deepseek-ai/dsh-api-remotes` 依赖以使用 `ctx.remote.credentials`。
+
+### Fixes
+- 修复实时令牌模式的失败被当成成功：平台把鉴权失败包在 HTTP 200 的 `{"code":40003,"msg":"Authorization Failed (invalid token)"}` 里，而 `isFinite(null)` 为 true，于是无效令牌被当成「今日用量 0」，用量模式还显示成实时。现在解析失败或鉴权失败都回落记账模式，并把原因放进 `usageError`（同一条错误只记一次日志）；`biz_data` 合法但当天没有 cost 桶时按 0 处理。
+
 ## [0.4.7] — 2026-10-27
 
 ### Changes

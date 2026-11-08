@@ -142,6 +142,9 @@
       planSummary: derived.planSummary || '',
       approval: derived.approval === true,
       planReview: derived.planReview === true,
+      ask: derived.ask === true,
+      askSummary: derived.askSummary || '',
+      current: derived.current === true,
       completed: derived.completed === true,
       attention: derived.attention === true,
       idlePlaceholder: entry.idlePlaceholder === true,
@@ -165,12 +168,17 @@
   function tipTextOf(view) {
     if (view.idlePlaceholder) return ''
     if (view.approval) return view.detailShown || ''
+    // 卡片点击只会打开/切换会话，不会直接回答问题或批准计划——提示只说这个动作。
+    // 已经在当前会话时连切换都没有，改成说明它就在这里。
+    var where = view.current ? '（就在这儿呢）' : '，点一下跳过去看看呢'
     if (view.planReview) {
-      return view.planSummary
-        ? PLAN_MARKER + '：' + view.planSummary + '，点击打开同意执行/要求修改'
-        : PLAN_MARKER + '，点击打开同意执行/要求修改'
+      return (view.planSummary ? PLAN_MARKER + '：' + view.planSummary : PLAN_MARKER) + where
+    }
+    if (view.ask) {
+      return (view.askSummary ? '提问：' + view.askSummary : '有个问题要问你') + where
     }
     if (view.completed) return '完成啦~ 点击查看结果哦'
+    if (view.current) return '就在这儿呢~'
     if (view.attention) return '轮到你啦，点击跳到这里处理呢'
     return '点击跳到这里看一下~'
   }

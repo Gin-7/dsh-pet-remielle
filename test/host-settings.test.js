@@ -2,7 +2,7 @@ import { Readable } from 'node:stream'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { apply, applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, createThemeHandler, defaults, dropSubagentCompletions, hostService, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
+import { apply, applyCompletionAck, Config, CONFIG_PATCH_FIELDS, createCompletionAckHandler, createCurrentSessionStore, createPendingActionStore, createSessionCurrentHandler, createSessionOpenHandler, createSettingsScope, createStreamHub, createStateSnapshot, migratePlatformToken, createThemeHandler, defaults, dropSubagentCompletions, hostService, normalizeHostTheme, publicConfig, readSessionTitle, streamClientOf } from '../src/index.js'
 import { DEFAULT_PET_ID, PET_ID_RE } from '../src/pets.js'
 import { PetMessageKind, PetState, createMessage } from '../src/protocol.js'
 
@@ -344,4 +344,52 @@ test('route registration does not depend on the optional connection service', as
   } finally {
     harness.close()
   }
+})
+
+test('migratePlatformToken moves the legacy token into the credential store and clears config', async () => {
+  const stored = new Map()
+  const updates = []
+  const settings = {
+    get: () => ({ platformToken: ' sk-legacy ' }),
+    update: async (patch) => updates.push(patch),
+  }
+  const credentials = {
+    describe: async (ref) => ({ configured: stored.has(ref), writable: true }),
+    set: async (ref, value) => { stored.set(ref, value) },
+  }
+  assert.equal(await migratePlatformToken({ settings, credentials, logger: {} }), true)
+  assert.equal(stored.get('DEEPSEEK_PLATFORM_TOKEN'), 'sk-legacy')
+  assert.deepEqual(updates, [{ platformToken: '' }])
+})
+
+test('migratePlatformToken never overwrites an existing credential but still clears the legacy copy', async () => {
+  const updates = []
+  let writes = 0
+  const settings = { get: () => ({ platformToken: 'old' }), update: async (patch) => updates.push(patch) }
+  const credentials = {
+    describe: async () => ({ configured: true, writable: true }),
+    set: async () => { writes++ },
+  }
+  assert.equal(await migratePlatformToken({ settings, credentials, logger: {} }), false)
+  assert.equal(writes, 0, '凭据中心已有值时不得覆盖')
+  assert.deepEqual(updates, [{ platformToken: '' }], '旧的明文副本仍要清掉')
+})
+
+test('migratePlatformToken is a no-op without a value, a credentials service or write access', async () => {
+  const settings = { get: () => ({ platformToken: 'x' }) }
+  assert.equal(await migratePlatformToken({ settings, credentials: undefined, logger: {} }), false)
+  assert.equal(await migratePlatformToken({ settings: { get: () => ({}) }, credentials: { describe: async () => ({ configured: false }), set: async () => {} }, logger: {} }), false)
+  assert.equal(await migratePlatformToken({
+    settings,
+    credentials: { describe: async () => ({ configured: false, writable: false }), set: async () => { throw new Error('must not write') } },
+    logger: {},
+  }), false)
+})
+
+test('migratePlatformToken keeps the legacy config when the write fails', async () => {
+  const updates = []
+  const settings = { get: () => ({ platformToken: 'x' }), update: async (patch) => updates.push(patch) }
+  const credentials = { describe: async () => ({ configured: false, writable: true }), set: async () => { throw new Error('rejected') } }
+  assert.equal(await migratePlatformToken({ settings, credentials, logger: {} }), false)
+  assert.deepEqual(updates, [], '写入失败时绝不清空配置')
 })

@@ -164,6 +164,18 @@ function planReviewContent(argsRaw) {
   return clipLine(paragraph || markdown) || '计划待审'
 }
 
+/** First question sentence, short enough for the hover tip only. */
+function askSummaryOf(argsRaw) {
+  const args = parseToolArgs(argsRaw)
+  const first = Array.isArray(args?.questions) ? args.questions[0] : undefined
+  return clipLine(String(first?.question ?? first?.header ?? ''), 60)
+}
+
+/** Wait id for a timed question that stays answerable from the host projection. */
+function answerableWaitId(callId) {
+  return `answerable:${callId}`
+}
+
 function detailFor(record, stage = record.payload.stage) {
   const approval = record.waits?.find((wait) => wait.kind === 'approval')
   if (approval) {
@@ -250,8 +262,10 @@ export class PetReducer {
       case 'turn/start':
         record.turnActive = true
         record.openTools.clear()
+        record.ptcTools.clear()
         record.askTools.clear()
         record.planTools.clear()
+        record.answerable.clear()
         record.waits.length = 0
         record.savedState = undefined
         record.savedPayload = undefined
@@ -317,33 +331,12 @@ export class PetReducer {
         // 计划审核通过 user-questions waterfall 呈现，不会发 approval/asked；
         // 但 exit_plan_mode 的 tool/call 是它进入等待期的稳定宿主信号。
         if (name === PLAN_REVIEW_TOOL) {
-          record.planTools.add(callId)
-          this.#enterWait(record, {
-            kind: 'plan-review',
-            id: callId,
-            payload: {
-              phase: 'plan-review',
-              stage: '计划待审',
-              toolName: name,
-              preview: planReviewContent(event.data?.arguments),
-              message: '计划待审',
-            },
-          })
+          this.#humanWait(record, 'plan-review', callId, name, event.data?.arguments)
           return this.#render()
         }
         // Asking the human a question is a "waiting" state, not "摸鱼中".
         if (name === ASK_USER_TOOL) {
-          record.askTools.add(callId)
-          this.#enterWait(record, {
-            kind: 'ask',
-            id: callId,
-            payload: {
-              phase: 'ask',
-              stage: '等待回答',
-              toolName: name,
-              message: statusCopy('waiting', event.seq),
-            },
-          })
+          this.#humanWait(record, 'ask', callId, name, event.data?.arguments, event.seq)
           return this.#render()
         }
         const activity = toolActivity(name)
@@ -355,6 +348,49 @@ export class PetReducer {
           message: activityCopy(activity, event.seq),
         })
         return this.#render()
+      }
+
+      // PTC（run_code 代码模式）里的子调用不走 tool/call：宿主记
+      // tool/ptc-dispatch-start（开始）与 tool/ptc-dispatch（结算），子调用名在
+      // data.name、id 是 subCallId。提问与计划待审必须在这里补一次，否则代码
+      // 模式会话永远看不到等待态（原生调用仍走上面的 tool/call）。
+      case 'tool/ptc-dispatch-start': {
+        const subCallId = String(event.data?.subCallId ?? '')
+        if (!subCallId) return []
+        const name = String(event.data?.name ?? 'tool')
+        record.ptcTools.set(subCallId, { name, parentCallId: String(event.data?.parentCallId ?? '') })
+        if (name === PLAN_REVIEW_TOOL) {
+          this.#humanWait(record, 'plan-review', subCallId, name, event.data?.arguments)
+          return this.#render()
+        }
+        if (name === ASK_USER_TOOL) {
+          this.#humanWait(record, 'ask', subCallId, name, event.data?.arguments, event.seq)
+          return this.#render()
+        }
+        const activity = toolActivity(name)
+        this.#update(record, PetState.WORKING, {
+          phase: 'tool-call',
+          activity,
+          stage: activityStage(activity),
+          toolName: name,
+          message: activityCopy(activity, event.seq),
+        })
+        return this.#render()
+      }
+
+      case 'tool/ptc-dispatch': {
+        const subCallId = String(event.data?.subCallId ?? '')
+        if (!subCallId) return []
+        record.ptcTools.delete(subCallId)
+        if (record.askTools.delete(subCallId)) {
+          this.#exitWait(record, 'ask', subCallId)
+          return this.#render()
+        }
+        if (record.planTools.delete(subCallId)) {
+          this.#exitWait(record, 'plan-review', subCallId)
+          return this.#render()
+        }
+        return this.#restoreActivity(record, event.seq)
       }
 
       case 'tool/result':
@@ -453,6 +489,8 @@ export class PetReducer {
         planReview: record.waits.some((wait) => wait.kind === 'plan-review'),
         // 等待用户回答（ask_user_question）单独暴露，供气泡排序置于审批之下、完成之上。
         ask: record.waits.some((wait) => wait.kind === 'ask'),
+        // 提问首句只进悬停浮层，气泡正文保持一行短文案。
+        askSummary: record.waits.find((wait) => wait.kind === 'ask')?.payload?.askSummary,
         attention: record.state === PetState.WAITING || record.state === PetState.ERROR,
         updatedAt: record.updatedAt,
       })
@@ -550,8 +588,10 @@ export class PetReducer {
   #turnEnd(record, event) {
     record.turnActive = false
     record.openTools.clear()
+    record.ptcTools.clear()
     record.askTools.clear()
     record.planTools.clear()
+    record.answerable.clear()
     record.waits.length = 0
     record.savedState = undefined
     record.savedPayload = undefined
@@ -637,8 +677,10 @@ export class PetReducer {
       payload: { phase: 'session-created', message: '蕾米埃尔待机中~' },
       turnActive: false,
       openTools: new Map(),
+      ptcTools: new Map(),
       askTools: new Set(),
       planTools: new Set(),
+      answerable: new Map(),
       waits: [],
       savedState: undefined,
       savedPayload: undefined,
@@ -659,6 +701,96 @@ export class PetReducer {
     record.state = state
     record.payload = payload
     record.updatedAt = ++this.clock
+  }
+
+  /** Enter a human-decision wait for a native tool call or a PTC sub-call. */
+  #humanWait(record, kind, id, name, argsRaw, seq) {
+    if (kind === 'plan-review') {
+      record.planTools.add(id)
+      this.#enterWait(record, {
+        kind: 'plan-review',
+        id,
+        payload: {
+          phase: 'plan-review',
+          stage: '计划待审',
+          toolName: name,
+          preview: planReviewContent(argsRaw),
+          message: '计划待审',
+        },
+      })
+      return
+    }
+    record.askTools.add(id)
+    this.#enterWait(record, {
+      kind: 'ask',
+      id,
+      payload: {
+        phase: 'ask',
+        stage: '等待回答',
+        toolName: name,
+        askSummary: askSummaryOf(argsRaw),
+        message: statusCopy('ask', seq),
+      },
+    })
+  }
+
+  /** After a PTC sub-call settles, show what is still running underneath it. */
+  #restoreActivity(record, seq) {
+    if (record.waits.length > 0) return this.#render()
+    const pending = [...record.ptcTools.values()].at(-1)
+    const parent = record.openTools.size > 0 ? [...record.openTools.values()].at(-1) : undefined
+    if (!pending && !parent) return []
+    const name = pending?.name ?? parent?.name ?? 'tool'
+    const activity = toolActivity(name)
+    this.#update(record, PetState.WORKING, {
+      phase: 'tool-call',
+      activity,
+      stage: activityStage(activity),
+      toolName: name,
+      message: activityCopy(activity, seq),
+    })
+    return this.#render()
+  }
+
+  /**
+   * Timed `ask_user_question` calls stay answerable after the foreground wait
+   * releases. The host's `userQuestions` projection lists those continued
+   * calls; mirror them as waits so the reminder does not disappear.
+   */
+  syncAnswerable(session, entries) {
+    const record = this.sessions.get(sessionIdOf(session))
+    if (!record) return []
+    const next = new Map()
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const callId = String(entry?.callId ?? '')
+      if (!callId) continue
+      const question = Array.isArray(entry?.questions) ? entry.questions[0] : undefined
+      next.set(callId, clipLine(String(question?.question ?? question?.header ?? ''), 60))
+    }
+    let changed = false
+    for (const callId of [...record.answerable.keys()]) {
+      if (next.has(callId)) continue
+      record.answerable.delete(callId)
+      this.#exitWait(record, 'ask', answerableWaitId(callId))
+      changed = true
+    }
+    for (const [callId, summary] of next) {
+      if (record.answerable.has(callId)) continue
+      record.answerable.set(callId, true)
+      this.#enterWait(record, {
+        kind: 'ask',
+        id: answerableWaitId(callId),
+        payload: {
+          phase: 'ask',
+          stage: '等待回答 · 可稍后回复',
+          toolName: ASK_USER_TOOL,
+          askSummary: summary,
+          message: '这个问题还可以再回答哦',
+        },
+      })
+      changed = true
+    }
+    return changed ? this.#render() : []
   }
 
   /** Enter an identified human wait, remembering what to restore later. */

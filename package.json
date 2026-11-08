@@ -23,7 +23,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22.19",
+    "node": ">=24.9",
     "dsh": ">=0.1.2-alpha.1 <0.3.0-0"
   },
   "scripts": {
@@ -48,7 +48,9 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [],
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes"
+      ],
       "platform": "web"
     }
   },
